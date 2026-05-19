@@ -53,7 +53,7 @@ Always post a single `PENDING` review per PR-tick, containing the summary as the
 ### Consequences
 
 - The author sees one cohesive review unit and accepts or dismisses it as a whole in the GitHub UI — pending-by-default is the noise-control mechanism.
-- The daemon's state file deduplicates by SHA to prevent re-posting on unchanged revisions. New commits produce a fresh pending review; any prior pending reviews remain for the operator to dismiss or submit.
+- The daemon's state file deduplicates by SHA to prevent re-posting on unchanged revisions. New commits produce a fresh pending review; any prior pending reviews remain on the PR for the operator to dismiss or submit. The daemon does not auto-resolve stale pending reviews — multiple pushes without operator action will stack pending reviews on the same PR. Auto-resolution is reserved for a later iteration.
 - Per-comment posting (with its own rate-limit risks) is avoided.
 - If a single comment in the bundle has a bad `line` value, GitHub rejects the whole review — the daemon needs a fallback path that converts bad inlines into the summary text.
 
