@@ -3,7 +3,7 @@
 Date: 2026-05-19
 Status: Accepted
 
-Bundles four architectural decisions from the V1 design that are hard to reverse and warrant explicit rationale. Two further decisions (line-vs-position for inline comments, skip-own-PR) are excluded — they are trivially reversible and live in code-site comments instead.
+Bundles four architectural decisions from the V1 design — D1, D2, D3, and D5 from the original sequence — that are hard to reverse and warrant explicit rationale. D4 (line-vs-position for inline comments) is excluded as a trivially reversible API parameter choice and lives in code-site comments. The own-PR question, formerly D6, is captured in [ADR 0004](./0004-own-pr-review-default.md).
 
 ## D1 — Polling instead of webhooks
 
@@ -17,7 +17,7 @@ Poll watched repositories every 5 minutes from a local `launchd` job.
 
 ### Consequences
 
-- No GitHub App registration, no public endpoint, no TLS termination, no inbound port exposure. Setup is one `bin/install.sh` away.
+- No GitHub App registration, no public endpoint, no TLS termination, no inbound port exposure. Setup is local with no external services to configure.
 - Lag is bounded by the poll interval (~5 min). Acceptable for code review; not acceptable for chat-style features.
 - API quota cost is modest: authenticated calls cap at 5000/hour, and a few `gh pr list` per repo per tick stays well inside that.
 - Switching to webhooks later is non-trivial because the state model (per-PR SHA tracking in `state/`) assumes a pull-mode loop.
@@ -38,6 +38,7 @@ Use Claude Code CLI invoked headlessly (`claude --print "/review-pr <url>"`).
 - A Claude Max subscription covers usage with no per-call billing.
 - Tied to a macOS interactive-context assumption — Claude Code does not run headless on a server. A future "VPS/headless" variant would need to be rebuilt on the Agent SDK (tracked as V2 scope).
 - Re-authentication is a manual step when the subscription token rotates; the daemon needs a clear failure path.
+- Data crosses process boundaries as text — the CLI prints to stdout, the daemon captures it through bash variables and pipes, and a separate step extracts and validates the persona's structured output before posting. This LLM-produces-findings / deterministic-code-posts separation mirrors the architecture of both Anthropic Code Review and CodeRabbit and is required for automated daemon reliability: a slash-command body that ends with the `gh api` call gives no deterministic guarantee that posting actually happened.
 
 ## D3 — Single pending review instead of individual comments
 
@@ -52,7 +53,7 @@ Always post a single `PENDING` review per PR-tick, containing the summary as the
 ### Consequences
 
 - The author sees one cohesive review unit and accepts or dismisses it as a whole in the GitHub UI — pending-by-default is the noise-control mechanism.
-- Re-runs replace the prior pending review for the same SHA rather than stacking duplicates.
+- The daemon's state file deduplicates by SHA to prevent re-posting on unchanged revisions. New commits produce a fresh pending review; any prior pending reviews remain on the PR for the operator to dismiss or submit. The daemon does not auto-resolve stale pending reviews — multiple pushes without operator action will stack pending reviews on the same PR. Auto-resolution is reserved for a later iteration.
 - Per-comment posting (with its own rate-limit risks) is avoided.
 - If a single comment in the bundle has a bad `line` value, GitHub rejects the whole review — the daemon needs a fallback path that converts bad inlines into the summary text.
 
