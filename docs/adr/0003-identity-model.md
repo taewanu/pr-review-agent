@@ -21,7 +21,7 @@ Trade-offs:
 
 ## Decision
 
-Use Option A for V1: the daemon authenticates as the operator's own GitHub user account via the existing `gh` CLI session. Each review comment includes a `🤖` body marker, and the review summary includes a footer crediting the project. No second account is created. No GitHub App is registered.
+Use Option A for V1: the daemon authenticates as the operator's own GitHub user account via the existing `gh` CLI session. Each review comment includes a body marker indicating AI-drafted content, and the review summary includes a footer linking to the project. The exact marker glyph and footer text are implementation choices not pinned in this ADR, so they can be tuned without re-issuing the decision. No second account is created. No GitHub App is registered.
 
 Option C remains a reserved future option for organization-scale deployments that explicitly want a bot identity. Option B is rejected outright — maintaining a secondary GitHub account is operationally awkward and the value over Option A is captured by the pending-review safety net described in [ADR 0004](./0004-own-pr-review-default.md).
 
