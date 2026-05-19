@@ -7,6 +7,7 @@ https://github.com/mattpocock/skills
 Vendored skills (used under the MIT License reproduced below):
 
 - diagnose
+- git-guardrails-claude-code
 - grill-with-docs
 - handoff
 - improve-codebase-architecture
