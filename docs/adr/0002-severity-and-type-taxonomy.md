@@ -17,7 +17,7 @@ Options were evaluated against three criteria: speed of triage for the PR author
 
 Use two enum axes on every comment:
 
-- **`severity`**: one of `"important"`, `"nit"`, `"pre_existing"`.
+- **`severity`**: one of `"important"`, `"nit"`, `"pre_existing"` (snake_case enum equivalent of Anthropic's `pre-existing`).
 - **`type`**: one of `"bug"`, `"refactor"`, `"polish"`.
 
 Both fields are produced by the persona in the structured output and translated by the daemon into a visible body prefix at posting time.

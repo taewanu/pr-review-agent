@@ -29,6 +29,6 @@ Option C remains a reserved future option for organization-scale deployments tha
 
 - Setup cost is minimal — the operator's existing `gh auth` token is the only credential the daemon needs.
 - Self-review labeling on the operator's own PRs is real but bounded by the pending review state: nothing is publicly visible until the operator submits, and the operator can edit, delete, or cancel the entire review before publication.
-- The body marker makes AI-drafted content visually distinguishable in the GitHub UI even though the author label is the operator's name. The summary footer link is the project's primary organic discovery channel.
+- The body marker makes AI-drafted content visually distinguishable in the GitHub UI even though the author label is the operator's name. The summary footer links back to the project.
 - Forks reuse the operator's identity model unchanged. No per-fork bot-account creation.
 - A later switch to Option C is feasible: persona output and daemon flow are unchanged; only the credential and the posting account change. The body marker and footer can be retained or removed at that point.

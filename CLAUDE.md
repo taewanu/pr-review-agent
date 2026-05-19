@@ -1,31 +1,28 @@
 # pr-review-agent
 
-Automated PR review tool running under the user's own GitHub identity. Daemon written in bash + Python, scheduled by macOS launchd, posts **pending** reviews via the `gh` CLI. Built on Claude Code subagents/skills/commands.
-
-## Current state
-
-- **Phase**: scaffolding complete, MVP not started
-- **Toolchain**: bash + python (3.13 LTS) pinned via `mise.toml`
-- **Lint/format/security**: pre-commit framework with ruff, shellcheck, shfmt, actionlint, gitleaks, yamllint
-- **CI**: `.github/workflows/ci.yml` runs `pre-commit run --all-files`
-- **Hosting**: not yet — GitHub repo will be created after MVP works locally
-
-## Where to look
-
-- Architectural decisions — `docs/adr/`
-- Directory layout — the tree itself (`.claude/`, `daemon/`, `bin/`, `templates/`)
-- Config example — `templates/.pr-review.example.yaml`
-
-## Next session entry point
-
-MVP backbone: implement the daemon (`daemon/*.sh`, `daemon/*.py`) and the orchestrating slash command (`.claude/commands/review-pr.md`). Use `to-issues` to break the work into vertical slices — do not implement horizontally. First slice candidate: "one PR dry-run end-to-end with one hardcoded persona, no Slack, no state file".
+Automated PR review tool running under the operator's own GitHub identity. Daemon written in bash + Python, scheduled by macOS `launchd`. Posts pending reviews via the `gh` CLI. Built on Claude Code subagents, skills, and slash commands.
 
 ## Run commands
 
-```sh
-mise install
-pre-commit install
-pre-commit run --all-files
-```
+Uses Python 3.13 + pre-commit 4 + ruff + shellcheck + shfmt + actionlint + gitleaks + yamllint via mise. Wrap commands with `mise exec --` so non-interactive shells (CI, git hooks) resolve the right binaries:
 
-Daemon entry points (`daemon/poll.sh`, `bin/install.sh`) are stubs until MVP lands.
+- `mise install` — install all pinned tools
+- `mise exec -- pre-commit install` — register git hooks (one-time per clone)
+- `mise exec -- pre-commit run --all-files` — run all hooks against tracked files
+
+Pre-commit hooks run lint, format, and security checks on staged files. CI mirrors the same hooks via `.github/workflows/ci.yml`.
+
+## Branching
+
+Each slice ships as its own branch and PR into `main`. Squash merges. Conventional commit prefixes (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
+
+## Where to look
+
+- V1 scope and user stories — GitHub issue #1 (the PRD parent)
+- Architectural decisions — `docs/adr/`
+- Reviewer personas — `.claude/agents/pr-reviewer-*.md`
+- Orchestrator slash command — `.claude/commands/review-pr.md`
+- Daemon code — `daemon/`
+- Setup scripts — `bin/`
+- Template configs — `templates/`
+- Vendored Pocock skills — `.claude/skills/` (MIT, see `CREDITS.md`)
