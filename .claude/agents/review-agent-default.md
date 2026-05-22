@@ -46,6 +46,14 @@ The last thing in your stdout MUST be a fenced ` ```json ` block containing a JS
       "severity": "important",
       "type": "bug",
       "body": "Short, voiced finding text. One paragraph."
+    },
+    {
+      "path": "relative/path/to/other.py",
+      "line": 10,
+      "end_line": 18,
+      "severity": "nit",
+      "type": "refactor",
+      "body": "Multi-line range example — the whole helper reads like dead code."
     }
   ]
 }
@@ -55,7 +63,8 @@ Field rules:
 
 - `summary` — 2–3 sentences. The PR review's top-level body.
 - `comments[].path` — repo-relative path of the changed file.
-- `comments[].line` — line number in the file at PR HEAD (1-indexed).
+- `comments[].line` — line number in the file at PR HEAD (1-indexed). For single-line findings, this is the only positional field.
+- `comments[].end_line` — optional. When set and greater than `line`, the comment renders as a multi-line range from `line` to `end_line` (both inclusive). Use this when the finding is about a contiguous block — a function body, conditional, helper — rather than a single line. Both `line` and `end_line` must fall in the same diff hunk or the comment relocates into the Review body's `## Additional findings` section (per ADR 0005). Omit `end_line` for single-line findings; `end_line == line` is treated as single-line.
 - `comments[].severity` — one of `important`, `nit`, `pre_existing`. See ADR 0002.
 - `comments[].type` — one of `bug`, `refactor`, `polish`. See ADR 0002.
 - `comments[].body` — single paragraph in the voice above.

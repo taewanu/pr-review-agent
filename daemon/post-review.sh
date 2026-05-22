@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-# shellcheck source=daemon/lib.sh
+# shellcheck source=daemon/lib.sh disable=SC1091
 source "$(dirname "$0")/lib.sh"
 
 DRY_RUN=0
@@ -83,17 +83,44 @@ done
 
 summary="$(cat "$SUMMARY_FILE")"
 
+# Render unanchored findings into a Markdown section appended to the review body.
+# `## Additional findings` is the canonical relocation surface per ADR 0005.
+additional="$(jq -r '
+  if length == 0 then ""
+  else "\n\n## Additional findings\n\n" + (
+    map(
+      "- **" + .path + ":" + (.line | tostring) +
+      (if .end_line and .end_line != .line then "-" + (.end_line | tostring) else "" end) +
+      "** [" + .severity + "] [" + .type + "] — " + .body
+    ) | join("\n")
+  )
+  end
+' "$UNANCHORED")"
+
+body_with_additional="${summary}${additional}"
+
+# Build inline comment payloads. Range findings (end_line > line) use
+# {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
 comments_json="$(jq '
-  map({
-    path: .path,
-    line: .line,
-    side: "RIGHT",
-    body: ("[" + .severity + "] [" + .type + "]\n\n" + .body)
-  })
+  map(
+    . as $f |
+    {
+      path: .path,
+      side: "RIGHT",
+      body: ("[" + .severity + "] [" + .type + "]\n\n" + .body)
+    }
+    + (
+      if .end_line and .end_line > .line then
+        {start_line: .line, start_side: "RIGHT", line: .end_line}
+      else
+        {line: .line}
+      end
+    )
+  )
 ' "$ANCHORED")"
 
 payload="$(jq -n \
-  --arg body "$summary" \
+  --arg body "$body_with_additional" \
   --argjson comments "$comments_json" \
   --arg commit_id "$HEAD_SHA" \
   '{

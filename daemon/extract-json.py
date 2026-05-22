@@ -4,9 +4,9 @@
 import re
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 MAX_FINDINGS = 10
@@ -15,9 +15,16 @@ MAX_FINDINGS = 10
 class Finding(BaseModel):
     path: str
     line: int
+    end_line: int | None = None
     severity: Literal["important", "nit", "pre_existing"]
     type: Literal["bug", "refactor", "polish"]
     body: str
+
+    @model_validator(mode="after")
+    def _check_end_line(self) -> Self:
+        if self.end_line is not None and self.end_line < self.line:
+            raise ValueError(f"end_line ({self.end_line}) must be >= line ({self.line})")
+        return self
 
 
 class ReviewPayload(BaseModel):
