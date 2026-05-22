@@ -1,0 +1,1 @@
+Solid PR. The auth refactor reads cleanly and the new tests cover the happy path. One token-logging issue to fix before merge.

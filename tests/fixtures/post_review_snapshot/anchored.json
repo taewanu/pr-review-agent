@@ -1,0 +1,17 @@
+[
+  {
+    "path": "src/api/auth.py",
+    "line": 42,
+    "severity": "important",
+    "type": "bug",
+    "body": "`session.token` is logged in plaintext on the warning branch. Drop the field from the log line or redact before emit."
+  },
+  {
+    "path": "src/api/auth.py",
+    "line": 60,
+    "end_line": 75,
+    "severity": "nit",
+    "type": "refactor",
+    "body": "This helper does three jobs: parse, validate, persist. Splitting `parse_and_persist` into two functions would make the failure modes orthogonal."
+  }
+]
