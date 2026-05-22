@@ -1,0 +1,9 @@
+[
+  {
+    "path": "src/api/auth.py",
+    "line": 5,
+    "severity": "pre_existing",
+    "type": "polish",
+    "body": "The module docstring stops at the function name list. Worth a one-line description of what `auth` actually owns vs `session`."
+  }
+]

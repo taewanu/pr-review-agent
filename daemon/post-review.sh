@@ -94,31 +94,42 @@ if [[ -r "$pyproject" ]]; then
   fi
 fi
 
+# Review-body footer per ADR 0001 D3 / PRD #3 Implementation Decision #9. Hardcoded
+# project URL — forks change this one constant.
+footer=$'\n\n—\n🤖 Drafted by [pr-review-agent](https://github.com/taewanu/pr-review-agent). Submit, edit, or cancel as needed.'
+
 # Render unanchored findings into a Markdown section appended to the review body.
 # `## Additional findings` is the canonical relocation surface per ADR 0005.
+# Severity → emoji map per ADR 0002 (same map inlined in inline-comments jq below).
 additional="$(jq -r '
   if length == 0 then ""
   else "\n\n## Additional findings\n\n" + (
     map(
-      "- **" + .path + ":" + (.line | tostring) +
+      "- `" + .path + ":" + (.line | tostring) +
       (if .end_line and .end_line != .line then "-" + (.end_line | tostring) else "" end) +
-      "** [" + .severity + "] [" + .type + "] — " + .body
+      "` " +
+      ({"important": "🔴", "nit": "🟡", "pre_existing": "🟣"}[.severity] // "❓") +
+      " **" + .type + "** — " + .body
     ) | join("\n")
   )
   end
 ' "$UNANCHORED")"
 
-body_with_additional="${banner}${summary}${additional}"
+body_with_additional="${banner}${summary}${additional}${footer}"
 
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
+# Inline body format per ADR 0002: severity emoji + bold type label + body + AI-drafted footer.
 comments_json="$(jq '
   map(
-    . as $f |
     {
       path: .path,
       side: "RIGHT",
-      body: ("[" + .severity + "] [" + .type + "]\n\n" + .body)
+      body: (
+        ({"important": "🔴", "nit": "🟡", "pre_existing": "🟣"}[.severity] // "❓") +
+        " **" + .type + "** — " + .body +
+        "\n\n—\n🤖 _AI-drafted_"
+      )
     }
     + (
       if .end_line and .end_line > .line then

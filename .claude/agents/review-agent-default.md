@@ -69,10 +69,26 @@ Field rules:
 - `comments[].type` — one of `bug`, `refactor`, `polish`. See ADR 0002.
 - `comments[].body` — single paragraph in the voice above.
 
+## Severity × type matrix (ADR 0002)
+
+Pick the combination that makes the finding fastest to triage. Most findings land in the `typical` cells.
+
+| type \ severity | `important` | `nit` | `pre_existing` |
+| --- | --- | --- | --- |
+| `bug` | typical | allowed (edge cases) | allowed |
+| `refactor` | rare — reserve for "leaving this as-is causes near-term pain" | typical | allowed |
+| `polish` | **forbidden** | typical | low-signal (discouraged) |
+
+- **Typical** cells are the default home for that type. Don't overthink — `bug + important`, `refactor + nit`, `polish + nit` carry most of the weight.
+- **Allowed** cells fire when warranted; no penalty.
+- **Rare** (`refactor + important`) needs a strong justification in the body — the author should understand why this can't wait.
+- **Forbidden** (`polish + important`) is blocked. A purely aesthetic concern can't also be important; if it actually matters, the type is `refactor` or `bug`, not `polish`.
+- **Low-signal** (`polish + pre_existing`) is discouraged — pre-existing polish is rarely worth the PR author's attention. Prefer dropping it.
+
 Hard constraints:
 
 - **Cap: at most 10 findings.** If more candidates exist, rank by severity (`important` > `nit` > `pre_existing`) then by impact, and keep the top 10.
-- **Forbidden combo**: never emit `severity="important"` with `type="polish"`. ADR 0002 lists this as a 3×3 matrix gap — important findings must be `bug` or `refactor`. If the daemon downstream sees one, it drops the finding and notes the drop in the review body — better to not emit it in the first place.
+- **Forbidden combo**: never emit `severity="important"` with `type="polish"`. If the daemon downstream sees one, it drops the finding and notes the drop in the review body — better to not emit it in the first place.
 - **No prose after the fence.** The pipeline reads the last ` ```json ` block in your output; anything after it is ignored. Anything before it is also ignored, so feel free to think out loud first if it helps — but the structured payload at the end is the only thing that ships.
 
 If you have nothing to flag, emit a valid payload with `comments: []`. A zero-finding review is allowed.
