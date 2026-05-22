@@ -95,7 +95,8 @@ if [[ -r "$pyproject" ]]; then
 fi
 
 # Review-body footer per ADR 0001 D3 / PRD #3 Implementation Decision #9. Hardcoded
-# project URL; forks change this one constant.
+# project URL; forks change this one constant. The leading `\n\n---\n\n` detaches the
+# footer from whatever ends the body (summary, `## Additional findings`, or nothing).
 footer=$'\n\n---\n\n🤖 Drafted by [pr-review-agent](https://github.com/taewanu/pr-review-agent). Submit, edit, or cancel as needed.'
 
 # Render unanchored findings into a Markdown section appended to the review body.
