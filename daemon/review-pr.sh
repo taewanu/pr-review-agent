@@ -42,10 +42,14 @@ PR_NUMBER="${BASH_REMATCH[3]}"
 
 log_info "PR ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}"
 
-meta="$(gh pr view "$PR_URL" --json headRepository,headRefName,headRefOid)"
-HEAD_REPO="$(jq -r '.headRepository.owner.login + "/" + .headRepository.name' <<<"$meta")"
+meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid)"
+HEAD_REPO="$(jq -r '.headRepositoryOwner.login + "/" + .headRepository.name' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName' <<<"$meta")"
 HEAD_OID="$(jq -r '.headRefOid' <<<"$meta")"
+if [[ "$HEAD_REPO" == "/"* || "$HEAD_REPO" == */"" ]]; then
+  log_err "could not resolve head repo from gh pr view output: '$HEAD_REPO'"
+  exit 1
+fi
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
 SCRATCH="$(mktemp -d -t pr-review-agent.XXXXXX)"
