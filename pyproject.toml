@@ -1,6 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pr-review-agent"
+version = "0.0.0"
+description = "Self-hosted PR review daemon driven by Claude Code subagents."
+requires-python = ">=3.13"
+dependencies = [
+  "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+# The "daemon" directory holds invocable scripts, not an importable package
+# (files are hyphenated and loaded via importlib in tests). Tell setuptools to
+# skip package discovery so `pip install -e .` just installs the declared deps.
+[tool.setuptools]
+py-modules = []
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
