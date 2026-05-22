@@ -14,6 +14,7 @@ NUMBER=""
 SUMMARY_FILE=""
 ANCHORED=""
 UNANCHORED=""
+BANNER_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +44,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --head-sha)
       HEAD_SHA="$2"
+      shift 2
+      ;;
+    --banner-file)
+      BANNER_FILE="$2"
       shift 2
       ;;
     --dry-run)
@@ -83,6 +88,12 @@ done
 
 summary="$(cat "$SUMMARY_FILE")"
 
+# Optional banner prepended to the review body (e.g. smoke-test marker for dev runs).
+banner=""
+if [[ -n "$BANNER_FILE" ]]; then
+  banner="$(cat "$BANNER_FILE")"$'\n\n---\n\n'
+fi
+
 # Render unanchored findings into a Markdown section appended to the review body.
 # `## Additional findings` is the canonical relocation surface per ADR 0005.
 additional="$(jq -r '
@@ -97,7 +108,7 @@ additional="$(jq -r '
   end
 ' "$UNANCHORED")"
 
-body_with_additional="${summary}${additional}"
+body_with_additional="${banner}${summary}${additional}"
 
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
