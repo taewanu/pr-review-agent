@@ -25,7 +25,7 @@ The person whose `gh` CLI token the daemon uses. Reviews are authored under this
 _Avoid_: user (ambiguous with PR author), reviewer (GitHub's human-assigned PR reviewers — the Operator may or may not also be one)
 
 **Review agent**:
-A Claude Code subagent that reads a PR's diff and emits structured findings. Defined as a file at `.claude/agents/pr-reviewer-*.md`. V1 ships one (`pr-reviewer-default`); `security`, `perf`, and `tests` are vendored but inactive. Review agents are stateless and do not post — the daemon's posting step handles the GitHub side. Use the hyphenated form "review-agent" when the compound serves as a single token (identifiers, file names).
+A Claude Code subagent that reads a PR's diff and emits structured findings. Defined as a file at `.claude/agents/review-agent-*.md`. V1 ships one (`review-agent-default`); `security`, `perf`, and `tests` are vendored but inactive. Review agents are stateless and do not post — the daemon's posting step handles the GitHub side. Use the hyphenated form "review-agent" when the compound serves as a single token (identifiers, file names).
 _Avoid_: agent alone (Claude Code's broader term for parallelization — use the qualified compound), reviewer (ambiguous with GitHub's human-assigned PR reviewers)
 
 **Persona**:
@@ -33,7 +33,7 @@ A review agent's identity profile = its Voice + Tone variation rules + Nuance pa
 _Avoid_: style (overloaded with visual/UI design)
 
 **Voice**:
-A review agent's fixed identity — "who it is." Constant across all findings in a review. V1 default voice: see `.claude/agents/pr-reviewer-default.md` (Slack-style "X but never Y" pattern). Part of Persona.
+A review agent's fixed identity — "who it is." Constant across all findings in a review. V1 default voice: see `.claude/agents/review-agent-default.md` (Slack-style "X but never Y" pattern). Part of Persona.
 _Avoid_: tone (voice is invariant; tone varies)
 
 **Tone**:

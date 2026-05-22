@@ -4,13 +4,13 @@ A persona is a review agent's identity profile — its Voice, Tone variation rul
 
 | Layer | Time scale | Codified in V1? |
 | --- | --- | --- |
-| **Voice** — fixed identity ("who the agent is") | Constant across the entire review | Yes, per agent (see each `.claude/agents/pr-reviewer-*.md`) |
+| **Voice** — fixed identity ("who the agent is") | Constant across the entire review | Yes, per agent (see each `.claude/agents/review-agent-*.md`) |
 | **Tone** — situational shift in voice across review contexts (severity / type) | Varies per finding category | No — emerges from voice; may be pinned in Phase 3+ |
 | **Nuance** — micro-variation within a given tone (word choice, sentence endings, rhythm) | Varies per finding | No — emerges naturally |
 
 ## V1 default voice (canonical example)
 
-`pr-reviewer-default` uses Slack's "X but never Y" pattern:
+`review-agent-default` uses Slack's "X but never Y" pattern:
 
 - **Confident** — but never cocky
 - **Witty** — but never silly
@@ -20,7 +20,7 @@ A persona is a review agent's identity profile — its Voice, Tone variation rul
 - **Helpful** — actionable, not preachy
 - **Clear / concise / human** — accessible, brief, real
 
-The "X but never Y" form is load-bearing — it sets both the trait and its guardrail in one phrase. Authoring future review agents (e.g., `pr-reviewer-security`) should follow the same shape.
+The "X but never Y" form is load-bearing — it sets both the trait and its guardrail in one phrase. Authoring future review agents (e.g., `review-agent-security`) should follow the same shape.
 
 ## Authoring a new review agent
 

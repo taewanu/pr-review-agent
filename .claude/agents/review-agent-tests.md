@@ -1,5 +1,5 @@
 ---
-name: pr-reviewer-tests
+name: review-agent-tests
 description: Test-quality review agent. Flags missing coverage, flaky patterns, over-mocking, weak assertions. Inactive in V1.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: pr-reviewer-perf
+name: review-agent-perf
 description: Performance-focused review agent. Flags N+1, hot paths, unnecessary allocations, blocking I/O. Inactive in V1.
 ---
 

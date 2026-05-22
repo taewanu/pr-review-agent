@@ -1,5 +1,5 @@
 ---
-name: pr-reviewer-default
+name: review-agent-default
 description: General PR review agent. Default when no other review agent is specified.
 ---
 

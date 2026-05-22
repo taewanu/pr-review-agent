@@ -1,5 +1,5 @@
 ---
-name: pr-reviewer-security
+name: review-agent-security
 description: Security-focused review agent. Flags auth gaps, input validation, secrets, OWASP top 10. Inactive in V1.
 ---
 
