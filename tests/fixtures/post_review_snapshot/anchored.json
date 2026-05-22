@@ -12,6 +12,6 @@
     "end_line": 75,
     "severity": "nit",
     "type": "refactor",
-    "body": "This helper does three jobs — parses, validates, and persists. Splitting `parse_and_persist` into two functions would make the failure modes orthogonal."
+    "body": "This helper does three jobs: parse, validate, persist. Splitting `parse_and_persist` into two functions would make the failure modes orthogonal."
   }
 ]
