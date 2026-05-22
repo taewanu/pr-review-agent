@@ -38,7 +38,7 @@ Use Claude Code CLI invoked headlessly (`claude --print "/review-pr <url>"`).
 - A Claude Max subscription covers usage with no per-call billing.
 - Tied to a macOS interactive-context assumption — Claude Code does not run headless on a server. A future "VPS/headless" variant would need to be rebuilt on the Agent SDK (tracked as V2 scope).
 - Re-authentication is a manual step when the subscription token rotates; the daemon needs a clear failure path.
-- Data crosses process boundaries as text — the CLI prints to stdout, the daemon captures it through bash variables and pipes, and a separate step extracts and validates the persona's structured output before posting. This LLM-produces-findings / deterministic-code-posts separation mirrors the architecture of both Anthropic Code Review and CodeRabbit and is required for automated daemon reliability: a slash-command body that ends with the `gh api` call gives no deterministic guarantee that posting actually happened.
+- Data crosses process boundaries as text — the CLI prints to stdout, the daemon captures it through bash variables and pipes, and a separate step extracts and validates the review agent's structured output before posting. This LLM-produces-findings / deterministic-code-posts separation mirrors the architecture of both Anthropic Code Review and CodeRabbit and is required for automated daemon reliability: a slash-command body that ends with the `gh api` call gives no deterministic guarantee that posting actually happened.
 
 ## D3 — Single pending review instead of individual comments
 
@@ -70,6 +70,6 @@ Single daemon, repo list configured via the `REPOS` env var as a space-separated
 ### Consequences
 
 - One `launchd` job, one log path, one state directory rooted at `state/<repo>/<pr>.json`.
-- Per-repo overrides (persona selection, path filters, instructions) live in each repo's `.pr-review.yaml` — the daemon stays generic.
+- Per-repo overrides (review agent selection, path filters, instructions) live in each repo's `.pr-review.yaml` — the daemon stays generic.
 - Concurrent reviews are out of scope for V1; PRs are processed sequentially within a tick.
 - Splitting into per-repo daemons later is a config-only change; the data model already namespaces state by repo.

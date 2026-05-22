@@ -20,7 +20,7 @@ Each slice ships as its own branch and PR into `main`. Squash merges. Convention
 
 - V1 scope and user stories — GitHub issue #1 (the PRD parent)
 - Architectural decisions — `docs/adr/`
-- Reviewer personas — `.claude/agents/pr-reviewer-*.md`
+- Review agents — `.claude/agents/review-agent-*.md`
 - Orchestrator slash command — `.claude/commands/review-pr.md`
 - Daemon code — `daemon/`
 - Setup scripts — `bin/`

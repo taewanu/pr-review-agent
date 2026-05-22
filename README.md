@@ -7,7 +7,7 @@ Automated PR review tool that runs under your own GitHub identity. Built on Clau
 ## Why this exists
 
 - Review under your own GitHub identity, not a bot account
-- One persona per teammate; multiple personas can review the same PR
+- Multiple review agents per teammate; teammates' daemons can each review the same PR
 - Runs on your own machine via `launchd` (macOS); no webhooks, no GitHub App registration, no external hosting
 - MIT licensed — fork and shape it to your team
 
