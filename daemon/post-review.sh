@@ -14,6 +14,7 @@ NUMBER=""
 SUMMARY_FILE=""
 ANCHORED=""
 UNANCHORED=""
+DROPPED_COMBO=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +44,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --head-sha)
       HEAD_SHA="$2"
+      shift 2
+      ;;
+    --dropped-combo)
+      DROPPED_COMBO="$2"
       shift 2
       ;;
     --dry-run)
@@ -80,6 +85,10 @@ done
   log_err "missing --unanchored"
   exit 1
 }
+if ! [[ "$DROPPED_COMBO" =~ ^[0-9]+$ ]]; then
+  log_err "--dropped-combo must be a non-negative integer (got: $DROPPED_COMBO)"
+  exit 1
+fi
 
 summary="$(cat "$SUMMARY_FILE")"
 
@@ -94,9 +103,18 @@ if [[ -r "$pyproject" ]]; then
   fi
 fi
 
-# Review-body footer per ADR 0001 D3 / PRD #3 Implementation Decision #9. Hardcoded
-# project URL; forks change this one constant. The leading `\n\n---\n\n` detaches the
-# footer from whatever ends the body (summary, `## Additional findings`, or nothing).
+# Per-finding degradation note (ADR 0005). Surfaces dropped findings so the
+# operator sees the redaction in the body rather than only in stderr logs.
+dropped_note=""
+if [[ "$DROPPED_COMBO" -gt 0 ]]; then
+  noun="findings"
+  if [[ "$DROPPED_COMBO" -eq 1 ]]; then noun="finding"; fi
+  dropped_note=$'\n\n'"_${DROPPED_COMBO} ${noun} dropped (forbidden severity×type combo)._"
+fi
+
+# Review-body footer per ADR 0001 D3. Hardcoded project URL; forks change this
+# one constant. The leading `\n\n---\n\n` detaches the footer from whatever
+# ends the body (summary, dropped-note, `## Additional findings`, or nothing).
 footer=$'\n\n---\n\n🤖 Drafted by [pr-review-agent](https://github.com/taewanu/pr-review-agent). Submit, edit, or cancel as needed.'
 
 # Render unanchored findings into a Markdown section appended to the review body.
@@ -116,7 +134,7 @@ additional="$(jq -r '
   end
 ' "$UNANCHORED")"
 
-body_with_additional="${banner}${summary}${additional}${footer}"
+body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}"
 
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
@@ -157,7 +175,26 @@ if [[ $DRY_RUN -eq 1 ]]; then
 fi
 
 log_info "posting Pending review to ${OWNER}/${REPO}#${NUMBER}"
-printf '%s' "$payload" | gh api \
+
+# Capture both streams: gh api writes the 422 response body to stdout and a
+# short status line to stderr. The pending-conflict marker is in the response
+# body, so stderr-only capture misses it. Per ADR 0005 we don't auto-cancel
+# (would destroy the operator's in-flight draft).
+out_file="$(mktemp -t pr-review-post.XXXXXX)"
+trap 'rm -f "$out_file"' EXIT
+
+if printf '%s' "$payload" | gh api \
   --method POST \
   "repos/${OWNER}/${REPO}/pulls/${NUMBER}/reviews" \
-  --input -
+  --input - >"$out_file" 2>&1; then
+  cat "$out_file"
+  exit 0
+fi
+
+if grep -q "User can only have one pending review per pull request" "$out_file"; then
+  printf 'category=pending-conflict\n' >&2
+else
+  printf 'category=post-failed\n' >&2
+fi
+cat "$out_file" >&2
+exit 1

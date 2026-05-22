@@ -243,3 +243,44 @@ def test_split_routes_findings_per_anchor_status():
         "path-not-in-diff",
         "range-across-hunks",
     ]
+
+
+# ---------- drop_forbidden_combos ----------
+
+
+def test_drop_forbidden_combos_empty():
+    kept, dropped = anchor_findings.drop_forbidden_combos([])
+    assert kept == []
+    assert dropped == 0
+
+
+def test_drop_forbidden_combos_drops_important_polish():
+    findings = [
+        {"severity": "important", "type": "polish", "body": "drop me"},
+        {"severity": "nit", "type": "polish", "body": "keep me"},
+        {"severity": "important", "type": "bug", "body": "keep me too"},
+    ]
+    kept, dropped = anchor_findings.drop_forbidden_combos(findings)
+    assert [f["body"] for f in kept] == ["keep me", "keep me too"]
+    assert dropped == 1
+
+
+def test_drop_forbidden_combos_counts_multiple():
+    findings = [
+        {"severity": "important", "type": "polish", "body": "drop 1"},
+        {"severity": "important", "type": "polish", "body": "drop 2"},
+        {"severity": "nit", "type": "refactor", "body": "keep"},
+    ]
+    kept, dropped = anchor_findings.drop_forbidden_combos(findings)
+    assert [f["body"] for f in kept] == ["keep"]
+    assert dropped == 2
+
+
+def test_drop_forbidden_combos_missing_fields_treated_as_non_match():
+    # A malformed finding with missing severity/type isn't in FORBIDDEN_COMBOS
+    # so it passes through. Schema validation is extract-json's job, not this
+    # step's.
+    findings = [{"body": "no severity or type"}]
+    kept, dropped = anchor_findings.drop_forbidden_combos(findings)
+    assert kept == findings
+    assert dropped == 0

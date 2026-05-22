@@ -54,6 +54,20 @@ BASE_OWNER="${BASH_REMATCH[1]}"
 BASE_REPO="${BASH_REMATCH[2]}"
 PR_NUMBER="${BASH_REMATCH[3]}"
 
+# Set after `gh pr view`; leave blank so log_failure pre-view still has the
+# placeholder field populated.
+HEAD_OID=""
+
+# Parse the `category=<slug>` first stderr line emitted by extract-json.py and
+# post-review.sh on failure. Falls back to `unknown` so the structured failure
+# line is always populated.
+extract_category() {
+  local stderr_path="$1"
+  local cat
+  cat="$(grep -m1 '^category=' "$stderr_path" 2>/dev/null | cut -d= -f2 || true)"
+  [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
+}
+
 log_info "PR ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}"
 
 meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid)"
@@ -76,14 +90,13 @@ else
   log_info "scratch: $SCRATCH"
 fi
 
-gh repo clone "$HEAD_REPO" "$SCRATCH" -- \
-  --quiet --depth=1 --no-tags --branch "$HEAD_REF"
+gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
 (
   cd "$SCRATCH"
-  # Branch tip may have moved since the PR's HEAD; fetch the exact commit if needed.
-  if ! git cat-file -e "$HEAD_OID" 2>/dev/null; then
-    git fetch --quiet --depth=1 origin "$HEAD_OID"
-  fi
+  # PR refs are server-side stable even after the head branch is deleted or
+  # squash-merged into an unreachable SHA. The `--branch $HEAD_REF` shortcut
+  # silently breaks on merged PRs whose branch has since been deleted.
+  git fetch --quiet --depth=1 origin "refs/pull/${PR_NUMBER}/head"
   git checkout --quiet --detach "$HEAD_OID"
 )
 
@@ -96,35 +109,60 @@ PAYLOAD_FILE="$SCRATCH/.pr-review-payload.json"
 ANCHORED_FILE="$SCRATCH/.pr-review-anchored.json"
 UNANCHORED_FILE="$SCRATCH/.pr-review-unanchored.json"
 SUMMARY_FILE="$SCRATCH/.pr-review-summary.txt"
+EXTRACT_ERR="$SCRATCH/.pr-review-extract.err"
+ANCHOR_OUT="$SCRATCH/.pr-review-anchor.out"
+POST_ERR="$SCRATCH/.pr-review-post.err"
 
-log_info "fetching diff"
+log_step "fetching diff"
 gh pr diff "$PR_URL" >"$DIFF_FILE"
 
-log_info "running review agent via claude -p"
+log_step "running review agent via claude -p"
 (
   cd "$SCRATCH"
   claude -p "/review-pr $PR_URL --diff $DIFF_BASENAME" >"$RAW_FILE"
 )
+if [[ ! -s "$RAW_FILE" ]]; then
+  log_failure "empty-stdout" "$PR_URL" "$HEAD_OID" "claude produced no output"
+  exit 1
+fi
 
-log_info "extracting payload"
-python3 "$SCRIPT_DIR/extract-json.py" "$RAW_FILE" >"$PAYLOAD_FILE"
+log_step "extracting payload"
+if ! python3 "$SCRIPT_DIR/extract-json.py" "$RAW_FILE" >"$PAYLOAD_FILE" 2>"$EXTRACT_ERR"; then
+  cat "$EXTRACT_ERR" >&2
+  log_failure "$(extract_category "$EXTRACT_ERR")" "$PR_URL" "$HEAD_OID" "extract-json.py exited non-zero"
+  exit 1
+fi
 
-log_info "anchoring findings"
+log_step "anchoring findings"
 python3 "$SCRIPT_DIR/anchor-findings.py" \
   "$PAYLOAD_FILE" "$DIFF_FILE" \
   --anchored "$ANCHORED_FILE" \
-  --unanchored "$UNANCHORED_FILE"
+  --unanchored "$UNANCHORED_FILE" \
+  >"$ANCHOR_OUT"
+DROPPED_COMBO="$(grep -m1 '^dropped_forbidden_combo=' "$ANCHOR_OUT" | cut -d= -f2 || true)"
+DROPPED_COMBO="${DROPPED_COMBO:-0}"
 
 jq -r '.summary' "$PAYLOAD_FILE" >"$SUMMARY_FILE"
 
-log_info "posting Pending review"
-bash "$SCRIPT_DIR/post-review.sh" \
+log_step "posting Pending review"
+if ! bash "$SCRIPT_DIR/post-review.sh" \
   --owner "$BASE_OWNER" \
   --repo "$BASE_REPO" \
   --number "$PR_NUMBER" \
   --head-sha "$HEAD_OID" \
   --summary-file "$SUMMARY_FILE" \
   --anchored "$ANCHORED_FILE" \
-  --unanchored "$UNANCHORED_FILE"
+  --unanchored "$UNANCHORED_FILE" \
+  --dropped-combo "$DROPPED_COMBO" \
+  2>"$POST_ERR"; then
+  cat "$POST_ERR" >&2
+  category="$(extract_category "$POST_ERR")"
+  reason="gh api POST failed"
+  if [[ "$category" == "pending-conflict" ]]; then
+    reason="existing pending review on PR — submit or cancel via UI before re-running"
+  fi
+  log_failure "$category" "$PR_URL" "$HEAD_OID" "$reason"
+  exit 1
+fi
 
-log_info "done"
+log_step "done"
