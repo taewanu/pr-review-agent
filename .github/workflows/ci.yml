@@ -18,5 +18,5 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: jdx/mise-action@v4
-      - run: pip install -e '.[dev]'
-      - run: pytest -q
+      - run: mise exec -- pip install -e '.[dev]'
+      - run: mise exec -- pytest -q

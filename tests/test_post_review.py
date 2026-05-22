@@ -1,10 +1,10 @@
 """Snapshot test for daemon/post-review.sh's --dry-run payload.
 
 Fixture is `tests/fixtures/post_review_snapshot/` and holds:
-- anchored.json — 2 findings (single-line `important+bug`, range `nit+refactor`)
-- unanchored.json — 1 finding (`pre_existing+polish`) routed to ## Additional findings
-- summary.txt — review summary
-- expected_payload.json — the exact gh api payload the daemon should emit
+- anchored.json: 2 findings (single-line `important+bug`, range `nit+refactor`)
+- unanchored.json: 1 finding (`pre_existing+polish`) routed to ## Additional findings
+- summary.txt: review summary
+- expected_payload.json: the exact gh api payload the daemon should emit
 
 Regenerate the snapshot (e.g. after intentionally changing the format) by:
 
