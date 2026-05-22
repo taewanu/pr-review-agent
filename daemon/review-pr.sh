@@ -95,7 +95,7 @@ python3 "$SCRIPT_DIR/anchor-findings.py" \
 jq -r '.summary' "$PAYLOAD_FILE" >"$SUMMARY_FILE"
 
 log_info "posting Pending review"
-"$SCRIPT_DIR/post-review.sh" \
+bash "$SCRIPT_DIR/post-review.sh" \
   --owner "$BASE_OWNER" \
   --repo "$BASE_REPO" \
   --number "$PR_NUMBER" \
