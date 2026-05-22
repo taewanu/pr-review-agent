@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Parse the trailing ```json fence from claude -p stdout, validate the payload.
-
-Slice 1: happy-path only. Reads stdin (or a file path passed as argv[1]),
-finds the last ```json ... ``` fenced block, validates the payload against the
-ADR 0002 schema, and writes normalized JSON to stdout.
-
-Per ADR 0005, schema/parse failures are system failures: log to stderr and exit
-non-zero. The richer error taxonomy and per-failure messages land in Slice 4.
-"""
+"""Parse the trailing ```json fence from stdin or argv[1], validate, emit JSON."""
 
 import re
 import sys

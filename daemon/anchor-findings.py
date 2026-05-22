@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """Split a review payload into anchored and unanchored findings.
 
-Slice 1: naive passthrough. Every finding is treated as anchored regardless of
-whether its (path, line) actually falls inside a diff hunk. Real `@@`-hunk
-parsing — and the relocation rules per ADR 0005 — land in Slice 2.
-
-Usage:
-    python3 daemon/anchor-findings.py <payload.json> <diff.txt> \
-        --anchored anchored.json --unanchored unanchored.json
-
-The diff path is accepted (and required) so the Slice 1 CLI matches the shape
-the orchestrator and Slice 2 will use, but the file is not read yet.
+The diff arg is accepted for forward-compat with hunk-aware anchoring; the
+current implementation ignores it and marks every finding as anchored.
 """
 
 from __future__ import annotations

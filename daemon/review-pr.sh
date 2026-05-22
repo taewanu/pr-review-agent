@@ -11,8 +11,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck source=daemon/lib.sh
+# shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
+
+for cmd in gh claude jq git python3; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    log_err "missing '$cmd' on PATH"
+    exit 1
+  fi
+done
+if ! gh auth status >/dev/null 2>&1; then
+  log_err "gh not authenticated — run 'gh auth login' first"
+  exit 1
+fi
 
 if [[ $# -ne 1 ]]; then
   log_err "usage: review-pr.sh <pr-url>"
@@ -41,10 +52,8 @@ SCRATCH="$(mktemp -d -t pr-review-agent.XXXXXX)"
 trap 'rm -rf "$SCRATCH"' EXIT
 log_info "scratch: $SCRATCH"
 
-git clone --quiet --depth=1 --no-tags \
-  --branch "$HEAD_REF" \
-  "https://github.com/${HEAD_REPO}.git" \
-  "$SCRATCH"
+gh repo clone "$HEAD_REPO" "$SCRATCH" -- \
+  --quiet --depth=1 --no-tags --branch "$HEAD_REF"
 (
   cd "$SCRATCH"
   # Branch tip may have moved since the PR's HEAD; fetch the exact commit if needed.

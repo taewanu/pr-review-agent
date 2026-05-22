@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
 # post-review.sh — submit the assembled pending review to GitHub via gh api.
-#
-# Slice 1: inline comment bodies are "raw form" — "[severity] [type]\n\n{body}".
-# Slice 3 swaps in severity emoji, bold type label, and an AI-drafted footer.
-# Slice 2 introduces the `## Additional findings` section for unanchored
-# findings; Slice 1 passes everything through as anchored, so unanchored.json is
-# always empty and the section is omitted.
 
 set -euo pipefail
 

@@ -1,17 +1,11 @@
-"""Tests for daemon/extract-json.py.
-
-Slice 1: happy-path only. Slice 2 adds the edge-case coverage listed in
-PRD #3's Testing Decisions (no-fence, malformed JSON, schema-invalid, etc.).
-
-The module is loaded via importlib because the script file is hyphenated
-(`extract-json.py`) — the hyphen blocks normal `import daemon.extract_json`.
-"""
+"""Tests for daemon/extract-json.py."""
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
 
+# Script filename is hyphenated, which blocks `import daemon.extract_json`.
 EXTRACT_PATH = Path(__file__).resolve().parent.parent / "daemon" / "extract-json.py"
 _spec = importlib.util.spec_from_file_location("extract_json", EXTRACT_PATH)
 assert _spec is not None and _spec.loader is not None

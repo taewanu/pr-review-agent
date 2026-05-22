@@ -7,4 +7,4 @@ Dispatch the `review-agent-default` subagent on the PR. Pass through the argumen
 
 Emit the subagent's stdout unchanged. Do not summarize, reformat, or add a wrapping fence — the daemon's `extract-json.py` reads the last ` ```json ` block from the raw output.
 
-Slice 1 dispatches a single hardcoded agent. Phase 3+ will load `.pr-review.yaml`, resolve the `agents:` list, dispatch in parallel, and merge payloads.
+Do not load `.pr-review.yaml` or attempt multi-agent merging here — this command dispatches the one hardcoded agent and forwards its output.

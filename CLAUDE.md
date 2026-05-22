@@ -12,6 +12,18 @@ Uses Python 3.13 + pre-commit 4 + ruff + shellcheck + shfmt + actionlint + gitle
 
 Pre-commit hooks run lint, format, and security checks on staged files. CI mirrors the same hooks via `.github/workflows/ci.yml`.
 
+## Run daemon
+
+Slice 1 ships the end-to-end pipeline as a manual one-shot:
+
+```bash
+bash daemon/review-pr.sh <pr-url>
+```
+
+Prereqs: `gh auth login` (operator identity per ADR 0003), `claude` on PATH, `jq`, `python3`. The daemon preflights and bails with an actionable hint if any are missing.
+
+Polling, `launchd`, and the install wizard are deferred to Phase 3+. V1 targets own-repo PRs only (ADR 0004).
+
 ## Branching
 
 Each slice ships as its own branch and PR into `main`. Squash merges. Conventional commit prefixes (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
