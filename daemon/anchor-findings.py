@@ -6,6 +6,10 @@ anchors comments to new-file lines, so old-file ranges aren't used). A finding
 is anchored when its `path` is in the diff AND its `line` (and optional
 `end_line`) falls inside a hunk on the new side. Range findings must have both
 endpoints in the same hunk — GitHub rejects cross-hunk ranges with 422.
+
+Per ADR 0005, findings whose (severity, type) combo is forbidden are dropped
+before splitting and the count is emitted to stdout so the orchestrator can
+note the degradation in the posted review body.
 """
 
 import argparse
@@ -18,6 +22,10 @@ from pathlib import Path
 DIFF_GIT_RE = re.compile(r"^diff --git a/(?P<old>.+) b/(?P<new>.+)$")
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 BINARY_RE = re.compile(r"^Binary files .+ differ$")
+
+# Combos reserved for surfacing system issues out-of-band — never posted as
+# review comments. Per ADR 0002 + ADR 0005.
+FORBIDDEN_COMBOS: frozenset[tuple[str, str]] = frozenset({("important", "polish")})
 
 
 @dataclass
@@ -58,6 +66,18 @@ class Diff:
         return any(s <= line <= e and s <= end_line <= e for s, e in hunks)
 
 
+def drop_forbidden_combos(findings: list[dict]) -> tuple[list[dict], int]:
+    kept: list[dict] = []
+    dropped = 0
+    for f in findings:
+        combo = (f.get("severity", ""), f.get("type", ""))
+        if combo in FORBIDDEN_COMBOS:
+            dropped += 1
+            continue
+        kept.append(f)
+    return kept, dropped
+
+
 def split_findings(findings: list[dict], diff: Diff) -> tuple[list[dict], list[dict]]:
     anchored: list[dict] = []
     unanchored: list[dict] = []
@@ -82,11 +102,13 @@ def main() -> int:
 
     payload = json.loads(args.payload.read_text())
     findings = payload.get("comments", [])
+    kept, dropped = drop_forbidden_combos(findings)
     diff = Diff.parse(args.diff.read_text())
-    anchored, unanchored = split_findings(findings, diff)
+    anchored, unanchored = split_findings(kept, diff)
 
     args.anchored.write_text(json.dumps(anchored, indent=2) + "\n")
     args.unanchored.write_text(json.dumps(unanchored, indent=2) + "\n")
+    print(f"dropped_forbidden_combo={dropped}")
     return 0
 
 
