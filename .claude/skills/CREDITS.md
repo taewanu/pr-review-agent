@@ -13,6 +13,8 @@ Vendored skills (used under the MIT License reproduced below):
 - improve-codebase-architecture
 - tdd
 - to-issues
+- to-prd
+- triage
 - zoom-out
 
 ---
