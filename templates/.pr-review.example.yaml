@@ -1,7 +1,7 @@
 language: ko
 profile: chill
 
-reviewers:
+agents:
   - default
   - security
 
@@ -21,4 +21,4 @@ instructions: |
   이 프로젝트는 Next.js 15 + TypeScript + Tailwind.
   Server Component / Client Component 경계를 특히 살펴주세요.
 
-max_comments_per_review: 8
+max_findings: 10
