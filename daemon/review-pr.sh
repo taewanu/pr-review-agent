@@ -2,11 +2,8 @@
 # review-pr.sh — process a single PR end-to-end: scratch clone, run claude,
 # extract + anchor the structured payload, post the result as a Pending review.
 #
-# Slice 1 scope: happy-path orchestration. Failure categorization (ADR 0005),
-# real diff anchoring (Slice 2), and rich rendering (Slice 3) land later.
-#
 # Usage:
-#   bash daemon/review-pr.sh <pr-url>
+#   bash daemon/review-pr.sh [--keep-scratch] <pr-url>
 
 set -euo pipefail
 
@@ -25,8 +22,25 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 
+KEEP_SCRATCH=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --keep-scratch)
+      KEEP_SCRATCH=1
+      shift
+      ;;
+    -*)
+      log_err "unknown flag: $1"
+      exit 1
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
 if [[ $# -ne 1 ]]; then
-  log_err "usage: review-pr.sh <pr-url>"
+  log_err "usage: review-pr.sh [--keep-scratch] <pr-url>"
   exit 1
 fi
 
@@ -43,18 +57,24 @@ PR_NUMBER="${BASH_REMATCH[3]}"
 log_info "PR ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}"
 
 meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid)"
-HEAD_REPO="$(jq -r '.headRepositoryOwner.login + "/" + .headRepository.name' <<<"$meta")"
-HEAD_REF="$(jq -r '.headRefName' <<<"$meta")"
-HEAD_OID="$(jq -r '.headRefOid' <<<"$meta")"
-if [[ "$HEAD_REPO" == "/"* || "$HEAD_REPO" == */"" ]]; then
-  log_err "could not resolve head repo from gh pr view output: '$HEAD_REPO'"
+HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
+HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
+HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
+HEAD_OID="$(jq -r '.headRefOid // empty' <<<"$meta")"
+if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HEAD_OID" ]]; then
+  log_err "gh pr view returned incomplete metadata for $PR_URL (closed PR with deleted fork?)"
   exit 1
 fi
+HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
 SCRATCH="$(mktemp -d -t pr-review-agent.XXXXXX)"
-trap 'rm -rf "$SCRATCH"' EXIT
-log_info "scratch: $SCRATCH"
+if [[ $KEEP_SCRATCH -eq 1 ]]; then
+  log_info "scratch (will be preserved): $SCRATCH"
+else
+  trap 'rm -rf "$SCRATCH"' EXIT
+  log_info "scratch: $SCRATCH"
+fi
 
 gh repo clone "$HEAD_REPO" "$SCRATCH" -- \
   --quiet --depth=1 --no-tags --branch "$HEAD_REF"
@@ -67,7 +87,10 @@ gh repo clone "$HEAD_REPO" "$SCRATCH" -- \
   git checkout --quiet --detach "$HEAD_OID"
 )
 
-DIFF_FILE="$SCRATCH/.pr-review-diff.txt"
+# Bare filenames inside the scratch dir. The claude prompt below references the
+# diff by basename so $TMPDIR containing a space can't split the slash-command args.
+DIFF_BASENAME=".pr-review-diff.txt"
+DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
 RAW_FILE="$SCRATCH/.pr-review-raw.txt"
 PAYLOAD_FILE="$SCRATCH/.pr-review-payload.json"
 ANCHORED_FILE="$SCRATCH/.pr-review-anchored.json"
@@ -80,7 +103,7 @@ gh pr diff "$PR_URL" >"$DIFF_FILE"
 log_info "running review agent via claude -p"
 (
   cd "$SCRATCH"
-  claude -p "/review-pr $PR_URL --diff $DIFF_FILE" >"$RAW_FILE"
+  claude -p "/review-pr $PR_URL --diff $DIFF_BASENAME" >"$RAW_FILE"
 )
 
 log_info "extracting payload"
