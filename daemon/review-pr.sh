@@ -3,7 +3,7 @@
 # extract + anchor the structured payload, post the result as a Pending review.
 #
 # Usage:
-#   bash daemon/review-pr.sh [--keep-scratch] [--banner-file <path>] <pr-url>
+#   bash daemon/review-pr.sh [--keep-scratch] <pr-url>
 
 set -euo pipefail
 
@@ -23,16 +23,11 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 KEEP_SCRATCH=0
-BANNER_FILE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --keep-scratch)
       KEEP_SCRATCH=1
       shift
-      ;;
-    --banner-file)
-      BANNER_FILE="$2"
-      shift 2
       ;;
     -*)
       log_err "unknown flag: $1"
@@ -45,12 +40,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -ne 1 ]]; then
-  log_err "usage: review-pr.sh [--keep-scratch] [--banner-file <path>] <pr-url>"
-  exit 1
-fi
-
-if [[ -n "$BANNER_FILE" && ! -r "$BANNER_FILE" ]]; then
-  log_err "--banner-file not readable: $BANNER_FILE"
+  log_err "usage: review-pr.sh [--keep-scratch] <pr-url>"
   exit 1
 fi
 
@@ -128,18 +118,13 @@ python3 "$SCRIPT_DIR/anchor-findings.py" \
 jq -r '.summary' "$PAYLOAD_FILE" >"$SUMMARY_FILE"
 
 log_info "posting Pending review"
-post_args=(
-  --owner "$BASE_OWNER"
-  --repo "$BASE_REPO"
-  --number "$PR_NUMBER"
-  --head-sha "$HEAD_OID"
-  --summary-file "$SUMMARY_FILE"
-  --anchored "$ANCHORED_FILE"
+bash "$SCRIPT_DIR/post-review.sh" \
+  --owner "$BASE_OWNER" \
+  --repo "$BASE_REPO" \
+  --number "$PR_NUMBER" \
+  --head-sha "$HEAD_OID" \
+  --summary-file "$SUMMARY_FILE" \
+  --anchored "$ANCHORED_FILE" \
   --unanchored "$UNANCHORED_FILE"
-)
-if [[ -n "$BANNER_FILE" ]]; then
-  post_args+=(--banner-file "$BANNER_FILE")
-fi
-bash "$SCRIPT_DIR/post-review.sh" "${post_args[@]}"
 
 log_info "done"
