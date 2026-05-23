@@ -47,9 +47,12 @@ The first sentence of every `comments[].body` and the first sentence of `summary
 The first sentence MUST NOT:
 
 - Begin with "This", "The", "It", or a demonstrative reference to the diff being reviewed.
+- Open with bold markdown (`**…**`). Lead with the words, not the typography.
 - Open with a quotation of the diff.
 - Describe what the code or text does before stating what you want changed.
 - Use "Worth…", "Suggest…", "Please…", "Consider…", "Maybe…" as openings.
+
+The bold and word-opener rules above (everything except quotation and "describe before request") are hard-enforced post-hoc by `daemon/extract-json.py` (`FORBIDDEN_PREFIXES`). Keep the two lists in sync when editing either side.
 
 ### Other rules
 

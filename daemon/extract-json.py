@@ -11,6 +11,20 @@ from pydantic import BaseModel, ValidationError, model_validator
 
 FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 MAX_FINDINGS = 10
+EM_DASH = "—"
+# Openers the voice prompt forbids for both `summary` and `comments[].body`.
+# Trailing space distinguishes "This " (demonstrative opener) from words like "Think".
+FORBIDDEN_PREFIXES = (
+    "**",
+    "This ",
+    "The ",
+    "It ",
+    "Worth ",
+    "Suggest ",
+    "Please ",
+    "Consider ",
+    "Maybe ",
+)
 
 
 class ExtractError(Exception):
@@ -58,11 +72,38 @@ def extract(raw: str) -> ReviewPayload:
         payload = ReviewPayload.model_validate(data)
     except ValidationError as exc:
         raise ExtractError("schema-invalid", str(exc)) from exc
+    # Style first, cap second: with N>cap em-dash findings, surface the voice
+    # problem before the count noise — culling to N=cap doesn't fix em-dashes.
+    _validate_style(payload)
     if len(payload.comments) > MAX_FINDINGS:
         raise ExtractError(
             "cap-violation", f"too many findings: {len(payload.comments)} > cap {MAX_FINDINGS}"
         )
     return payload
+
+
+def _forbidden_prefix(text: str) -> str | None:
+    stripped = text.lstrip()
+    for prefix in FORBIDDEN_PREFIXES:
+        if stripped.startswith(prefix):
+            return prefix
+    return None
+
+
+def _validate_style(payload: ReviewPayload) -> None:
+    """Post-hoc voice checks. Routes through ADR 0005 as a system failure."""
+    violations: list[str] = []
+    if EM_DASH in payload.summary:
+        violations.append("summary contains em dash")
+    if (prefix := _forbidden_prefix(payload.summary)) is not None:
+        violations.append(f"summary opens with forbidden prefix {prefix.rstrip()!r}")
+    for i, c in enumerate(payload.comments):
+        if EM_DASH in c.body:
+            violations.append(f"comments[{i}].body contains em dash")
+        if (prefix := _forbidden_prefix(c.body)) is not None:
+            violations.append(f"comments[{i}].body opens with forbidden prefix {prefix.rstrip()!r}")
+    if violations:
+        raise ExtractError("style-violation", "; ".join(violations))
 
 
 def main() -> int:

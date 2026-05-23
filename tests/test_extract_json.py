@@ -48,7 +48,7 @@ Thinking out loud about the diff here...
       "line": 42,
       "severity": "nit",
       "type": "polish",
-      "body": "`tmp` reads as throwaway — `parsed_payload` would carry the intent."
+      "body": "`tmp` reads as throwaway. `parsed_payload` would carry the intent."
     }
   ]
 }
@@ -161,3 +161,121 @@ def test_end_line_less_than_line_raises_schema_invalid():
     with pytest.raises(ExtractError) as exc_info:
         extract_json.extract(raw)
     assert exc_info.value.category == "schema-invalid"
+
+
+def test_em_dash_in_summary_raises_style_violation():
+    raw = _wrap({"summary": "Solid diff — one nit.", "comments": []})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+    assert "summary" in str(exc_info.value)
+
+
+def test_em_dash_in_comment_body_raises_style_violation():
+    f = _minimal_finding(body="Rename `tmp` — clearer intent.")
+    raw = _wrap({"summary": "x", "comments": [f]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+    assert "comments[0]" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "**bold lead** then prose.",
+        "This carries the wrong invariant.",
+        "The helper reads as dead code.",
+        "It would be clearer to split.",
+        "Worth splitting into two bullets.",
+        "Suggest renaming `tmp`.",
+        "Please add a comment here.",
+        "Consider splitting this finding.",
+        "Maybe rename `tmp`.",
+    ],
+)
+def test_forbidden_body_prefix_raises_style_violation(opener):
+    f = _minimal_finding(body=opener)
+    raw = _wrap({"summary": "x", "comments": [f]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "**bold lead** then prose.",
+        "This summary opens demonstratively.",
+        "The asymmetry is the load-bearing gap.",
+        "It would be clearer to split.",
+        "Worth splitting into two bullets.",
+        "Suggest renaming `tmp`.",
+        "Please add a comment here.",
+        "Consider splitting this finding.",
+        "Maybe rephrase.",
+    ],
+)
+def test_forbidden_summary_prefix_raises_style_violation(opener):
+    raw = _wrap({"summary": opener, "comments": []})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+    assert "summary" in str(exc_info.value)
+
+
+def test_forbidden_prefix_with_leading_whitespace_still_rejected():
+    f = _minimal_finding(body="  This still trips the check.")
+    raw = _wrap({"summary": "x", "comments": [f]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+
+
+def test_forbidden_prefix_only_matches_with_trailing_space():
+    # `This ` is forbidden; `Thinking` (substring without word boundary) is fine.
+    f = _minimal_finding(body="Thinking about the rename, `parsed_payload` reads cleaner.")
+    raw = _wrap({"summary": "x", "comments": [f]})
+    payload = extract_json.extract(raw)
+    assert payload.comments[0].body.startswith("Thinking")
+
+
+def test_forbidden_prefix_is_case_sensitive():
+    # Lowercase `the ` mid-sentence is fine; the check is for sentence openers.
+    f = _minimal_finding(body="Rename to match the helper above.")
+    raw = _wrap({"summary": "x", "comments": [f]})
+    payload = extract_json.extract(raw)
+    assert payload.comments[0].body.startswith("Rename")
+
+
+def test_multiple_style_violations_reported_together():
+    f1 = _minimal_finding(line=10, body="This is wrong.")
+    f2 = _minimal_finding(line=20, body="Rename with an em dash — like so.")
+    raw = _wrap({"summary": "Solid — but...", "comments": [f1, f2]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+    msg = str(exc_info.value)
+    assert "summary" in msg
+    assert "comments[0]" in msg
+    assert "comments[1]" in msg
+
+
+def test_style_fires_before_cap_when_both_apply():
+    # 11 em-dash findings: style is the root cause; cap is downstream noise.
+    # Operator should see the voice problem first, not be told to cull one.
+    bad = [
+        _minimal_finding(line=i, body="Rename `tmp` — clearer intent.")
+        for i in range(1, extract_json.MAX_FINDINGS + 2)
+    ]
+    raw = _wrap({"summary": "x", "comments": bad})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+
+
+def test_clean_payload_passes_style_check():
+    f = _minimal_finding(body="Rename `tmp` to `parsed_payload`. Carries intent.")
+    raw = _wrap({"summary": "Solid diff. One naming nit.", "comments": [f]})
+    payload = extract_json.extract(raw)
+    assert payload.comments[0].body.startswith("Rename")
