@@ -30,9 +30,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "post_review_snapshot"
 DAEMON = REPO_ROOT / "daemon"
+# Scrub these from the inherited env so the default-path snapshot test exercises
+# the daemon's defaults, not whatever the operator (or CI) has exported.
+_OVERRIDE_KEYS = ("PR_REVIEW_PROJECT_URL", "PR_REVIEW_PROJECT_NAME")
+CANONICAL_FOOTER_LINK = "[pr-review-agent](https://github.com/taewanu/pr-review-agent)"
 
 
 def _run_post_review(*extra_args: str, env: dict | None = None) -> dict:
+    base_env = {k: v for k, v in os.environ.items() if k not in _OVERRIDE_KEYS}
     result = subprocess.run(
         [
             "bash",
@@ -57,7 +62,7 @@ def _run_post_review(*extra_args: str, env: dict | None = None) -> dict:
         capture_output=True,
         text=True,
         check=True,
-        env={**os.environ, **(env or {})},
+        env={**base_env, **(env or {})},
     )
     return json.loads(result.stdout)
 
@@ -91,4 +96,19 @@ def test_footer_honors_env_overrides():
         }
     )
     assert "[myfork-review-agent](https://github.com/myfork/pr-review-agent)" in actual["body"]
-    assert "taewanu" not in actual["body"]
+    assert CANONICAL_FOOTER_LINK not in actual["body"]
+
+
+def test_footer_with_url_only_override_keeps_default_name():
+    # Half-rebrand case: forker sets URL, forgets NAME. Pin the literal mix so a
+    # future "link URL and name from one env var" refactor doesn't silently
+    # change what ships.
+    actual = _run_post_review(
+        env={"PR_REVIEW_PROJECT_URL": "https://github.com/myfork/pr-review-agent"}
+    )
+    assert "[pr-review-agent](https://github.com/myfork/pr-review-agent)" in actual["body"]
+
+
+def test_footer_with_name_only_override_keeps_default_url():
+    actual = _run_post_review(env={"PR_REVIEW_PROJECT_NAME": "myfork-review-agent"})
+    assert "[myfork-review-agent](https://github.com/taewanu/pr-review-agent)" in actual["body"]

@@ -116,6 +116,8 @@ fi
 # via PR_REVIEW_PROJECT_URL / PR_REVIEW_PROJECT_NAME (defaults match canonical).
 # The leading `\n\n---\n\n` detaches the footer from whatever ends the body
 # (summary, dropped-note, `## Additional findings`, or nothing).
+# `:-` (not `-`) is deliberate: an empty PR_REVIEW_PROJECT_NAME falls back to
+# the canonical default rather than rendering `[]()`.
 project_url="${PR_REVIEW_PROJECT_URL:-https://github.com/taewanu/pr-review-agent}"
 project_name="${PR_REVIEW_PROJECT_NAME:-pr-review-agent}"
 footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
