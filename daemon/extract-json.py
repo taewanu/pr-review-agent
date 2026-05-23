@@ -12,10 +12,10 @@ from pydantic import BaseModel, ValidationError, model_validator
 FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 MAX_FINDINGS = 10
 EM_DASH = "—"
-# Openers the voice prompt forbids in `comments[].body`. RLHF-trained Claude
-# resists removing them via prompt alone, so reject post-hoc. Trailing space
-# distinguishes "This " (demonstrative opener) from words like "Think".
-FORBIDDEN_BODY_PREFIXES = (
+# Openers the voice prompt forbids for both `summary` and `comments[].body`.
+# RLHF-trained Claude resists removing them via prompt alone, so reject post-hoc.
+# Trailing space distinguishes "This " (demonstrative opener) from words like "Think".
+FORBIDDEN_PREFIXES = (
     "**",
     "This ",
     "The ",
@@ -81,21 +81,26 @@ def extract(raw: str) -> ReviewPayload:
     return payload
 
 
+def _forbidden_prefix(text: str) -> str | None:
+    stripped = text.lstrip()
+    for prefix in FORBIDDEN_PREFIXES:
+        if stripped.startswith(prefix):
+            return prefix
+    return None
+
+
 def _validate_style(payload: ReviewPayload) -> None:
     """Post-hoc voice checks. Routes through ADR 0005 as a system failure."""
     violations: list[str] = []
     if EM_DASH in payload.summary:
         violations.append("summary contains em dash")
+    if (prefix := _forbidden_prefix(payload.summary)) is not None:
+        violations.append(f"summary opens with forbidden prefix {prefix.rstrip()!r}")
     for i, c in enumerate(payload.comments):
         if EM_DASH in c.body:
             violations.append(f"comments[{i}].body contains em dash")
-        body = c.body.lstrip()
-        for prefix in FORBIDDEN_BODY_PREFIXES:
-            if body.startswith(prefix):
-                violations.append(
-                    f"comments[{i}].body opens with forbidden prefix {prefix.rstrip()!r}"
-                )
-                break
+        if (prefix := _forbidden_prefix(c.body)) is not None:
+            violations.append(f"comments[{i}].body opens with forbidden prefix {prefix.rstrip()!r}")
     if violations:
         raise ExtractError("style-violation", "; ".join(violations))
 

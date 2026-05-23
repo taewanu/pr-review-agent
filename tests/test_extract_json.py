@@ -202,6 +202,28 @@ def test_forbidden_body_prefix_raises_style_violation(opener):
     assert exc_info.value.category == "style-violation"
 
 
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "**bold lead** then prose.",
+        "This summary opens demonstratively.",
+        "The asymmetry is the load-bearing gap.",
+        "It would be clearer to split.",
+        "Worth splitting into two bullets.",
+        "Suggest renaming `tmp`.",
+        "Please add a comment here.",
+        "Consider splitting this finding.",
+        "Maybe rephrase.",
+    ],
+)
+def test_forbidden_summary_prefix_raises_style_violation(opener):
+    raw = _wrap({"summary": opener, "comments": []})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+    assert "summary" in str(exc_info.value)
+
+
 def test_forbidden_prefix_with_leading_whitespace_still_rejected():
     f = _minimal_finding(body="  This still trips the check.")
     raw = _wrap({"summary": "x", "comments": [f]})
