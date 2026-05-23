@@ -261,6 +261,19 @@ def test_multiple_style_violations_reported_together():
     assert "comments[1]" in msg
 
 
+def test_style_fires_before_cap_when_both_apply():
+    # 11 em-dash findings: style is the root cause; cap is downstream noise.
+    # Operator should see the voice problem first, not be told to cull one.
+    bad = [
+        _minimal_finding(line=i, body="Rename `tmp` — clearer intent.")
+        for i in range(1, extract_json.MAX_FINDINGS + 2)
+    ]
+    raw = _wrap({"summary": "x", "comments": bad})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+
+
 def test_clean_payload_passes_style_check():
     f = _minimal_finding(body="Rename `tmp` to `parsed_payload`. Carries intent.")
     raw = _wrap({"summary": "Solid diff. One naming nit.", "comments": [f]})

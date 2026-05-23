@@ -36,7 +36,7 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 | Trailing JSON fence missing | system | exit non-zero, no post |
 | JSON parse error | system | exit non-zero, no post |
 | Schema invalid (required missing, enum off) | system | exit non-zero, no post |
-| Style violation (em dash or forbidden body opener) | system | exit non-zero, no post |
+| Style violation: `style-violation` (em dash, or forbidden opener in summary or comment body) | system | exit non-zero, no post |
 | Forbidden combo (`polish + important`) | per-finding | drop, note in summary, post remaining |
 | `line` outside diff | per-finding | move body to summary's `## Additional findings` section, post remaining |
 

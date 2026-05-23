@@ -52,6 +52,8 @@ The first sentence MUST NOT:
 - Describe what the code or text does before stating what you want changed.
 - Use "Worth…", "Suggest…", "Please…", "Consider…", "Maybe…" as openings.
 
+The bold and word-opener rules above (everything except quotation and "describe before request") are hard-enforced post-hoc by `daemon/extract-json.py` (`FORBIDDEN_PREFIXES`). Keep the two lists in sync when editing either side.
+
 ### Other rules
 
 - **Target 1–3 sentences per finding.** At four sentences you are explaining instead of pointing.
