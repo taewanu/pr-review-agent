@@ -112,10 +112,13 @@ if [[ "$DROPPED_COMBO" -gt 0 ]]; then
   dropped_note=$'\n\n'"_${DROPPED_COMBO} ${noun} dropped (forbidden severity×type combo)._"
 fi
 
-# Review-body footer per ADR 0001 D3. Hardcoded project URL; forks change this
-# one constant. The leading `\n\n---\n\n` detaches the footer from whatever
-# ends the body (summary, dropped-note, `## Additional findings`, or nothing).
-footer=$'\n\n---\n\n🤖 Drafted by [pr-review-agent](https://github.com/taewanu/pr-review-agent). Submit, edit, or cancel as needed.'
+# Review-body footer per ADR 0001 D3. Forks override the link target and text
+# via PR_REVIEW_PROJECT_URL / PR_REVIEW_PROJECT_NAME (defaults match canonical).
+# The leading `\n\n---\n\n` detaches the footer from whatever ends the body
+# (summary, dropped-note, `## Additional findings`, or nothing).
+project_url="${PR_REVIEW_PROJECT_URL:-https://github.com/taewanu/pr-review-agent}"
+project_name="${PR_REVIEW_PROJECT_NAME:-pr-review-agent}"
+footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
 
 # Render unanchored findings into a Markdown section appended to the review body.
 # `## Additional findings` is the canonical relocation surface per ADR 0005.

@@ -24,6 +24,15 @@ Prereqs: `gh auth login` (operator identity per ADR 0003), `claude` on PATH, `jq
 
 Polling, `launchd`, and the install wizard are deferred to Phase 3+. V1 targets own-repo PRs only (ADR 0004).
 
+## Forking
+
+The Review-body footer link defaults to this repo. Forks override without touching daemon source:
+
+- `PR_REVIEW_PROJECT_URL` — footer link target (default: `https://github.com/taewanu/pr-review-agent`)
+- `PR_REVIEW_PROJECT_NAME` — footer link text (default: `pr-review-agent`)
+
+Set both in the operator's shell env or `launchd` plist. Per-repo `.pr-review.yaml` overrides are deferred until config loading lands.
+
 ## Branching
 
 Each slice ships as its own branch and PR into `main`. Squash merges. Conventional commit prefixes (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).

@@ -23,6 +23,7 @@ redirecting to `expected_payload_dropped_2.json`.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -31,7 +32,7 @@ FIXTURE = REPO_ROOT / "tests" / "fixtures" / "post_review_snapshot"
 DAEMON = REPO_ROOT / "daemon"
 
 
-def _run_post_review(*extra_args: str) -> dict:
+def _run_post_review(*extra_args: str, env: dict | None = None) -> dict:
     result = subprocess.run(
         [
             "bash",
@@ -56,6 +57,7 @@ def _run_post_review(*extra_args: str) -> dict:
         capture_output=True,
         text=True,
         check=True,
+        env={**os.environ, **(env or {})},
     )
     return json.loads(result.stdout)
 
@@ -79,3 +81,14 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
         "post-review.sh --dry-run --dropped-combo 2 payload drifted from snapshot. "
         "Regenerate per the docstring if the change was intentional."
     )
+
+
+def test_footer_honors_env_overrides():
+    actual = _run_post_review(
+        env={
+            "PR_REVIEW_PROJECT_URL": "https://github.com/myfork/pr-review-agent",
+            "PR_REVIEW_PROJECT_NAME": "myfork-review-agent",
+        }
+    )
+    assert "[myfork-review-agent](https://github.com/myfork/pr-review-agent)" in actual["body"]
+    assert "taewanu" not in actual["body"]
