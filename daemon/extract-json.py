@@ -11,6 +11,21 @@ from pydantic import BaseModel, ValidationError, model_validator
 
 FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 MAX_FINDINGS = 10
+EM_DASH = "—"
+# Openers the voice prompt forbids in `comments[].body`. RLHF-trained Claude
+# resists removing them via prompt alone, so reject post-hoc. Trailing space
+# distinguishes "This " (demonstrative opener) from words like "Think".
+FORBIDDEN_BODY_PREFIXES = (
+    "**",
+    "This ",
+    "The ",
+    "It ",
+    "Worth ",
+    "Suggest ",
+    "Please ",
+    "Consider ",
+    "Maybe ",
+)
 
 
 class ExtractError(Exception):
@@ -62,7 +77,27 @@ def extract(raw: str) -> ReviewPayload:
         raise ExtractError(
             "cap-violation", f"too many findings: {len(payload.comments)} > cap {MAX_FINDINGS}"
         )
+    _validate_style(payload)
     return payload
+
+
+def _validate_style(payload: ReviewPayload) -> None:
+    """Post-hoc voice checks. Routes through ADR 0005 as a system failure."""
+    violations: list[str] = []
+    if EM_DASH in payload.summary:
+        violations.append("summary contains em dash")
+    for i, c in enumerate(payload.comments):
+        if EM_DASH in c.body:
+            violations.append(f"comments[{i}].body contains em dash")
+        body = c.body.lstrip()
+        for prefix in FORBIDDEN_BODY_PREFIXES:
+            if body.startswith(prefix):
+                violations.append(
+                    f"comments[{i}].body opens with forbidden prefix {prefix.rstrip()!r}"
+                )
+                break
+    if violations:
+        raise ExtractError("style-violation", "; ".join(violations))
 
 
 def main() -> int:
