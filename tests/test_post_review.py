@@ -7,18 +7,22 @@ Fixture is `tests/fixtures/post_review_snapshot/` and holds:
 - expected_payload.json: payload when no findings were dropped (default path)
 - expected_payload_dropped_2.json: payload when 2 forbidden-combo findings were dropped
 
-Snapshots are pinned to canonical (`taewanu/pr-review-agent`) identity, which
-the daemon derives automatically from `git remote get-url origin` of the
-checkout. Snapshots pass on the canonical clone (and canonical CI). A fork
-that runs these tests will see derive return the fork's identity, snapshots
-will fail, and the fork should regenerate them:
+Snapshots are pinned to whatever identity the daemon derives from
+`git remote get-url origin` of the checkout where they were generated. The
+checked-in fixtures match the canonical (`taewanu/pr-review-agent`) clone.
+A fork that runs these tests will see derive return the fork's identity,
+snapshots will fail, and the fork should regenerate them from their checkout:
 
-    bash daemon/post-review.sh --owner taewanu --repo pr-review-agent --number 999 \\
+    bash daemon/post-review.sh --owner <owner> --repo <repo> --number 0 \\
         --summary-file tests/fixtures/post_review_snapshot/summary.txt \\
         --anchored tests/fixtures/post_review_snapshot/anchored.json \\
         --unanchored tests/fixtures/post_review_snapshot/unanchored.json \\
         --head-sha abc123def456 --dry-run \\
         > tests/fixtures/post_review_snapshot/expected_payload.json
+
+`--owner`/`--repo`/`--number` are required CLI flags but feed only the API
+endpoint URL, which `--dry-run` skips — they do not affect the payload, so
+any values work for regen.
 
 Regenerate the dropped-combo snapshot by appending `--dropped-combo 2` and
 redirecting to `expected_payload_dropped_2.json`.
