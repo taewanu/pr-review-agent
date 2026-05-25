@@ -48,6 +48,10 @@ CANONICAL_ENV = {
 
 def _run_post_review(*extra_args: str, env: dict | None = None, check: bool = True):
     base_env = {k: v for k, v in os.environ.items() if k not in _OVERRIDE_KEYS}
+    # Disable .env loading by default so a developer's local .env can't
+    # contaminate test results. Specific tests can re-enable by passing
+    # `env={"PR_REVIEW_ENV_FILE": "<path>", ...}`.
+    base_env["PR_REVIEW_ENV_FILE"] = "/dev/null"
     return subprocess.run(
         [
             "bash",
@@ -133,3 +137,32 @@ def test_missing_required_env_var_exits_non_zero(env, missing_var):
     assert result.returncode != 0
     assert missing_var in result.stderr
     assert "required" in result.stderr
+
+
+def test_env_file_supplies_project_identity(tmp_path):
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        "PR_REVIEW_PROJECT_URL=https://github.com/fromfile/repo\n"
+        "PR_REVIEW_PROJECT_NAME=fromfile-name\n"
+    )
+    body = _payload(env={"PR_REVIEW_ENV_FILE": str(env_file)})["body"]
+    assert "[fromfile-name](https://github.com/fromfile/repo)" in body
+
+
+def test_shell_env_wins_over_env_file(tmp_path):
+    # `.env` is the persistent source of truth, but an inline `VAR=…` invocation
+    # must override it for one-off testing (option (a) precedence).
+    env_file = tmp_path / "test.env"
+    env_file.write_text(
+        "PR_REVIEW_PROJECT_URL=https://github.com/fromfile/repo\n"
+        "PR_REVIEW_PROJECT_NAME=fromfile-name\n"
+    )
+    body = _payload(
+        env={
+            "PR_REVIEW_ENV_FILE": str(env_file),
+            "PR_REVIEW_PROJECT_URL": "https://github.com/fromshell/repo",
+            "PR_REVIEW_PROJECT_NAME": "fromshell-name",
+        }
+    )["body"]
+    assert "[fromshell-name](https://github.com/fromshell/repo)" in body
+    assert "fromfile" not in body, "shell env must win over .env file"

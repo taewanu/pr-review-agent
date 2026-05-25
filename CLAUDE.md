@@ -26,19 +26,29 @@ Polling, `launchd`, and the install wizard are deferred to Phase 3+. V1 targets 
 
 ## Forking
 
-Two env vars are **required** for `post-review.sh` to run. The daemon refuses to start without them so a fork can never silently advertise the upstream project in its own PRs:
+Two env vars are **required**. The daemon refuses to start without them so a fork can never silently advertise the upstream project in its own PRs:
 
 - `PR_REVIEW_PROJECT_URL` — repo URL surfaced in the Review-body footer link and the preview-release banner
 - `PR_REVIEW_PROJECT_NAME` — display name used in the same two places
 
-Canonical `taewanu/pr-review-agent` install sets:
+Setup (once per clone):
 
 ```sh
-export PR_REVIEW_PROJECT_URL=https://github.com/taewanu/pr-review-agent
-export PR_REVIEW_PROJECT_NAME=pr-review-agent
+cp .env.example .env
+# Edit .env to fill in your values
 ```
 
-Forks set their own values. Put both in the operator's shell profile or `launchd` plist. Per-repo `.pr-review.yaml` overrides are deferred until config loading lands.
+`.env` is gitignored and auto-loaded from the repo root by both `daemon/review-pr.sh` and `daemon/post-review.sh` before any other work. Shell env wins over `.env`, so for one-off overrides (testing a fork's branding without editing the file):
+
+```sh
+PR_REVIEW_PROJECT_URL=https://github.com/some/fork \
+PR_REVIEW_PROJECT_NAME=some-fork \
+bash daemon/review-pr.sh <pr-url>
+```
+
+Tests disable `.env` loading via `PR_REVIEW_ENV_FILE=/dev/null` so a developer's local config can't contaminate snapshot fixtures.
+
+Per-repo `.pr-review.yaml` overrides are deferred until config loading lands.
 
 ## Branching
 

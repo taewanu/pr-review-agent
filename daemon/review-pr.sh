@@ -11,6 +11,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
+# Load .env from repo root before validating required vars. Tests disable via
+# PR_REVIEW_ENV_FILE=/dev/null so a developer's local .env doesn't leak in.
+load_env_file "${PR_REVIEW_ENV_FILE:-$SCRIPT_DIR/../.env}"
+
 for cmd in gh claude jq git python3; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log_err "missing '$cmd' on PATH"
