@@ -38,4 +38,50 @@ Both fields are produced by the review agent in the structured output and transl
   Forbidden combinations are blocked in the review agent's prompt; rare and low-signal cases are discouraged in the prompt but not blocked.
 - A 4-level severity (CodeRabbit's `critical | major | minor | trivial`) was rejected: the boundary between `major` and `minor` is fuzzy under LLM generation, and the PR author's decision is closer to a 3-way fork.
 - A `nitpick` value that conflates type and severity (CodeRabbit's pattern) was rejected: keeping the axes orthogonal lets a refactor be `important` when it must, and a bug be `nit` when it is an edge case.
-- Rendering is the daemon's responsibility: `severity` translates to an emoji prefix (🔴 Important / 🟡 Nit / 🟣 Pre-existing) and `type` to a bolded label in the posted comment body. The review agent's output stays semantic and presentation-free — voice, tone, and nuance affect body wording only, not the structured fields.
+- Rendering is the daemon's responsibility. The review agent's output stays semantic and presentation-free — voice, tone, and nuance affect body wording only, not the structured fields.
+
+## Rendering
+
+The daemon translates each finding into two visible surfaces:
+
+### Header — type first, severity second
+
+Both dimensions render as parallel `<emoji> <label>` tokens separated by a pipe. Neither dimension is bolder than the other:
+
+```
+🐛 bug | 🔴 important
+🔧 refactor | 🟡 nit
+✨ polish | 🟡 nit
+🐛 bug | 🟣 pre_existing
+```
+
+Order matters: type (*what kind*) first, severity (*how severe*) second. A reader scanning a long review can separate the two axes at a glance.
+
+The emoji maps:
+
+| dimension | value | emoji |
+| --- | --- | --- |
+| `type` | `bug` | 🐛 |
+| `type` | `refactor` | 🔧 |
+| `type` | `polish` | ✨ |
+| `severity` | `important` | 🔴 |
+| `severity` | `nit` | 🟡 |
+| `severity` | `pre_existing` | 🟣 |
+
+`pre_existing` is severity-only; the type axis still applies (a pre-existing bug renders as `🐛 bug | 🟣 pre_existing`).
+
+### Body — bold lead, optional bullets
+
+The first non-empty line is the actionable conclusion in **bold**. Optional 2–4 bullets follow with mechanism, evidence, and suggested fix. Short findings skip the bullets:
+
+```
+🐛 bug | 🔴 important
+
+**Drop `session.token` from the warning log.**
+
+- `[^/.]+` rejects dots; GitHub allows them
+- Effect: `my.cool.repo` falls through to env-var error
+- Fix: loosen to `[^/]+?` + strip a trailing `.git` after match
+```
+
+Bullets are 0 or 2–4, never one. A single bullet is just a sentence with extra weight. The bold first line enforces 두괄식 (lead with the point) structurally — the visible shape carries the rule, not only the prompt examples. Post-hoc validation in `daemon/extract-json.py` is the safety net; the review-agent prompt teaches the shape and the validator catches drift.

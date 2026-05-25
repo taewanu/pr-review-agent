@@ -183,7 +183,6 @@ def test_em_dash_in_comment_body_raises_style_violation():
 @pytest.mark.parametrize(
     "opener",
     [
-        "**bold lead** then prose.",
         "This carries the wrong invariant.",
         "The helper reads as dead code.",
         "It would be clearer to split.",
@@ -200,6 +199,15 @@ def test_forbidden_body_prefix_raises_style_violation(opener):
     with pytest.raises(ExtractError) as exc_info:
         extract_json.extract(raw)
     assert exc_info.value.category == "style-violation"
+
+
+def test_bold_lead_body_passes_style_check():
+    # Body shape per ADR 0002 leads with a bold sentence. `**` is forbidden
+    # only on summary, not on comments[].body.
+    f = _minimal_finding(body="**Rename `tmp` to `parsed_payload`.** Carries the intent.")
+    raw = _wrap({"summary": "Solid diff. One nit.", "comments": [f]})
+    payload = extract_json.extract(raw)
+    assert payload.comments[0].body.startswith("**Rename")
 
 
 @pytest.mark.parametrize(

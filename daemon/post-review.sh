@@ -124,18 +124,25 @@ fi
 # body (summary, dropped-note, `## Additional findings`, or nothing).
 footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
 
+# Severity and type emoji maps per ADR 0002. Single-sourced here so the
+# Additional-findings render and the inline-comments render stay in lockstep.
+SEV_EMOJI='{"important":"🔴","nit":"🟡","pre_existing":"🟣"}'
+TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨"}'
+
 # Render unanchored findings into a Markdown section appended to the review body.
 # `## Additional findings` is the canonical relocation surface per ADR 0005.
-# Severity → emoji map per ADR 0002 (same map inlined in inline-comments jq below).
-additional="$(jq -r '
+# Header shape per ADR 0002: `<type-emoji> <type> | <severity-emoji> <severity>`.
+additional="$(jq -r --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
   if length == 0 then ""
   else "\n\n## Additional findings\n\n" + (
     map(
       "- `" + .path + ":" + (.line | tostring) +
       (if .end_line and .end_line != .line then "-" + (.end_line | tostring) else "" end) +
       "` " +
-      ({"important": "🔴", "nit": "🟡", "pre_existing": "🟣"}[.severity] // "❓") +
-      " **" + .type + "**\n\n  " + .body
+      ($typ[.type] // "❓") + " " + .type +
+      " | " +
+      ($sev[.severity] // "❓") + " " + .severity +
+      "\n\n  " + .body
     ) | join("\n\n")
   )
   end
@@ -145,15 +152,18 @@ body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}"
 
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
-# Inline body format per ADR 0002: severity emoji + bold type label + body + AI-drafted footer.
-comments_json="$(jq '
+# Inline body format per ADR 0002: type-first header, then the agent's body
+# (bold lead + optional bullets), then the AI-drafted footer.
+comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
   map(
     {
       path: .path,
       side: "RIGHT",
       body: (
-        ({"important": "🔴", "nit": "🟡", "pre_existing": "🟣"}[.severity] // "❓") +
-        " **" + .type + "**\n\n" + .body +
+        ($typ[.type] // "❓") + " " + .type +
+        " | " +
+        ($sev[.severity] // "❓") + " " + .severity +
+        "\n\n" + .body +
         "\n\n---\n\n🤖 _AI-drafted_"
       )
     }
