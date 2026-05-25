@@ -90,11 +90,9 @@ if ! [[ "$DROPPED_COMBO" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# Project identity for the footer/banner. derive_project_identity prefers
-# PR_REVIEW_PROJECT_URL/NAME env vars, then falls back to parsing the git
-# origin of this checkout. Forks running from a normal git clone get correct
-# identity with zero config; env vars exist only for ad-hoc override or
-# non-git installs.
+# Project identity for the footer/banner, derived from this checkout's git
+# remote. Any fork running from a normal clone gets its own identity with
+# zero config.
 derive_project_identity "$(dirname "$0")/.."
 project_url="$PROJECT_URL"
 project_name="$PROJECT_NAME"

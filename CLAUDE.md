@@ -28,18 +28,7 @@ Polling, `launchd`, and the install wizard are deferred to Phase 3+. V1 targets 
 
 Project identity (footer link + preview-release banner) is auto-derived from `git remote get-url origin` of the checkout. A normal `git clone` of any fork picks up the correct owner/repo with zero config — `taewanu/pr-review-agent`'s clone advertises itself; `myorg/my-fork`'s clone advertises itself.
 
-Two env vars are honored as overrides for ad-hoc testing or non-git installs:
-
-- `PR_REVIEW_PROJECT_URL` — overrides the derived repo URL
-- `PR_REVIEW_PROJECT_NAME` — overrides the derived display name
-
-```sh
-PR_REVIEW_PROJECT_URL=https://github.com/some/fork \
-PR_REVIEW_PROJECT_NAME=some-fork \
-bash daemon/review-pr.sh <pr-url>
-```
-
-The daemon fails with an actionable error only if neither source yields values (rare: tarball install with no remote and no env vars).
+The daemon fails with an actionable error only if origin is missing or unparseable (rare: tarball install or non-github remote). To fix, configure a github.com origin: `git remote add origin <url>`.
 
 ## Branching
 

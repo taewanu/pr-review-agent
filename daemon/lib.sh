@@ -25,23 +25,28 @@ log_failure() {
 }
 
 # derive_project_identity <repo-root>
-# Resolves the project URL and display name for the footer/banner from, in
-# order: PR_REVIEW_PROJECT_URL/NAME env vars (operator override), then the
-# git origin remote of <repo-root>. Sets PROJECT_URL and PROJECT_NAME globals.
-# Returns non-zero with an actionable error if neither source yields values
-# (rare: tarball install with no git remote and no env vars).
+# Sets PROJECT_URL and PROJECT_NAME by parsing `git remote get-url origin` of
+# <repo-root>. Any fork running from a normal git clone gets correct identity
+# with zero config — canonical clone advertises itself; fork clone advertises
+# itself. Returns non-zero with an actionable error if the origin is missing
+# or not a parseable github.com URL.
+#
+# Greedy match (no lazy `+?` — POSIX ERE on macOS doesn't support it) captures
+# everything after `owner/`, then the `%.git` suffix-strip drops the optional
+# `.git`. This keeps dots in real repo names like `chartjs/Chart.js`.
+# shellcheck disable=SC2034  # PROJECT_URL/NAME are consumed by callers after sourcing lib.sh
 derive_project_identity() {
   local repo_root="$1"
-  local remote_url="" derived_owner="" derived_repo=""
-  remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || true
-  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+  local remote_url derived_owner derived_repo
+  remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || remote_url=""
+  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/(.+)$ ]]; then
     derived_owner="${BASH_REMATCH[1]}"
-    derived_repo="${BASH_REMATCH[2]}"
+    derived_repo="${BASH_REMATCH[2]%.git}"
   fi
-  PROJECT_URL="${PR_REVIEW_PROJECT_URL:-${derived_owner:+https://github.com/${derived_owner}/${derived_repo}}}"
-  PROJECT_NAME="${PR_REVIEW_PROJECT_NAME:-$derived_repo}"
-  if [[ -z "$PROJECT_URL" || -z "$PROJECT_NAME" ]]; then
-    log_err "could not derive project identity from git remote at $repo_root; set PR_REVIEW_PROJECT_URL and PR_REVIEW_PROJECT_NAME manually"
+  if [[ -z "${derived_owner:-}" || -z "${derived_repo:-}" ]]; then
+    log_err "could not derive project identity — \`git -C $repo_root remote get-url origin\` did not return a parseable github.com URL"
     return 1
   fi
+  PROJECT_URL="https://github.com/${derived_owner}/${derived_repo}"
+  PROJECT_NAME="$derived_repo"
 }
