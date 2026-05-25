@@ -4,6 +4,6 @@
     "line": 5,
     "severity": "pre_existing",
     "type": "polish",
-    "body": "**One-line description of what `auth` owns vs `session`.** The module docstring stops at the function name list."
+    "body": "**One-line description of what `auth` owns vs `session`.**\n\n- The module docstring stops at the function name list\n- A reader hits the names without knowing the boundary\n- One line under the docstring lays out the seam"
   }
 ]

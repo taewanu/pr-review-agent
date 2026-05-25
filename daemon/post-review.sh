@@ -132,6 +132,8 @@ TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨"}'
 # Render unanchored findings into a Markdown section appended to the review body.
 # `## Additional findings` is the canonical relocation surface per ADR 0005.
 # Header shape per ADR 0002: `<type-emoji> <type> | <severity-emoji> <severity>`.
+# Bodies sit inside the outer `- ` list item, so every line is 2-space indented
+# (gsub on internal newlines) to keep bullets and follow-up paragraphs nested.
 additional="$(jq -r --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
   if length == 0 then ""
   else "\n\n## Additional findings\n\n" + (
@@ -142,7 +144,7 @@ additional="$(jq -r --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
       ($typ[.type] // "❓") + " " + .type +
       " | " +
       ($sev[.severity] // "❓") + " " + .severity +
-      "\n\n  " + .body
+      "\n\n  " + (.body | gsub("\n"; "\n  "))
     ) | join("\n\n")
   )
   end
