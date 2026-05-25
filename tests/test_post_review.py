@@ -9,6 +9,8 @@ Fixture is `tests/fixtures/post_review_snapshot/` and holds:
 
 Regenerate the default snapshot:
 
+    PR_REVIEW_PROJECT_URL=https://github.com/taewanu/pr-review-agent \\
+    PR_REVIEW_PROJECT_NAME=pr-review-agent \\
     bash daemon/post-review.sh --owner taewanu --repo pr-review-agent --number 999 \\
         --summary-file tests/fixtures/post_review_snapshot/summary.txt \\
         --anchored tests/fixtures/post_review_snapshot/anchored.json \\
@@ -27,18 +29,26 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "post_review_snapshot"
 DAEMON = REPO_ROOT / "daemon"
-# Scrub these from the inherited env so the default-path snapshot test exercises
-# the daemon's defaults, not whatever the operator (or CI) has exported.
+# Scrub these from the inherited env so each test starts from a known state;
+# the daemon now refuses to run without them set, so tests must pass them in
+# explicitly via `env=` to exercise the canonical or fork rendering path.
 _OVERRIDE_KEYS = ("PR_REVIEW_PROJECT_URL", "PR_REVIEW_PROJECT_NAME")
-CANONICAL_FOOTER_LINK = "[pr-review-agent](https://github.com/taewanu/pr-review-agent)"
+CANONICAL_URL = "https://github.com/taewanu/pr-review-agent"
+CANONICAL_NAME = "pr-review-agent"
+CANONICAL_ENV = {
+    "PR_REVIEW_PROJECT_URL": CANONICAL_URL,
+    "PR_REVIEW_PROJECT_NAME": CANONICAL_NAME,
+}
 
 
-def _run_post_review(*extra_args: str, env: dict | None = None) -> dict:
+def _run_post_review(*extra_args: str, env: dict | None = None, check: bool = True):
     base_env = {k: v for k, v in os.environ.items() if k not in _OVERRIDE_KEYS}
-    result = subprocess.run(
+    return subprocess.run(
         [
             "bash",
             str(DAEMON / "post-review.sh"),
@@ -61,14 +71,17 @@ def _run_post_review(*extra_args: str, env: dict | None = None) -> dict:
         ],
         capture_output=True,
         text=True,
-        check=True,
+        check=check,
         env={**base_env, **(env or {})},
     )
-    return json.loads(result.stdout)
+
+
+def _payload(*extra_args: str, env: dict | None = None) -> dict:
+    return json.loads(_run_post_review(*extra_args, env=env).stdout)
 
 
 def test_dry_run_payload_matches_snapshot():
-    actual = _run_post_review()
+    actual = _payload(env=CANONICAL_ENV)
     expected = json.loads((FIXTURE / "expected_payload.json").read_text())
     assert actual == expected, (
         "post-review.sh --dry-run payload drifted from snapshot. "
@@ -80,7 +93,7 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     # Locks in the ADR 0005 per-finding-failure rendering: an italic note sits
     # between the summary and `## Additional findings` so the operator sees the
     # redaction in the body itself, not just in stderr.
-    actual = _run_post_review("--dropped-combo", "2")
+    actual = _payload("--dropped-combo", "2", env=CANONICAL_ENV)
     expected = json.loads((FIXTURE / "expected_payload_dropped_2.json").read_text())
     assert actual == expected, (
         "post-review.sh --dry-run --dropped-combo 2 payload drifted from snapshot. "
@@ -88,27 +101,35 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     )
 
 
-def test_footer_honors_env_overrides():
-    actual = _run_post_review(
+def test_no_canonical_leak_when_fully_overridden():
+    # The core forking guarantee: when an operator sets both env vars to their
+    # own values, neither the upstream owner ("taewanu") nor the canonical
+    # project name ("pr-review-agent") appears anywhere in the posted body.
+    fork_url = "https://github.com/myfork/my-review-tool"
+    fork_name = "my-review-tool"
+    body = _payload(
         env={
-            "PR_REVIEW_PROJECT_URL": "https://github.com/myfork/pr-review-agent",
-            "PR_REVIEW_PROJECT_NAME": "myfork-review-agent",
+            "PR_REVIEW_PROJECT_URL": fork_url,
+            "PR_REVIEW_PROJECT_NAME": fork_name,
         }
-    )
-    assert "[myfork-review-agent](https://github.com/myfork/pr-review-agent)" in actual["body"]
-    assert CANONICAL_FOOTER_LINK not in actual["body"]
+    )["body"]
+    assert f"[{fork_name}]({fork_url})" in body
+    assert "taewanu" not in body, "upstream owner must not leak into forks' output"
+    assert "pr-review-agent" not in body, "canonical project name must not leak into forks' output"
 
 
-def test_footer_with_url_only_override_keeps_default_name():
-    # Half-rebrand case: forker sets URL, forgets NAME. Pin the literal mix so a
-    # future "link URL and name from one env var" refactor doesn't silently
-    # change what ships.
-    actual = _run_post_review(
-        env={"PR_REVIEW_PROJECT_URL": "https://github.com/myfork/pr-review-agent"}
-    )
-    assert "[pr-review-agent](https://github.com/myfork/pr-review-agent)" in actual["body"]
-
-
-def test_footer_with_name_only_override_keeps_default_url():
-    actual = _run_post_review(env={"PR_REVIEW_PROJECT_NAME": "myfork-review-agent"})
-    assert "[myfork-review-agent](https://github.com/taewanu/pr-review-agent)" in actual["body"]
+@pytest.mark.parametrize(
+    "env,missing_var",
+    [
+        ({"PR_REVIEW_PROJECT_NAME": CANONICAL_NAME}, "PR_REVIEW_PROJECT_URL"),
+        ({"PR_REVIEW_PROJECT_URL": CANONICAL_URL}, "PR_REVIEW_PROJECT_NAME"),
+        ({}, "PR_REVIEW_PROJECT_URL"),
+    ],
+)
+def test_missing_required_env_var_exits_non_zero(env, missing_var):
+    # No silent fallback to canonical: daemon must refuse partial or missing
+    # config and name the offending variable so the operator can fix it.
+    result = _run_post_review(env=env, check=False)
+    assert result.returncode != 0
+    assert missing_var in result.stderr
+    assert "required" in result.stderr

@@ -26,12 +26,19 @@ Polling, `launchd`, and the install wizard are deferred to Phase 3+. V1 targets 
 
 ## Forking
 
-The Review-body footer link defaults to this repo. Forks override without touching daemon source:
+Two env vars are **required** for `post-review.sh` to run. The daemon refuses to start without them so a fork can never silently advertise the upstream project in its own PRs:
 
-- `PR_REVIEW_PROJECT_URL` — footer link target (default: `https://github.com/taewanu/pr-review-agent`)
-- `PR_REVIEW_PROJECT_NAME` — footer link text (default: `pr-review-agent`)
+- `PR_REVIEW_PROJECT_URL` — repo URL surfaced in the Review-body footer link and the preview-release banner
+- `PR_REVIEW_PROJECT_NAME` — display name used in the same two places
 
-Set both in the operator's shell env or `launchd` plist. Per-repo `.pr-review.yaml` overrides are deferred until config loading lands.
+Canonical `taewanu/pr-review-agent` install sets:
+
+```sh
+export PR_REVIEW_PROJECT_URL=https://github.com/taewanu/pr-review-agent
+export PR_REVIEW_PROJECT_NAME=pr-review-agent
+```
+
+Forks set their own values. Put both in the operator's shell profile or `launchd` plist. Per-repo `.pr-review.yaml` overrides are deferred until config loading lands.
 
 ## Branching
 

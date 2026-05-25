@@ -21,6 +21,14 @@ if ! gh auth status >/dev/null 2>&1; then
   log_err "gh not authenticated — run 'gh auth login' first"
   exit 1
 fi
+# Fail before the expensive claude call. post-review.sh enforces the same
+# invariant, but catching it here saves 2-3 min of wasted work per tick.
+for var in PR_REVIEW_PROJECT_URL PR_REVIEW_PROJECT_NAME; do
+  if [[ -z "${!var:-}" ]]; then
+    log_err "$var is required (see CLAUDE.md Forking section)"
+    exit 1
+  fi
+done
 
 KEEP_SCRATCH=0
 while [[ $# -gt 0 ]]; do
