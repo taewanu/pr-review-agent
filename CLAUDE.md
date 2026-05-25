@@ -26,7 +26,7 @@ Polling, `launchd`, and the install wizard are deferred to Phase 3+. V1 targets 
 
 ## Forking
 
-Project identity (footer link + preview-release banner) is auto-derived from `git remote get-url origin` of the checkout. A normal `git clone` of any fork picks up the correct owner/repo with zero config — `taewanu/pr-review-agent`'s clone advertises itself; `myorg/my-fork`'s clone advertises itself.
+The review footer link is auto-derived from `git remote get-url origin` of the checkout. A normal `git clone` of any fork picks up the correct owner/repo with zero config — the canonical clone renders `taewanu/pr-review-agent`; a `myorg/my-fork` clone renders `myorg/my-fork`. The preview-release banner uses the same derived name, gated separately on `pyproject.toml` version `0.x`.
 
 The daemon fails with an actionable error only if origin is missing or unparseable (rare: tarball install or non-github remote). To fix, configure a github.com origin: `git remote add origin <url>`.
 

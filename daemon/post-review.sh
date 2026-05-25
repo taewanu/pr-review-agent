@@ -119,10 +119,9 @@ if [[ "$DROPPED_COMBO" -gt 0 ]]; then
   dropped_note=$'\n\n'"_${DROPPED_COMBO} ${noun} dropped (forbidden severity×type combo)._"
 fi
 
-# Review-body footer per ADR 0001 D3. Project identity sourced from the
-# required env vars validated above. The leading `\n\n---\n\n` detaches the
-# footer from whatever ends the body (summary, dropped-note, `## Additional
-# findings`, or nothing).
+# Review-body footer per ADR 0001 D3. Identity from derive_project_identity
+# above. The leading `\n\n---\n\n` detaches the footer from whatever ends the
+# body (summary, dropped-note, `## Additional findings`, or nothing).
 footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
 
 # Render unanchored findings into a Markdown section appended to the review body.
