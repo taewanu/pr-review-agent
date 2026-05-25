@@ -32,8 +32,9 @@ derive_project_identity() {
   local repo_root="$1"
   local remote_url derived_owner derived_repo
   remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || remote_url=""
-  # Greedy match + `.git` strip: bash ERE doesn't support lazy `+?`.
-  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/(.+)$ ]]; then
+  # Constrain repo to no-slash + tolerate trailing slash; strip `.git` shell-side
+  # (bash ERE lacks lazy `+?` so `(\.git)?` doesn't compose with greedy capture).
+  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/]+)/?$ ]]; then
     derived_owner="${BASH_REMATCH[1]}"
     derived_repo="${BASH_REMATCH[2]%.git}"
   fi
