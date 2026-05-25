@@ -25,20 +25,14 @@ log_failure() {
 }
 
 # derive_project_identity <repo-root>
-# Sets PROJECT_URL and PROJECT_NAME by parsing `git remote get-url origin` of
-# <repo-root>. Any fork running from a normal git clone gets correct identity
-# with zero config — canonical clone advertises itself; fork clone advertises
-# itself. Returns non-zero with an actionable error if the origin is missing
-# or not a parseable github.com URL.
-#
-# Greedy match (no lazy `+?` — POSIX ERE on macOS doesn't support it) captures
-# everything after `owner/`, then the `%.git` suffix-strip drops the optional
-# `.git`. This keeps dots in real repo names like `chartjs/Chart.js`.
-# shellcheck disable=SC2034  # PROJECT_URL/NAME are consumed by callers after sourcing lib.sh
+# Sets PROJECT_URL/PROJECT_NAME from `git remote get-url origin`. Returns
+# non-zero if the origin is missing or not a parseable github.com URL.
+# shellcheck disable=SC2034  # PROJECT_URL/NAME consumed by callers
 derive_project_identity() {
   local repo_root="$1"
   local remote_url derived_owner derived_repo
   remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || remote_url=""
+  # Greedy match + `.git` strip: POSIX ERE on macOS lacks lazy `+?`.
   if [[ "$remote_url" =~ github\.com[:/]([^/]+)/(.+)$ ]]; then
     derived_owner="${BASH_REMATCH[1]}"
     derived_repo="${BASH_REMATCH[2]%.git}"
