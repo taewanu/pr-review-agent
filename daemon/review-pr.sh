@@ -11,10 +11,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
-# Load .env from repo root before validating required vars. Tests disable via
-# PR_REVIEW_ENV_FILE=/dev/null so a developer's local .env doesn't leak in.
-load_env_file "${PR_REVIEW_ENV_FILE:-$SCRIPT_DIR/../.env}"
-
 for cmd in gh claude jq git python3; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log_err "missing '$cmd' on PATH"
@@ -25,14 +21,10 @@ if ! gh auth status >/dev/null 2>&1; then
   log_err "gh not authenticated — run 'gh auth login' first"
   exit 1
 fi
-# Fail before the expensive claude call. post-review.sh enforces the same
-# invariant, but catching it here saves 2-3 min of wasted work per tick.
-for var in PR_REVIEW_PROJECT_URL PR_REVIEW_PROJECT_NAME; do
-  if [[ -z "${!var:-}" ]]; then
-    log_err "$var is required (see CLAUDE.md Forking section)"
-    exit 1
-  fi
-done
+# Fail before the expensive claude call if project identity can't be derived.
+# post-review.sh re-derives at post time, but catching it here saves 2-3 min
+# of wasted work per tick.
+derive_project_identity "$SCRIPT_DIR/.."
 
 KEEP_SCRATCH=0
 while [[ $# -gt 0 ]]; do

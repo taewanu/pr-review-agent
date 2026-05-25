@@ -24,28 +24,24 @@ log_failure() {
     "$category" "$url" "$sha" "$reason" >&2
 }
 
-# load_env_file <path>
-# Loads KEY=value lines from the file into the process env. Shell-env-wins:
-# already-set variables are preserved so an inline `VAR=val …` invocation
-# overrides .env for one-off testing. Quietly returns on unreadable or empty
-# files so tests can disable via PR_REVIEW_ENV_FILE=/dev/null and a missing
-# .env is not an error.
-load_env_file() {
-  local env_file="$1"
-  [[ -r "$env_file" ]] || return 0
-  local line key value
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "${line//[[:space:]]/}" ]] && continue
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    key="${line%%=*}"
-    value="${line#*=}"
-    key="${key#"${key%%[![:space:]]*}"}"
-    key="${key%"${key##*[![:space:]]}"}"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
-    [[ -n "${!key:-}" ]] && continue
-    export "$key=$value"
-  done <"$env_file"
+# derive_project_identity <repo-root>
+# Resolves the project URL and display name for the footer/banner from, in
+# order: PR_REVIEW_PROJECT_URL/NAME env vars (operator override), then the
+# git origin remote of <repo-root>. Sets PROJECT_URL and PROJECT_NAME globals.
+# Returns non-zero with an actionable error if neither source yields values
+# (rare: tarball install with no git remote and no env vars).
+derive_project_identity() {
+  local repo_root="$1"
+  local remote_url="" derived_owner="" derived_repo=""
+  remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || true
+  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    derived_owner="${BASH_REMATCH[1]}"
+    derived_repo="${BASH_REMATCH[2]}"
+  fi
+  PROJECT_URL="${PR_REVIEW_PROJECT_URL:-${derived_owner:+https://github.com/${derived_owner}/${derived_repo}}}"
+  PROJECT_NAME="${PR_REVIEW_PROJECT_NAME:-$derived_repo}"
+  if [[ -z "$PROJECT_URL" || -z "$PROJECT_NAME" ]]; then
+    log_err "could not derive project identity from git remote at $repo_root; set PR_REVIEW_PROJECT_URL and PR_REVIEW_PROJECT_NAME manually"
+    return 1
+  fi
 }

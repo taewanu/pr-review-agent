@@ -7,7 +7,8 @@ Fixture is `tests/fixtures/post_review_snapshot/` and holds:
 - expected_payload.json: payload when no findings were dropped (default path)
 - expected_payload_dropped_2.json: payload when 2 forbidden-combo findings were dropped
 
-Regenerate the default snapshot:
+Regenerate the default snapshot (canonical identity pinned via env so the
+snapshot stays stable regardless of which fork's checkout runs the tests):
 
     PR_REVIEW_PROJECT_URL=https://github.com/taewanu/pr-review-agent \\
     PR_REVIEW_PROJECT_NAME=pr-review-agent \\
@@ -26,17 +27,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "post_review_snapshot"
 DAEMON = REPO_ROOT / "daemon"
-# Scrub these from the inherited env so each test starts from a known state;
-# the daemon now refuses to run without them set, so tests must pass them in
-# explicitly via `env=` to exercise the canonical or fork rendering path.
+# Strip these from inherited env so each test starts from a known baseline.
+# Tests that need a specific identity pass `env=` explicitly.
 _OVERRIDE_KEYS = ("PR_REVIEW_PROJECT_URL", "PR_REVIEW_PROJECT_NAME")
 CANONICAL_URL = "https://github.com/taewanu/pr-review-agent"
 CANONICAL_NAME = "pr-review-agent"
@@ -48,10 +47,6 @@ CANONICAL_ENV = {
 
 def _run_post_review(*extra_args: str, env: dict | None = None, check: bool = True):
     base_env = {k: v for k, v in os.environ.items() if k not in _OVERRIDE_KEYS}
-    # Disable .env loading by default so a developer's local .env can't
-    # contaminate test results. Specific tests can re-enable by passing
-    # `env={"PR_REVIEW_ENV_FILE": "<path>", ...}`.
-    base_env["PR_REVIEW_ENV_FILE"] = "/dev/null"
     return subprocess.run(
         [
             "bash",
@@ -84,7 +79,23 @@ def _payload(*extra_args: str, env: dict | None = None) -> dict:
     return json.loads(_run_post_review(*extra_args, env=env).stdout)
 
 
+def _git_remote_identity() -> tuple[str, str]:
+    """Owner and repo derived from the local git origin. Used by the derive
+    test to stay correct on both canonical and fork checkouts."""
+    url = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    match = re.search(r"github\.com[:/]([^/]+)/([^/.]+)(?:\.git)?$", url)
+    assert match, f"unexpected git remote URL format: {url}"
+    return match.group(1), match.group(2)
+
+
 def test_dry_run_payload_matches_snapshot():
+    # Pin canonical identity via env so the snapshot stays stable regardless of
+    # which fork's checkout is running the tests.
     actual = _payload(env=CANONICAL_ENV)
     expected = json.loads((FIXTURE / "expected_payload.json").read_text())
     assert actual == expected, (
@@ -105,10 +116,18 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     )
 
 
-def test_no_canonical_leak_when_fully_overridden():
-    # The core forking guarantee: when an operator sets both env vars to their
-    # own values, neither the upstream owner ("taewanu") nor the canonical
-    # project name ("pr-review-agent") appears anywhere in the posted body.
+def test_derives_project_identity_from_git_remote_when_env_unset():
+    # Zero-config path: with neither env var set, the daemon parses the local
+    # git origin to fill the footer/banner. Works for canonical and any fork.
+    owner, repo = _git_remote_identity()
+    body = _payload()["body"]
+    assert f"[{repo}](https://github.com/{owner}/{repo})" in body
+
+
+def test_env_vars_override_git_remote_derivation():
+    # The core forking guarantee: when an operator explicitly sets both env
+    # vars (e.g. their fork's identity differs from the cloned repo), neither
+    # the canonical owner nor the canonical project name appears in the body.
     fork_url = "https://github.com/myfork/my-review-tool"
     fork_name = "my-review-tool"
     body = _payload(
@@ -118,51 +137,7 @@ def test_no_canonical_leak_when_fully_overridden():
         }
     )["body"]
     assert f"[{fork_name}]({fork_url})" in body
-    assert "taewanu" not in body, "upstream owner must not leak into forks' output"
-    assert "pr-review-agent" not in body, "canonical project name must not leak into forks' output"
-
-
-@pytest.mark.parametrize(
-    "env,missing_var",
-    [
-        ({"PR_REVIEW_PROJECT_NAME": CANONICAL_NAME}, "PR_REVIEW_PROJECT_URL"),
-        ({"PR_REVIEW_PROJECT_URL": CANONICAL_URL}, "PR_REVIEW_PROJECT_NAME"),
-        ({}, "PR_REVIEW_PROJECT_URL"),
-    ],
-)
-def test_missing_required_env_var_exits_non_zero(env, missing_var):
-    # No silent fallback to canonical: daemon must refuse partial or missing
-    # config and name the offending variable so the operator can fix it.
-    result = _run_post_review(env=env, check=False)
-    assert result.returncode != 0
-    assert missing_var in result.stderr
-    assert "required" in result.stderr
-
-
-def test_env_file_supplies_project_identity(tmp_path):
-    env_file = tmp_path / "test.env"
-    env_file.write_text(
-        "PR_REVIEW_PROJECT_URL=https://github.com/fromfile/repo\n"
-        "PR_REVIEW_PROJECT_NAME=fromfile-name\n"
+    assert "taewanu" not in body, "upstream owner must not leak when explicitly overridden"
+    assert "pr-review-agent" not in body, (
+        "canonical project name must not leak when explicitly overridden"
     )
-    body = _payload(env={"PR_REVIEW_ENV_FILE": str(env_file)})["body"]
-    assert "[fromfile-name](https://github.com/fromfile/repo)" in body
-
-
-def test_shell_env_wins_over_env_file(tmp_path):
-    # `.env` is the persistent source of truth, but an inline `VAR=…` invocation
-    # must override it for one-off testing (option (a) precedence).
-    env_file = tmp_path / "test.env"
-    env_file.write_text(
-        "PR_REVIEW_PROJECT_URL=https://github.com/fromfile/repo\n"
-        "PR_REVIEW_PROJECT_NAME=fromfile-name\n"
-    )
-    body = _payload(
-        env={
-            "PR_REVIEW_ENV_FILE": str(env_file),
-            "PR_REVIEW_PROJECT_URL": "https://github.com/fromshell/repo",
-            "PR_REVIEW_PROJECT_NAME": "fromshell-name",
-        }
-    )["body"]
-    assert "[fromshell-name](https://github.com/fromshell/repo)" in body
-    assert "fromfile" not in body, "shell env must win over .env file"

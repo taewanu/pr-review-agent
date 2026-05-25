@@ -26,19 +26,12 @@ Polling, `launchd`, and the install wizard are deferred to Phase 3+. V1 targets 
 
 ## Forking
 
-Two env vars are **required**. The daemon refuses to start without them so a fork can never silently advertise the upstream project in its own PRs:
+Project identity (footer link + preview-release banner) is auto-derived from `git remote get-url origin` of the checkout. A normal `git clone` of any fork picks up the correct owner/repo with zero config — `taewanu/pr-review-agent`'s clone advertises itself; `myorg/my-fork`'s clone advertises itself.
 
-- `PR_REVIEW_PROJECT_URL` — repo URL surfaced in the Review-body footer link and the preview-release banner
-- `PR_REVIEW_PROJECT_NAME` — display name used in the same two places
+Two env vars are honored as overrides for ad-hoc testing or non-git installs:
 
-Setup (once per clone):
-
-```sh
-cp .env.example .env
-# Edit .env to fill in your values
-```
-
-`.env` is gitignored and auto-loaded from the repo root by both `daemon/review-pr.sh` and `daemon/post-review.sh` before any other work. Shell env wins over `.env`, so for one-off overrides (testing a fork's branding without editing the file):
+- `PR_REVIEW_PROJECT_URL` — overrides the derived repo URL
+- `PR_REVIEW_PROJECT_NAME` — overrides the derived display name
 
 ```sh
 PR_REVIEW_PROJECT_URL=https://github.com/some/fork \
@@ -46,9 +39,7 @@ PR_REVIEW_PROJECT_NAME=some-fork \
 bash daemon/review-pr.sh <pr-url>
 ```
 
-Tests disable `.env` loading via `PR_REVIEW_ENV_FILE=/dev/null` so a developer's local config can't contaminate snapshot fixtures.
-
-Per-repo `.pr-review.yaml` overrides are deferred until config loading lands.
+The daemon fails with an actionable error only if neither source yields values (rare: tarball install with no remote and no env vars).
 
 ## Branching
 

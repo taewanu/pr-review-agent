@@ -6,10 +6,6 @@ set -euo pipefail
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$(dirname "$0")/lib.sh"
 
-# Load .env from repo root so direct invocations (not just via review-pr.sh)
-# pick up project identity. Tests override via PR_REVIEW_ENV_FILE=/dev/null.
-load_env_file "${PR_REVIEW_ENV_FILE:-$(dirname "$0")/../.env}"
-
 DRY_RUN=0
 HEAD_SHA=""
 OWNER=""
@@ -94,20 +90,14 @@ if ! [[ "$DROPPED_COMBO" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# Project identity is required, not optional. The daemon is designed to run on
-# arbitrary repos, so baking a canonical default ("taewanu/pr-review-agent")
-# would silently advertise the upstream project in every fork's reviews.
-# Operators set these once in their shell env or launchd plist; see CLAUDE.md.
-if [[ -z "${PR_REVIEW_PROJECT_URL:-}" ]]; then
-  log_err "PR_REVIEW_PROJECT_URL is required (see CLAUDE.md Forking section)"
-  exit 1
-fi
-if [[ -z "${PR_REVIEW_PROJECT_NAME:-}" ]]; then
-  log_err "PR_REVIEW_PROJECT_NAME is required (see CLAUDE.md Forking section)"
-  exit 1
-fi
-project_url="$PR_REVIEW_PROJECT_URL"
-project_name="$PR_REVIEW_PROJECT_NAME"
+# Project identity for the footer/banner. derive_project_identity prefers
+# PR_REVIEW_PROJECT_URL/NAME env vars, then falls back to parsing the git
+# origin of this checkout. Forks running from a normal git clone get correct
+# identity with zero config; env vars exist only for ad-hoc override or
+# non-git installs.
+derive_project_identity "$(dirname "$0")/.."
+project_url="$PROJECT_URL"
+project_name="$PROJECT_NAME"
 
 summary="$(cat "$SUMMARY_FILE")"
 
