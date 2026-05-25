@@ -21,6 +21,11 @@ if ! gh auth status >/dev/null 2>&1; then
   log_err "gh not authenticated — run 'gh auth login' first"
   exit 1
 fi
+# Fail before the expensive claude call if project identity can't be derived.
+# post-review.sh re-derives at post time, but catching it here saves 2-3 min
+# of wasted work per tick. The PROJECT_URL/NAME globals set here are unused;
+# post-review.sh's later call is the authoritative one.
+derive_project_identity "$SCRIPT_DIR/.."
 
 KEEP_SCRATCH=0
 while [[ $# -gt 0 ]]; do

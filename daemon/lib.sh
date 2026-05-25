@@ -23,3 +23,25 @@ log_failure() {
   printf '[pr-review-agent] failure: %s pr=%s sha=%s reason=%s\n' \
     "$category" "$url" "$sha" "$reason" >&2
 }
+
+# derive_project_identity <repo-root>
+# Sets PROJECT_URL/PROJECT_NAME from `git remote get-url origin`. Returns
+# non-zero if the origin is missing or not a parseable github.com URL.
+# shellcheck disable=SC2034  # PROJECT_URL/NAME consumed by callers
+derive_project_identity() {
+  local repo_root="$1"
+  local remote_url derived_owner derived_repo
+  remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || remote_url=""
+  # Constrain repo to no-slash + tolerate trailing slash; strip `.git` shell-side
+  # (bash ERE lacks lazy `+?` so `(\.git)?` doesn't compose with greedy capture).
+  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/]+)/?$ ]]; then
+    derived_owner="${BASH_REMATCH[1]}"
+    derived_repo="${BASH_REMATCH[2]%.git}"
+  fi
+  if [[ -z "${derived_owner:-}" || -z "${derived_repo:-}" ]]; then
+    log_err "could not derive project identity — \`git -C $repo_root remote get-url origin\` did not return a parseable github.com URL"
+    return 1
+  fi
+  PROJECT_URL="https://github.com/${derived_owner}/${derived_repo}"
+  PROJECT_NAME="$derived_repo"
+}
