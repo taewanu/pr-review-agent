@@ -12,10 +12,11 @@ from pydantic import BaseModel, ValidationError, model_validator
 FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 MAX_FINDINGS = 10
 EM_DASH = "—"
-# Openers the voice prompt forbids for both `summary` and `comments[].body`.
-# Trailing space distinguishes "This " (demonstrative opener) from words like "Think".
+# Openers the voice prompt forbids. Trailing space distinguishes "This "
+# (demonstrative opener) from words like "Think". Body and summary diverge per
+# ADR 0002: bodies now lead with a bold sentence, so `**` is permitted there
+# (and in fact required by the shape). Summary stays plain prose.
 FORBIDDEN_PREFIXES = (
-    "**",
     "This ",
     "The ",
     "It ",
@@ -25,6 +26,7 @@ FORBIDDEN_PREFIXES = (
     "Consider ",
     "Maybe ",
 )
+FORBIDDEN_SUMMARY_PREFIXES = ("**",) + FORBIDDEN_PREFIXES
 
 
 class ExtractError(Exception):
@@ -82,9 +84,24 @@ def extract(raw: str) -> ReviewPayload:
     return payload
 
 
-def _forbidden_prefix(text: str) -> str | None:
+def _forbidden_prefix(
+    text: str, prefixes: tuple[str, ...], *, strip_bold: bool = False
+) -> str | None:
     stripped = text.lstrip()
-    for prefix in FORBIDDEN_PREFIXES:
+    # ADR 0002 bodies lead with `**…**`. Peel a leading `**` before the prefix
+    # scan so word-level openers caught on plain prose still trip inside the
+    # bold (`**This carries the wrong invariant.**` must fail like the plain
+    # form). Summary forbids `**` outright, so no peel there. Re-lstrip after
+    # the peel — `**` was hiding any whitespace inside it from the first
+    # lstrip, so `**  This …**` would otherwise slip past.
+    #
+    # Scope: only the exact `**…**` shape is peeled. Off-spec leads like
+    # `***bold-italic***` or `*italic*` are not stripped — they aren't part
+    # of the prompted body shape, and widening the peel is deferred until
+    # the agent actually emits them.
+    if strip_bold and stripped.startswith("**"):
+        stripped = stripped[2:].lstrip()
+    for prefix in prefixes:
         if stripped.startswith(prefix):
             return prefix
     return None
@@ -95,12 +112,12 @@ def _validate_style(payload: ReviewPayload) -> None:
     violations: list[str] = []
     if EM_DASH in payload.summary:
         violations.append("summary contains em dash")
-    if (prefix := _forbidden_prefix(payload.summary)) is not None:
+    if (prefix := _forbidden_prefix(payload.summary, FORBIDDEN_SUMMARY_PREFIXES)) is not None:
         violations.append(f"summary opens with forbidden prefix {prefix.rstrip()!r}")
     for i, c in enumerate(payload.comments):
         if EM_DASH in c.body:
             violations.append(f"comments[{i}].body contains em dash")
-        if (prefix := _forbidden_prefix(c.body)) is not None:
+        if (prefix := _forbidden_prefix(c.body, FORBIDDEN_PREFIXES, strip_bold=True)) is not None:
             violations.append(f"comments[{i}].body opens with forbidden prefix {prefix.rstrip()!r}")
     if violations:
         raise ExtractError("style-violation", "; ".join(violations))

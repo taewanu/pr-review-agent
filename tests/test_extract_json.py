@@ -183,7 +183,6 @@ def test_em_dash_in_comment_body_raises_style_violation():
 @pytest.mark.parametrize(
     "opener",
     [
-        "**bold lead** then prose.",
         "This carries the wrong invariant.",
         "The helper reads as dead code.",
         "It would be clearer to split.",
@@ -195,6 +194,57 @@ def test_em_dash_in_comment_body_raises_style_violation():
     ],
 )
 def test_forbidden_body_prefix_raises_style_violation(opener):
+    f = _minimal_finding(body=opener)
+    raw = _wrap({"summary": "x", "comments": [f]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+
+
+def test_bold_lead_body_passes_style_check():
+    # Body shape per ADR 0002 leads with a bold sentence. `**` is forbidden
+    # only on summary, not on comments[].body.
+    f = _minimal_finding(body="**Rename `tmp` to `parsed_payload`.** Carries the intent.")
+    raw = _wrap({"summary": "Solid diff. One nit.", "comments": [f]})
+    payload = extract_json.extract(raw)
+    assert payload.comments[0].body.startswith("**Rename")
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "**This carries the wrong invariant.**",
+        "**The helper reads as dead code.**",
+        "**It would be clearer to split.**",
+        "**Worth splitting into two bullets.**",
+        "**Suggest renaming `tmp`.**",
+        "**Please add a comment here.**",
+        "**Consider splitting this finding.**",
+        "**Maybe rename `tmp`.**",
+    ],
+)
+def test_bold_wrapped_forbidden_body_prefix_raises_style_violation(opener):
+    # The bold-lead shape (ADR 0002) must not let forbidden openers slip
+    # through by hiding behind a leading `**`. Validator peels `**` before
+    # the prefix scan; this test pins that.
+    f = _minimal_finding(body=opener)
+    raw = _wrap({"summary": "x", "comments": [f]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
+        "**  This carries the wrong invariant.**",
+        "** \tConsider splitting this finding.**",
+    ],
+)
+def test_bold_with_internal_leading_whitespace_still_rejected(opener):
+    # `**` was hiding any whitespace inside it from the first lstrip, so a
+    # second lstrip after the peel is required. Without it, `**  This …**`
+    # would strip to `  This …` and `startswith('This ')` would miss.
     f = _minimal_finding(body=opener)
     raw = _wrap({"summary": "x", "comments": [f]})
     with pytest.raises(ExtractError) as exc_info:

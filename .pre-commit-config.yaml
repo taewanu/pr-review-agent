@@ -12,6 +12,10 @@ repos:
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
+        # -x follows `source=` directives across files. Without it, the
+        # commit-stage hook (staged files only) misses cross-file definitions
+        # while --all-files passes them in the same invocation.
+        args: [-x]
 
   - repo: https://github.com/scop/pre-commit-shfmt
     rev: v3.13.1-1
