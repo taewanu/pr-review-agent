@@ -84,8 +84,16 @@ def extract(raw: str) -> ReviewPayload:
     return payload
 
 
-def _forbidden_prefix(text: str, prefixes: tuple[str, ...]) -> str | None:
+def _forbidden_prefix(
+    text: str, prefixes: tuple[str, ...], *, strip_bold: bool = False
+) -> str | None:
     stripped = text.lstrip()
+    # ADR 0002 bodies lead with `**…**`. Peel a leading `**` before the prefix
+    # scan so word-level openers caught on plain prose still trip inside the
+    # bold (`**This carries the wrong invariant.**` must fail like the plain
+    # form). Summary forbids `**` outright, so no peel there.
+    if strip_bold and stripped.startswith("**"):
+        stripped = stripped[2:]
     for prefix in prefixes:
         if stripped.startswith(prefix):
             return prefix
@@ -102,7 +110,7 @@ def _validate_style(payload: ReviewPayload) -> None:
     for i, c in enumerate(payload.comments):
         if EM_DASH in c.body:
             violations.append(f"comments[{i}].body contains em dash")
-        if (prefix := _forbidden_prefix(c.body, FORBIDDEN_PREFIXES)) is not None:
+        if (prefix := _forbidden_prefix(c.body, FORBIDDEN_PREFIXES, strip_bold=True)) is not None:
             violations.append(f"comments[{i}].body opens with forbidden prefix {prefix.rstrip()!r}")
     if violations:
         raise ExtractError("style-violation", "; ".join(violations))

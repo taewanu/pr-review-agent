@@ -213,6 +213,30 @@ def test_bold_lead_body_passes_style_check():
 @pytest.mark.parametrize(
     "opener",
     [
+        "**This carries the wrong invariant.**",
+        "**The helper reads as dead code.**",
+        "**It would be clearer to split.**",
+        "**Worth splitting into two bullets.**",
+        "**Suggest renaming `tmp`.**",
+        "**Please add a comment here.**",
+        "**Consider splitting this finding.**",
+        "**Maybe rename `tmp`.**",
+    ],
+)
+def test_bold_wrapped_forbidden_body_prefix_raises_style_violation(opener):
+    # The bold-lead shape (ADR 0002) must not let forbidden openers slip
+    # through by hiding behind a leading `**`. Validator peels `**` before
+    # the prefix scan; this test pins that.
+    f = _minimal_finding(body=opener)
+    raw = _wrap({"summary": "x", "comments": [f]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+
+
+@pytest.mark.parametrize(
+    "opener",
+    [
         "**bold lead** then prose.",
         "This summary opens demonstratively.",
         "The asymmetry is the load-bearing gap.",

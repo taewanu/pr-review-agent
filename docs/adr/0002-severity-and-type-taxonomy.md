@@ -86,4 +86,4 @@ _🐛 bug_ | _🔴 important_
 - Fix: loosen to `[^/]+?` + strip a trailing `.git` after match
 ```
 
-Bullets are 0 or 2–4, never one. A single bullet is just a sentence with extra weight. The bold first line enforces 두괄식 (lead with the point) structurally — the visible shape carries the rule, not only the prompt examples. Post-hoc validation in `daemon/extract-json.py` is the safety net; the review-agent prompt teaches the shape and the validator catches drift.
+Bullets are 0 or 2–4, never one. A single bullet is just a sentence with extra weight. The bold first line enforces 두괄식 (lead with the point) structurally — the visible shape carries the rule, not only the prompt examples. Post-hoc validation in `daemon/extract-json.py` catches forbidden openers (`This`, `The`, `Consider`, …) on both plain and bolded leads (the validator peels a leading `**` before the prefix scan). The bold-lead shape itself is not enforced; a body that ships plain prose still passes — opener voice is the load-bearing rule.
