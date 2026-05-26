@@ -91,9 +91,11 @@ def _forbidden_prefix(
     # ADR 0002 bodies lead with `**…**`. Peel a leading `**` before the prefix
     # scan so word-level openers caught on plain prose still trip inside the
     # bold (`**This carries the wrong invariant.**` must fail like the plain
-    # form). Summary forbids `**` outright, so no peel there.
+    # form). Summary forbids `**` outright, so no peel there. Re-lstrip after
+    # the peel — `**` was hiding any whitespace inside it from the first
+    # lstrip, so `**  This …**` would otherwise slip past.
     if strip_bold and stripped.startswith("**"):
-        stripped = stripped[2:]
+        stripped = stripped[2:].lstrip()
     for prefix in prefixes:
         if stripped.startswith(prefix):
             return prefix
