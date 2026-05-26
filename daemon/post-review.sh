@@ -144,7 +144,7 @@ additional="$(jq -r --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
       ($typ[.type] // "❓") + " " + .type +
       "_ | _" +
       ($sev[.severity] // "❓") + " " + .severity +
-      "_\n\n  " + (.body | gsub("\n"; "\n  "))
+      "_\n\n  " + (.body | gsub("\n(?<c>[^\n])"; "\n  \(.c)"))
     ) | join("\n\n")
   )
   end
