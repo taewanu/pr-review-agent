@@ -46,14 +46,16 @@ The daemon translates each finding into two visible surfaces:
 
 ### Header — type first, severity second
 
-Both dimensions render as parallel `<emoji> <label>` tokens separated by a pipe. Neither dimension is bolder than the other:
+Both dimensions render as parallel `_<emoji> <label>_` tokens (italic) separated by a pipe. Neither dimension is bolder than the other:
 
 ```
-🐛 bug | 🔴 important
-🔧 refactor | 🟡 nit
-✨ polish | 🟡 nit
-🐛 bug | 🟣 pre_existing
+_🐛 bug_ | _🔴 important_
+_🔧 refactor_ | _🟡 nit_
+_✨ polish_ | _🟡 nit_
+_🐛 bug_ | _🟣 pre_existing_
 ```
+
+Italic keeps the header visibly lighter than the bold body lead, so a reader's eye lands on the conclusion first. CodeRabbit uses the same italic + pipe pattern.
 
 Order matters: type (*what kind*) first, severity (*how severe*) second. A reader scanning a long review can separate the two axes at a glance.
 
@@ -68,14 +70,14 @@ The emoji maps:
 | `severity` | `nit` | 🟡 |
 | `severity` | `pre_existing` | 🟣 |
 
-`pre_existing` is severity-only; the type axis still applies (a pre-existing bug renders as `🐛 bug | 🟣 pre_existing`).
+`pre_existing` is severity-only; the type axis still applies (a pre-existing bug renders as `_🐛 bug_ | _🟣 pre_existing_`).
 
 ### Body — bold lead, optional bullets
 
 The first non-empty line is the actionable conclusion in **bold**. Optional 2–4 bullets follow with mechanism, evidence, and suggested fix. Short findings skip the bullets:
 
 ```
-🐛 bug | 🔴 important
+_🐛 bug_ | _🔴 important_
 
 **Drop `session.token` from the warning log.**
 

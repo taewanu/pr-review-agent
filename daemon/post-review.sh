@@ -131,7 +131,7 @@ TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨"}'
 
 # Render unanchored findings into a Markdown section appended to the review body.
 # `## Additional findings` is the canonical relocation surface per ADR 0005.
-# Header shape per ADR 0002: `<type-emoji> <type> | <severity-emoji> <severity>`.
+# Header shape per ADR 0002: `_<type-emoji> <type>_ | _<severity-emoji> <severity>_`.
 # Bodies sit inside the outer `- ` list item, so every line is 2-space indented
 # (gsub on internal newlines) to keep bullets and follow-up paragraphs nested.
 additional="$(jq -r --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
@@ -140,11 +140,11 @@ additional="$(jq -r --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
     map(
       "- `" + .path + ":" + (.line | tostring) +
       (if .end_line and .end_line != .line then "-" + (.end_line | tostring) else "" end) +
-      "` " +
+      "` _" +
       ($typ[.type] // "❓") + " " + .type +
-      " | " +
+      "_ | _" +
       ($sev[.severity] // "❓") + " " + .severity +
-      "\n\n  " + (.body | gsub("\n"; "\n  "))
+      "_\n\n  " + (.body | gsub("\n"; "\n  "))
     ) | join("\n\n")
   )
   end
@@ -162,9 +162,9 @@ comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
       path: .path,
       side: "RIGHT",
       body: (
-        ($typ[.type] // "❓") + " " + .type +
-        " | " +
-        ($sev[.severity] // "❓") + " " + .severity +
+        "_" + ($typ[.type] // "❓") + " " + .type +
+        "_ | _" +
+        ($sev[.severity] // "❓") + " " + .severity + "_" +
         "\n\n" + .body +
         "\n\n---\n\n🤖 _AI-drafted_"
       )
