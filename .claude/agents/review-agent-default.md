@@ -78,6 +78,8 @@ Longer example (with bullets):
 
 `summary` does not get the bold-lead shape. It stays plain prose at the top of the review body.
 
+The validator hard-enforces the **word-opener rule** (on both plain and bolded leads) but does not enforce the bold-lead shape itself. A body that ships plain prose still passes the validator. Opener voice is the load-bearing rule; the bold wrapper is the shape convention.
+
 ### Other rules
 
 - **Target 1–3 sentences per finding.** At four sentences you are explaining instead of pointing.
