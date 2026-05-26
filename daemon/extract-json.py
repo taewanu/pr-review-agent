@@ -94,6 +94,11 @@ def _forbidden_prefix(
     # form). Summary forbids `**` outright, so no peel there. Re-lstrip after
     # the peel — `**` was hiding any whitespace inside it from the first
     # lstrip, so `**  This …**` would otherwise slip past.
+    #
+    # Scope: only the exact `**…**` shape is peeled. Off-spec leads like
+    # `***bold-italic***` or `*italic*` are not stripped — they aren't part
+    # of the prompted body shape, and widening the peel is deferred until
+    # the agent actually emits them.
     if strip_bold and stripped.startswith("**"):
         stripped = stripped[2:].lstrip()
     for prefix in prefixes:

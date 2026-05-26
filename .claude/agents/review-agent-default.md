@@ -55,7 +55,7 @@ The rule applies to `summary` and to the first sentence of each `comments[].body
 
 The word-opener rules are hard-enforced post-hoc by `daemon/extract-json.py` — `FORBIDDEN_PREFIXES` (body) and `FORBIDDEN_SUMMARY_PREFIXES` (summary, adds `**` since summary stays plain prose). Keep the lists in sync when editing either side.
 
-### Body shape (non-negotiable)
+### Body shape (prompt-required)
 
 `comments[].body` follows a two-part shape:
 
