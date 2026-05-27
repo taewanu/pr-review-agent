@@ -24,6 +24,55 @@ log_failure() {
     "$category" "$url" "$sha" "$reason" >&2
 }
 
+# State tracking for same-SHA dedup. One file per PR. Phase-5 (ADR 0006) will
+# replace this with a sentinel embedded in the posted review body — keep the
+# helpers minimal so the cutover stays cheap.
+#
+# Override $PR_REVIEW_STATE_DIR for tests; default per Day 2 plan.
+_state_dir() {
+  printf '%s' "${PR_REVIEW_STATE_DIR:-$HOME/.local/state/pr-review-agent}"
+}
+
+_state_path() {
+  printf '%s/%s-%s-%s.json' "$(_state_dir)" "$1" "$2" "$3"
+}
+
+# state_read <owner> <repo> <pr-number>
+# Emits the state JSON on stdout. Missing file → '{}' and exit 0 (absence is
+# the normal case for first-ever-tick on a PR, not an error).
+state_read() {
+  local path
+  path="$(_state_path "$1" "$2" "$3")"
+  if [[ -r "$path" ]]; then
+    cat "$path"
+  else
+    printf '{}\n'
+  fi
+}
+
+# state_write <owner> <repo> <pr-number> <head-sha> <review-id>
+# Atomic write. Creates the state dir if missing. The mktemp + mv pattern keeps
+# concurrent ticks from observing a half-written file.
+state_write() {
+  local owner="$1" repo="$2" pr="$3" sha="$4" review_id="$5"
+  local dir path tmp ts
+  dir="$(_state_dir)"
+  path="$(_state_path "$owner" "$repo" "$pr")"
+  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.pr-review-state.XXXXXX")"
+  if ! jq -n \
+    --arg sha "$sha" \
+    --argjson review_id "$review_id" \
+    --arg ts "$ts" \
+    '{last_reviewed_sha: $sha, review_id: $review_id, ts_iso: $ts}' \
+    >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$path"
+}
+
 # derive_project_identity <repo-root>
 # Sets PROJECT_URL/PROJECT_NAME from `git remote get-url origin`. Returns
 # non-zero if the origin is missing or not a parseable github.com URL.
