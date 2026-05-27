@@ -36,8 +36,9 @@ REPOS=()
 while IFS= read -r r; do REPOS+=("$r"); done < <(jq -r '.repos[]' <<<"$CONFIG")
 GITHUB_USER="$(jq -r '.github_user' <<<"$CONFIG")"
 REVIEW_OWN_PRS="$(jq -r '.review_own_prs' <<<"$CONFIG")"
+OPT_OUT_LABEL="$(jq -r '.opt_out_label' <<<"$CONFIG")"
 
-log_info "watched: ${REPOS[*]} (own-PRs: $REVIEW_OWN_PRS, user: $GITHUB_USER)"
+log_info "watched: ${REPOS[*]} (own-PRs: $REVIEW_OWN_PRS, user: $GITHUB_USER, opt-out: ${OPT_OUT_LABEL:-disabled})"
 
 # Verify access to every watched repo before doing work. Catches typos and
 # missing collaborator access early instead of mid-tick.
@@ -53,7 +54,7 @@ done
 for repo in "${REPOS[@]}"; do
   log_step "polling $repo"
   if ! prs_json="$(gh pr list --repo "$repo" --state open \
-    --json number,headRefOid,isDraft,author,url 2>/dev/null)"; then
+    --json number,headRefOid,isDraft,author,labels,url 2>/dev/null)"; then
     log_err "cannot list PRs for $repo — skipping this repo"
     continue
   fi
@@ -84,6 +85,16 @@ for repo in "${REPOS[@]}"; do
     if [[ "$author" == "$GITHUB_USER" && "$REVIEW_OWN_PRS" != "true" ]]; then
       log_info "skipped (own-PR opt-out): $pr_url"
       continue
+    fi
+
+    # Story #26: per-PR opt-out via label. Empty OPT_OUT_LABEL disables the filter.
+    if [[ -n "$OPT_OUT_LABEL" ]]; then
+      has_optout="$(jq --arg label "$OPT_OUT_LABEL" \
+        '[.labels[]?.name] | any(. == $label)' <<<"$pr_obj")"
+      if [[ "$has_optout" == "true" ]]; then
+        log_info "skipped (opt-out label '$OPT_OUT_LABEL'): $pr_url"
+        continue
+      fi
     fi
 
     state="$(state_read "$owner" "$repo_name" "$pr_number")"
