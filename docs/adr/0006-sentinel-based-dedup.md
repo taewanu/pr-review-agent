@@ -40,7 +40,7 @@ Review body footer, immediately after the operator identity line from [ADR 0003]
     ---
 
     🤖 Drafted by [<project>](<project-url>). Submit, edit, or cancel as needed.
-    <!-- pr-review-agent:sha:abc1234567890abcdef1234567890abcdef12345678 -->
+    <!-- pr-review-agent:sha:abc1234567890abcdef1234567890abcdef12345 -->
 
 The `<project>` and `<project-url>` slots are derived per fork from `git remote get-url origin`. The `pr-review-agent:` sentinel namespace is fixed across forks so the format stays parseable everywhere.
 
