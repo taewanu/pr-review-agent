@@ -54,8 +54,9 @@ Per-tick lookup of the prior-reviewed SHA for a given PR:
 2. Filter to `user.login == $GITHUB_USER`.
 3. Sort descending by `submitted_at`, falling back to `created_at` for pending reviews where `submitted_at` is null.
 4. For each review in order, grep the body for `<!-- pr-review-agent:sha:([0-9a-f]{40}) -->`. The first match is the prior reviewed SHA.
-5. If no review carries a sentinel, fall through to `state_read` (the phase-4 file). When step 1 itself fails (network, 5xx, auth break), the fall-through to `state_read` still applies, but the first-review path in step 6 does not — skip the PR-tick rather than reading "could not check" as "no prior review".
-6. If neither yields a SHA, this PR is a first-review case — full base..HEAD diff.
+5. If step 1 failed (network, 5xx, auth break), fall through to `state_read`. Skip the PR-tick if state is also empty — "could not check" is distinct from "no prior review".
+6. If step 1 succeeded but no review carries a sentinel, fall through to `state_read` (the phase-4 file).
+7. If step 6 also returns no SHA, the PR is a first-review case — full base..HEAD diff.
 
 Multi-operator: each operator's daemon only sees its own login at step 2, so cross-operator sentinels never collide.
 
