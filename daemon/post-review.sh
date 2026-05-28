@@ -124,6 +124,18 @@ fi
 # body (summary, dropped-note, `## Additional findings`, or nothing).
 footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
 
+# Dedup sentinel per ADR 0006. Encodes the reviewed SHA so the next tick can
+# parse it from `gh api .../reviews` and skip same-SHA re-reviews / scope the
+# diff to <sentinel_sha>..HEAD. ASCII-only payload survives GitHub's markdown
+# sanitizer; operator login comes from `review.user.login` on the API response
+# and is not repeated here. Omitted when HEAD_SHA is unset (dry-run / tests
+# without --head-sha) so the body stays clean rather than emitting a half
+# sentinel that the parser would never match.
+sentinel=""
+if [[ -n "$HEAD_SHA" ]]; then
+  sentinel=$'\n'"<!-- pr-review-agent:sha:${HEAD_SHA} -->"
+fi
+
 # Severity and type emoji maps per ADR 0002. Single-sourced here so the
 # Additional-findings render and the inline-comments render stay in lockstep.
 SEV_EMOJI='{"important":"🔴","nit":"🟡","pre_existing":"🟣"}'
@@ -150,7 +162,7 @@ additional="$(jq -r --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
   end
 ' "$UNANCHORED")"
 
-body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}"
+body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}${sentinel}"
 
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
