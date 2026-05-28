@@ -35,32 +35,30 @@ FIXTURE = REPO_ROOT / "tests" / "fixtures" / "post_review_snapshot"
 DAEMON = REPO_ROOT / "daemon"
 
 
-def _run_post_review(*extra_args: str) -> dict:
-    result = subprocess.run(
-        [
-            "bash",
-            str(DAEMON / "post-review.sh"),
-            "--owner",
-            "taewanu",
-            "--repo",
-            "pr-review-agent",
-            "--number",
-            "999",
-            "--summary-file",
-            str(FIXTURE / "summary.txt"),
-            "--anchored",
-            str(FIXTURE / "anchored.json"),
-            "--unanchored",
-            str(FIXTURE / "unanchored.json"),
-            "--head-sha",
-            "abc123def456",
-            "--dry-run",
-            *extra_args,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+FIXTURE_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _run_post_review(*extra_args: str, head_sha: str | None = FIXTURE_HEAD_SHA) -> dict:
+    args = [
+        "bash",
+        str(DAEMON / "post-review.sh"),
+        "--owner",
+        "example",
+        "--repo",
+        "example",
+        "--number",
+        "999",
+        "--summary-file",
+        str(FIXTURE / "summary.txt"),
+        "--anchored",
+        str(FIXTURE / "anchored.json"),
+        "--unanchored",
+        str(FIXTURE / "unanchored.json"),
+    ]
+    if head_sha is not None:
+        args += ["--head-sha", head_sha]
+    args += ["--dry-run", *extra_args]
+    result = subprocess.run(args, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
 
 
@@ -113,6 +111,29 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
         "post-review.sh --dry-run --dropped-combo 2 payload drifted from snapshot. "
         "Regenerate per the docstring if the change was intentional."
     )
+
+
+def test_sentinel_present_and_matches_adr_0006_format():
+    # ADR 0006 fixes the sentinel format so the dedup migration parser in
+    # `daemon/poll.sh` can grep it byte-exactly. Locks the regex separately
+    # from the full-payload snapshot so a format regression points at this
+    # test, not at a scrolling JSON diff.
+    body = _run_post_review()["body"]
+    match = re.search(r"<!-- pr-review-agent:sha:([0-9a-f]{40}) -->", body)
+    assert match, "ADR 0006 sentinel missing from review body"
+    assert match.group(1) == FIXTURE_HEAD_SHA
+    # Sentinel sits below the operator footer so it parses out cleanly without
+    # mid-body false positives.
+    footer_idx = body.index("Submit, edit, or cancel as needed.")
+    assert match.start() > footer_idx
+
+
+def test_sentinel_omitted_when_head_sha_unset():
+    # Dry-run / debug invocations may omit --head-sha. The script should emit
+    # no sentinel rather than a malformed `pr-review-agent:sha:` with an empty
+    # value the parser would never accept.
+    body = _run_post_review(head_sha=None)["body"]
+    assert "pr-review-agent:sha:" not in body
 
 
 def test_footer_reflects_git_remote_identity():
