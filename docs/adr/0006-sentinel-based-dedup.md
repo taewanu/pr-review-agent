@@ -54,7 +54,7 @@ Per-tick lookup of the prior-reviewed SHA for a given PR:
 2. Filter to `user.login == $GITHUB_USER`.
 3. Sort descending by `submitted_at`, falling back to `created_at` for pending reviews where `submitted_at` is null.
 4. For each review in order, grep the body for `<!-- pr-review-agent:sha:([0-9a-f]{40}) -->`. The first match is the prior reviewed SHA.
-5. If no review carries a sentinel, fall through to `state_read` (the phase-4 file).
+5. If no review carries a sentinel, fall through to `state_read` (the phase-4 file). When step 1 itself fails (network, 5xx, auth break), the fall-through to `state_read` still applies, but the first-review path in step 6 does not — skip the PR-tick rather than reading "could not check" as "no prior review".
 6. If neither yields a SHA, this PR is a first-review case — full base..HEAD diff.
 
 Multi-operator: each operator's daemon only sees its own login at step 2, so cross-operator sentinels never collide.
@@ -79,6 +79,7 @@ The migration is reversible during phase-5: a sentinel-write regression is cover
 | Failure under `pending-conflict` ([ADR 0005](./0005-failure-handling-policy.md)) | Post fails, sentinel never lands, state file untouched. Next tick retries the same SHA naturally. |
 | Failure under per-finding drops | Per-finding drops do not block the post; the review still ships and the sentinel still lands. |
 | First-review case (no prior sentinel, no state) | Full base..HEAD diff, logged at info level so initial uptake is visible in the daemon log. |
+| Discovery API failure (network, 5xx, auth break) | Fall back to `state_read`. If state is also empty, skip the PR-tick rather than classifying as first-review — "could not check" is distinct from "no prior review". Logged at warn level so a persistent API outage surfaces. |
 | Sentinel parse failure | Treated as no sentinel found; fall through to state file. Logged at warn level so a sanitizer regression surfaces. |
 | Sanitizer round-trip | A round-trip test posts a review with the sentinel, GETs the review back, and asserts the sentinel survives byte-exact. Pinned because the post pipeline is where a sanitizer regression would slip silently. |
 | Backfill | Pre-phase-5 reviews carry no sentinel. The daemon treats them as if no prior review existed — full diff on first phase-5 tick. No retroactive sentinel-write. |
