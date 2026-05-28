@@ -28,7 +28,7 @@ log_failure() {
 # replace this with a sentinel embedded in the posted review body — keep the
 # helpers minimal so the cutover stays cheap.
 #
-# Override $PR_REVIEW_STATE_DIR for tests; default per Day 2 plan.
+# Override $PR_REVIEW_STATE_DIR for tests.
 _state_dir() {
   printf '%s' "${PR_REVIEW_STATE_DIR:-$HOME/.local/state/pr-review-agent}"
 }
