@@ -14,15 +14,15 @@ Pre-commit hooks run lint, format, and security checks on staged files. CI mirro
 
 ## Run daemon
 
-Slice 1 ships the end-to-end pipeline as a manual one-shot:
+V1 ships two paths:
 
-```bash
-bash daemon/review-pr.sh <pr-url>
-```
+**Automated polling** (primary): `bash bin/install.sh` registers a launchd job that fires `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300). Logs flow to `.daemon.log`. Stop with `bash bin/uninstall.sh`.
 
-Prereqs: `gh auth login` (operator identity per ADR 0003), `claude` on PATH, `jq`, `python3`. The daemon preflights and bails with an actionable hint if any are missing.
+**Manual one-shot** (debugging or single-PR runs): `bash daemon/review-pr.sh <pr-url>` runs the pipeline once without polling.
 
-Polling, `launchd`, and the install wizard are deferred to Phase 3+. V1 targets own-repo PRs only (ADR 0004).
+Prereqs: `gh auth login` (operator identity per ADR 0003), `claude` on PATH, `jq`, `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing.
+
+V1 reviews PRs in repos that carry the `.claude/agents/` and `.claude/commands/` files at PR HEAD (per ADR 0004). Cross-repo support is V2 territory.
 
 ## Forking
 
@@ -32,11 +32,12 @@ The daemon fails with an actionable error only if origin is missing or unparseab
 
 ## Branching
 
-Each slice ships as its own branch and PR into `main`. Squash merges. Conventional commit prefixes (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
+Each change ships as its own branch and PR into `main`. `main` is protected: deletion blocked, force-push blocked, linear history required, PR review threads must be resolved, status checks `lint` + `test` enforced, squash-only. Conventional commit prefixes (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`).
 
 ## Where to look
 
-- V1 scope and user stories — GitHub issue #1 (the PRD parent)
+- V1 shipped scope — `phase-4` annotated tag (Added/Fixed/Trip-ups manifest); original PRD at issue #1 (closed)
+- V2 in-progress scope — PRD #21
 - Architectural decisions — `docs/adr/`
 - Review agents — `.claude/agents/review-agent-*.md`
 - Orchestrator slash command — `.claude/commands/review-pr.md`
