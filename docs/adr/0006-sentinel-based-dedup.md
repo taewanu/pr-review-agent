@@ -39,8 +39,10 @@ Review body footer, immediately after the operator identity line from [ADR 0003]
 
     ---
 
-    🤖 Drafted by [pr-review-agent](https://github.com/taewanu/pr-review-agent). Submit, edit, or cancel as needed.
+    🤖 Drafted by [<project>](<project-url>). Submit, edit, or cancel as needed.
     <!-- pr-review-agent:sha:abc1234567890abcdef1234567890abcdef12345678 -->
+
+The `<project>` and `<project-url>` slots are derived per fork from `git remote get-url origin`. The `pr-review-agent:` sentinel namespace is fixed across forks so the format stays parseable everywhere.
 
 The review body is the only surface GitHub guarantees on every review, including pending reviews with zero inline comments. First-inline placement breaks on findings-0 reviews and the server does not guarantee inline ordering.
 
