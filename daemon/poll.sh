@@ -97,8 +97,22 @@ for repo in "${REPOS[@]}"; do
       fi
     fi
 
-    state="$(state_read "$owner" "$repo_name" "$pr_number")"
-    last_sha="$(jq -r '.last_reviewed_sha // empty' <<<"$state")"
+    # Sentinel-first dedup per ADR 0006. State file is the fallback when the
+    # reviews API is unavailable.
+    last_sha=""
+    if sentinel_sha="$(discover_sentinel_sha "$owner" "$repo_name" "$pr_number" "$GITHUB_USER")"; then
+      last_sha="$sentinel_sha"
+    else
+      sentinel_rc=$?
+      state="$(state_read "$owner" "$repo_name" "$pr_number")"
+      last_sha="$(jq -r '.last_reviewed_sha // empty' <<<"$state")"
+      # ADR 0006 Discovery step 5: API failure must not collapse to first-review
+      # when state is also empty — skip and retry on next tick instead.
+      if [[ "$sentinel_rc" -eq 2 && -z "$last_sha" ]]; then
+        log_info "skipped (discovery API down, no state fallback): $pr_url"
+        continue
+      fi
+    fi
     if [[ -n "$last_sha" && "$head_sha" == "$last_sha" ]]; then
       log_info "skipped (same SHA ${head_sha:0:12}): $pr_url"
       continue

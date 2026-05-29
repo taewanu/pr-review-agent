@@ -24,9 +24,9 @@ log_failure() {
     "$category" "$url" "$sha" "$reason" >&2
 }
 
-# State tracking for same-SHA dedup. One file per PR. Phase-5 (ADR 0006) will
-# replace this with a sentinel embedded in the posted review body — keep the
-# helpers minimal so the cutover stays cheap.
+# State tracking for same-SHA dedup. One file per PR. Layered behind the
+# sentinel-based dedup (ADR 0006) as a fallback when GitHub's reviews API is
+# unavailable.
 #
 # Override $PR_REVIEW_STATE_DIR for tests.
 _state_dir() {
@@ -71,6 +71,40 @@ state_write() {
     return 1
   fi
   mv "$tmp" "$path"
+}
+
+# discover_sentinel_sha <owner> <repo> <pr-number> <login>
+# Reads the prior reviewed SHA from the most recent operator-authored review
+# body per ADR 0006. Exit codes drive the caller's fallback policy:
+#   0 — sentinel found (stdout has SHA)
+#   1 — API ok, no review carries a sentinel (stdout empty)
+#   2 — API call failed (network, 5xx, auth break)
+# 1 lets the caller fall through to state and accept first-review on empty;
+# 2 demands the caller skip the tick instead of misreading "could not check"
+# as "no prior review". `--paginate` keeps PRs with >30 reviews from silent
+# truncation.
+discover_sentinel_sha() {
+  local owner="$1" repo="$2" pr="$3" login="$4"
+  local reviews_json stderr_capture
+  stderr_capture="$(mktemp -t pr-review-discover.XXXXXX)"
+  if ! reviews_json="$(gh api --paginate "repos/${owner}/${repo}/pulls/${pr}/reviews" 2>"$stderr_capture")"; then
+    log_err "sentinel discovery: gh api .../pulls/${pr}/reviews failed: $(<"$stderr_capture")"
+    rm -f "$stderr_capture"
+    return 2
+  fi
+  rm -f "$stderr_capture"
+  local sha
+  sha="$(jq -r --arg login "$login" '
+    [.[] | select(.user.login == $login)]
+    | sort_by(.submitted_at // .created_at) | reverse
+    | [.[] | .body | capture("<!-- pr-review-agent:sha:(?<sha>[0-9a-f]{40}) -->"; "")? | .sha]
+    | first // ""
+  ' <<<"$reviews_json")"
+  if [[ -n "$sha" ]]; then
+    printf '%s\n' "$sha"
+    return 0
+  fi
+  return 1
 }
 
 # derive_project_identity <repo-root>
