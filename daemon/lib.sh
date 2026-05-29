@@ -85,11 +85,14 @@ state_write() {
 # truncation.
 discover_sentinel_sha() {
   local owner="$1" repo="$2" pr="$3" login="$4"
-  local reviews_json
-  if ! reviews_json="$(gh api --paginate "repos/${owner}/${repo}/pulls/${pr}/reviews" 2>/dev/null)"; then
-    log_err "sentinel discovery: gh api .../pulls/${pr}/reviews failed"
+  local reviews_json stderr_capture
+  stderr_capture="$(mktemp -t pr-review-discover.XXXXXX)"
+  if ! reviews_json="$(gh api --paginate "repos/${owner}/${repo}/pulls/${pr}/reviews" 2>"$stderr_capture")"; then
+    log_err "sentinel discovery: gh api .../pulls/${pr}/reviews failed: $(<"$stderr_capture")"
+    rm -f "$stderr_capture"
     return 2
   fi
+  rm -f "$stderr_capture"
   local sha
   sha="$(jq -r --arg login "$login" '
     [.[] | select(.user.login == $login)]

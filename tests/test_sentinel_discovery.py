@@ -45,18 +45,31 @@ def _sentinel_body(sha: str) -> str:
     return f"summary\n\n---\n\n_AI-drafted_\n<!-- pr-review-agent:sha:{sha} -->"
 
 
-def _run(reviews: list[dict] | str, login: str = "operator") -> tuple[str, int]:
+def _run(
+    reviews: list[dict] | str,
+    login: str = "operator",
+    fail_stderr: str = "",
+) -> tuple[str, int, str]:
     """Invoke discover_sentinel_sha with a stub `gh` that emits the given JSON.
 
     Pass `reviews` as a list to be JSON-serialized, or as the string "FAIL" to
-    have the stub exit non-zero (simulating API failure).
+    have the stub exit non-zero (simulating API failure). `fail_stderr` lets
+    a FAIL stub write a specific message to stderr so callers can assert it
+    propagates into the function's log_err output.
     """
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
         stub = Path(tmp) / "gh"
         if reviews == "FAIL":
-            script = "#!/usr/bin/env bash\nexit 1\n"
+            stderr_line = fail_stderr.replace("'", "'\\''")
+            script = textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                echo '{stderr_line}' >&2
+                exit 1
+                """
+            )
         else:
             payload = json.dumps(reviews)
             script = textwrap.dedent(
@@ -81,35 +94,46 @@ def _run(reviews: list[dict] | str, login: str = "operator") -> tuple[str, int]:
             text=True,
             env=env,
         )
-        return result.stdout.strip(), result.returncode
+        return result.stdout.strip(), result.returncode, result.stderr
 
 
 def test_returns_sha_when_sentinel_present():
-    sha, rc = _run([_review(_sentinel_body(SENTINEL_SHA_A))])
+    sha, rc, _ = _run([_review(_sentinel_body(SENTINEL_SHA_A))])
     assert rc == 0
     assert sha == SENTINEL_SHA_A
 
 
 def test_returns_empty_with_exit_1_when_no_sentinel():
-    sha, rc = _run([_review("review without a sentinel")])
+    sha, rc, _ = _run([_review("review without a sentinel")])
     assert rc == 1
     assert sha == ""
 
 
 def test_returns_empty_with_exit_1_when_no_reviews():
-    sha, rc = _run([])
+    sha, rc, _ = _run([])
     assert rc == 1
     assert sha == ""
 
 
 def test_returns_empty_with_exit_2_on_api_failure():
-    sha, rc = _run("FAIL")
+    sha, rc, _ = _run("FAIL")
     assert rc == 2
     assert sha == ""
 
 
+def test_log_err_includes_gh_stderr_on_failure():
+    # The function must surface gh's stderr in the error log so operators can
+    # tell a rate-limit from a 5xx from a DNS failure. Silencing it earlier
+    # collapsed every failure into a single opaque "failed" line.
+    msg = "HTTP 403: rate limit exceeded"
+    sha, rc, stderr = _run("FAIL", fail_stderr=msg)
+    assert rc == 2
+    assert sha == ""
+    assert msg in stderr
+
+
 def test_picks_most_recent_sentinel_by_submitted_at():
-    sha, rc = _run(
+    sha, rc, _ = _run(
         [
             _review(_sentinel_body(SENTINEL_SHA_A), submitted_at="2026-05-28T10:00:00Z"),
             _review(_sentinel_body(SENTINEL_SHA_B), submitted_at="2026-05-28T12:00:00Z"),
@@ -123,7 +147,7 @@ def test_picks_most_recent_sentinel_by_submitted_at():
 def test_filters_by_login():
     # Only the other-operator review carries a sentinel; ours has none.
     # Should not return the other operator's SHA.
-    sha, rc = _run(
+    sha, rc, _ = _run(
         [
             _review("ours without sentinel", login="operator"),
             _review(_sentinel_body(SENTINEL_SHA_A), login="someone-else"),
@@ -135,7 +159,7 @@ def test_filters_by_login():
 
 def test_uses_created_at_for_pending_reviews():
     # Pending reviews have submitted_at=null. Sort falls back to created_at.
-    sha, rc = _run(
+    sha, rc, _ = _run(
         [
             _review(
                 _sentinel_body(SENTINEL_SHA_A),
@@ -157,7 +181,7 @@ def test_skips_reviews_without_sentinel_when_picking_most_recent():
     # Most recent review has no sentinel; fall through to the next-most-recent
     # one that does. Covers the realistic case where a sentinel-write regression
     # ships briefly and is reverted in the same PR.
-    sha, rc = _run(
+    sha, rc, _ = _run(
         [
             _review(_sentinel_body(SENTINEL_SHA_A), submitted_at="2026-05-28T10:00:00Z"),
             _review("regression — no sentinel", submitted_at="2026-05-28T12:00:00Z"),
