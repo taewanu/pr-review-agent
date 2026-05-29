@@ -22,7 +22,7 @@ V1 ships two paths:
 
 Prereqs: `gh auth login` (operator identity per ADR 0003), `claude` on PATH, `jq`, `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing.
 
-The daemon invokes `claude -p` with `--plugin-dir <pr-review-agent root>` (per ADR 0007) so target repos do **not** need to carry `.claude/agents/` or `.claude/commands/`. A target repo can still override by carrying its own file at the same path. Claude's project-level loading (cwd) wins over plugin-level.
+The daemon bundles its own agent + slash-command definitions into the scratch clone before invoking `claude -p` (per ADR 0007), so target repos do **not** need to carry `.claude/agents/` or `.claude/commands/`. A target repo can override by carrying its own file at the same path; the bundle's `[[ -e dst ]] || cp` guard preserves the existing file.
 
 ## Forking
 
