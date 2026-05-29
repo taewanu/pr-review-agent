@@ -66,7 +66,11 @@ class Finding(BaseModel):
 
 class ReviewPayload(BaseModel):
     summary: str
-    comments: list[Finding]
+    # `comments` defaults to `[]` so a payload like `{"summary": "..."}` validates
+    # cleanly when the agent omits the field on a zero-finding review (intermittent
+    # behavior tracked in #44). The prompt still asks for explicit `comments: []`,
+    # but the pipeline absorbs the omission instead of failing schema-invalid.
+    comments: list[Finding] = []
 
 
 def extract(raw: str) -> ReviewPayload:

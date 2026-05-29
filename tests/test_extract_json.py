@@ -111,11 +111,21 @@ def test_malformed_json_inside_fence_raises_parse_error():
     assert exc_info.value.category == "parse-error"
 
 
-def test_missing_required_field_raises_schema_invalid():
-    raw = _wrap({"summary": "missing comments field"})
+def test_missing_summary_raises_schema_invalid():
+    raw = _wrap({"comments": []})
     with pytest.raises(ExtractError) as exc_info:
         extract_json.extract(raw)
     assert exc_info.value.category == "schema-invalid"
+
+
+def test_missing_comments_defaults_to_empty():
+    # Agent intermittently omits `comments` on zero-finding reviews (#44).
+    # ReviewPayload defaults comments to [] so the pipeline doesn't trip
+    # schema-invalid on a payload like `{"summary": "..."}`.
+    raw = _wrap({"summary": "nothing to flag"})
+    payload = extract_json.extract(raw)
+    assert payload.summary == "nothing to flag"
+    assert payload.comments == []
 
 
 def test_invalid_enum_value_raises_schema_invalid():
