@@ -3,7 +3,7 @@
 # extract + anchor the structured payload, post the result as a Pending review.
 #
 # Usage:
-#   bash daemon/review-pr.sh [--keep-scratch] <pr-url>
+#   bash daemon/review-pr.sh [--keep-scratch] [--last-sha <sha>] <pr-url>
 
 set -euo pipefail
 
@@ -28,11 +28,20 @@ fi
 derive_project_identity "$SCRIPT_DIR/.."
 
 KEEP_SCRATCH=0
+LAST_SHA=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --keep-scratch)
       KEEP_SCRATCH=1
       shift
+      ;;
+    --last-sha)
+      if [[ $# -lt 2 ]]; then
+        log_err "--last-sha requires a value"
+        exit 1
+      fi
+      LAST_SHA="$2"
+      shift 2
       ;;
     -*)
       log_err "unknown flag: $1"
@@ -45,7 +54,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -ne 1 ]]; then
-  log_err "usage: review-pr.sh [--keep-scratch] <pr-url>"
+  log_err "usage: review-pr.sh [--keep-scratch] [--last-sha <sha>] <pr-url>"
   exit 1
 fi
 
@@ -119,7 +128,24 @@ ANCHOR_OUT="$SCRATCH/.pr-review-anchor.out"
 POST_ERR="$SCRATCH/.pr-review-post.err"
 
 log_step "fetching diff"
-gh pr diff "$PR_URL" >"$DIFF_FILE"
+# When --last-sha is set, scope the diff to changes since the prior review's
+# HEAD so the agent only re-reads what's new. Falls back to the full PR diff
+# when last_sha can't be fetched (e.g. force-pushed away) or wasn't passed
+# (first-review). git supports `fetch origin <sha>` against GitHub when the
+# SHA is reachable from any ref the server exposes.
+diff_scoped=0
+if [[ -n "$LAST_SHA" ]]; then
+  if (cd "$SCRATCH" && git fetch --quiet origin "$LAST_SHA" 2>/dev/null); then
+    (cd "$SCRATCH" && git diff "$LAST_SHA..HEAD") >"$DIFF_FILE"
+    diff_scoped=1
+    log_info "diff scoped to ${LAST_SHA:0:12}..HEAD"
+  else
+    log_info "could not fetch ${LAST_SHA:0:12}, falling back to full PR diff"
+  fi
+fi
+if [[ $diff_scoped -eq 0 ]]; then
+  gh pr diff "$PR_URL" >"$DIFF_FILE"
+fi
 
 log_step "running review agent via claude -p"
 (

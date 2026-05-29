@@ -18,7 +18,7 @@ V1 ships two paths:
 
 **Automated polling** (primary): `bash bin/install.sh` registers a launchd job that fires `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300). Logs flow to `.daemon.log`. Stop with `bash bin/uninstall.sh`.
 
-**Manual one-shot** (debugging or single-PR runs): `bash daemon/review-pr.sh <pr-url>` runs the pipeline once without polling.
+**Manual one-shot** (debugging or single-PR runs): `bash daemon/review-pr.sh <pr-url>` runs the review pipeline once without polling. `bash daemon/reply-pr.sh <pr-url>` runs the operator-reply ack pass once without polling.
 
 Prereqs: `gh auth login` (operator identity per ADR 0003), `claude` on PATH, `jq`, `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing.
 

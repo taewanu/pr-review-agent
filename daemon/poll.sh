@@ -97,6 +97,13 @@ for repo in "${REPOS[@]}"; do
       fi
     fi
 
+    # Reply handling runs every tick regardless of dedup — operators reply
+    # independent of HEAD changes. reply-pr.sh exits 0 cheaply when nothing
+    # to ack (one gh api call, no scratch clone).
+    if ! bash "$SCRIPT_DIR/reply-pr.sh" "$pr_url"; then
+      log_err "reply check failed for $pr_url — continuing to review step"
+    fi
+
     # Sentinel-first dedup per ADR 0006. State file is the fallback when the
     # reviews API is unavailable.
     last_sha=""
@@ -119,10 +126,15 @@ for repo in "${REPOS[@]}"; do
     fi
 
     log_info "reviewing: $pr_url (HEAD ${head_sha:0:12})"
-    if bash "$SCRIPT_DIR/review-pr.sh" "$pr_url"; then
-      # review_id is a placeholder until the sentinel migration (ADR 0006);
-      # phase-4 dedup only reads last_reviewed_sha. The field stays in the
-      # schema so the sentinel cutover doesn't need a state-file format bump.
+    # Pass last_sha down so review-pr.sh can scope the diff to changes since
+    # the prior review's HEAD. Empty last_sha (first-review) uses the full
+    # PR diff.
+    review_args=()
+    if [[ -n "$last_sha" ]]; then
+      review_args+=(--last-sha "$last_sha")
+    fi
+    review_args+=("$pr_url")
+    if bash "$SCRIPT_DIR/review-pr.sh" "${review_args[@]}"; then
       state_write "$owner" "$repo_name" "$pr_number" "$head_sha" 0
     else
       log_err "review failed for $pr_url — state untouched, will retry next tick"
