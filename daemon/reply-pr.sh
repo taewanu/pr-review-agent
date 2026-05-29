@@ -92,12 +92,14 @@ THREADS_JSON="$(jq --arg login "$GITHUB_USER" '
         ) as $our_later
       | select($our_later == 0)
       | ($by_id[($op.in_reply_to_id | tostring)]) as $parent
+      | ($parent.line // $parent.original_line) as $endL
+      | ($parent.start_line // $parent.original_start_line // $endL) as $startL
       | {
           parent_finding: {
             comment_id: ($parent.id | tostring),
             path: $parent.path,
-            line: ($parent.line // $parent.original_line),
-            end_line: ($parent.start_line // $parent.original_start_line),
+            line: $startL,
+            end_line: $endL,
             body: $parent.body
           },
           operator_reply: {
@@ -131,10 +133,18 @@ HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
 SCRATCH="$(mktemp -d -t pr-review-reply.XXXXXX)"
+POST_ERR=""
+cleanup() {
+  if [[ $KEEP_SCRATCH -ne 1 ]]; then
+    rm -rf "$SCRATCH"
+  fi
+  if [[ -n "$POST_ERR" ]]; then
+    rm -f "$POST_ERR"
+  fi
+}
+trap cleanup EXIT
 if [[ $KEEP_SCRATCH -eq 1 ]]; then
   log_info "scratch (will be preserved): $SCRATCH"
-else
-  trap 'rm -rf "$SCRATCH"' EXIT
 fi
 
 gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
@@ -211,8 +221,7 @@ fi
 # Post each reply. /comments/{id}/replies inherits path+line from the parent;
 # body is the only field. Sentinel footer flags addressed-by-us for V2.1.
 log_step "posting replies"
-post_err="$(mktemp -t pr-review-reply-post.XXXXXX)"
-trap 'rm -f "$post_err"' EXIT
+POST_ERR="$(mktemp -t pr-review-reply-post.XXXXXX)"
 post_ok=0
 while IFS= read -r reply; do
   in_reply_to_id="$(jq -r '.in_reply_to_id' <<<"$reply")"
@@ -223,13 +232,18 @@ while IFS= read -r reply; do
 
 <!-- pr-review-agent:addressed:${addressed_id} -->"
 
-  if printf '%s' "$full_body" | gh api \
+  # jq builds {body: "..."} so `gh api --input -` sees a proper JSON payload.
+  # Earlier draft used `-f body=@-`, but `-f`/--raw-field doesn't expand `@-`
+  # (that's `-F`/--field), so the literal string "@-" was getting posted.
+  body_json="$(jq -n --arg b "$full_body" '{body: $b}')"
+
+  if printf '%s' "$body_json" | gh api \
     --method POST \
     "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments/${in_reply_to_id}/replies" \
-    -f body=@- >"$post_err" 2>&1; then
+    --input - >"$POST_ERR" 2>&1; then
     post_ok=$((post_ok + 1))
   else
-    log_err "reply POST failed for comment ${in_reply_to_id}: $(<"$post_err")"
+    log_err "reply POST failed for comment ${in_reply_to_id}: $(<"$POST_ERR")"
   fi
 done < <(jq -c '.replies[]' "$PAYLOAD_FILE")
 
