@@ -12,6 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PR_REVIEW_AGENT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
@@ -164,9 +165,11 @@ PAYLOAD_FILE="$SCRATCH/.pr-review-reply-payload.json"
 printf '%s\n' "$THREADS_JSON" >"$THREADS_FILE"
 
 log_step "running reply agent via claude -p"
+# --plugin-dir loads /reply-pr + review-agent-reply from $PR_REVIEW_AGENT_ROOT;
+# cwd stays SCRATCH so Read/Glob/Grep operate on target code (ADR 0007).
 (
   cd "$SCRATCH"
-  claude -p "/reply-pr $PR_URL --threads $THREADS_BASENAME" >"$RAW_FILE"
+  claude -p --plugin-dir "$PR_REVIEW_AGENT_ROOT" "/reply-pr $PR_URL --threads $THREADS_BASENAME" >"$RAW_FILE"
 )
 if [[ ! -s "$RAW_FILE" ]]; then
   log_failure "empty-stdout" "$PR_URL" "$HEAD_OID" "reply agent produced no output"
