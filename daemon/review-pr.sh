@@ -8,6 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PR_REVIEW_AGENT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
@@ -148,9 +149,11 @@ if [[ $diff_scoped -eq 0 ]]; then
 fi
 
 log_step "running review agent via claude -p"
+# --plugin-dir loads /review-pr + review-agent-* from $PR_REVIEW_AGENT_ROOT;
+# cwd stays SCRATCH so Read/Glob/Grep operate on target code (ADR 0007).
 (
   cd "$SCRATCH"
-  claude -p "/review-pr $PR_URL --diff $DIFF_BASENAME" >"$RAW_FILE"
+  claude -p --plugin-dir "$PR_REVIEW_AGENT_ROOT" "/review-pr $PR_URL --diff $DIFF_BASENAME" >"$RAW_FILE"
 )
 if [[ ! -s "$RAW_FILE" ]]; then
   log_failure "empty-stdout" "$PR_URL" "$HEAD_OID" "claude produced no output"
