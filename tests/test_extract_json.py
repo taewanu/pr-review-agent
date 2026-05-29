@@ -311,6 +311,79 @@ def test_multiple_style_violations_reported_together():
     assert "comments[1]" in msg
 
 
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "Slice 1",
+        "Slice 4",
+        "Phase 5",
+        "Phase 10",
+        "Story #26",
+        "PRD #21",
+        "PRD 21",
+    ],
+)
+def test_task_ref_in_summary_raises_style_violation(ref):
+    raw = _wrap({"summary": f"Clean change. Drops the {ref} comment.", "comments": []})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+    assert "task-scoped ref" in str(exc_info.value)
+    assert ref in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "Slice 4",
+        "Phase 5",
+        "Story #26",
+        "PRD #21",
+    ],
+)
+def test_task_ref_in_comment_body_raises_style_violation(ref):
+    f = _minimal_finding(body=f"**Drop the {ref} comment.** Rots once the slice ships.")
+    raw = _wrap({"summary": "x", "comments": [f]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+    assert "task-scoped ref" in str(exc_info.value)
+    assert "comments[0]" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "stable_ref",
+    [
+        "ADR 0006",
+        "ADR 0005",
+        "RFC 5321",
+        "ISO 8601",
+    ],
+)
+def test_stable_refs_pass_style_check(stable_ref):
+    # ADR numbers and external standards are stable references the memory rule
+    # explicitly allows; the task-ref check must not match them.
+    raw = _wrap({"summary": f"Aligns with {stable_ref}. Nothing to flag.", "comments": []})
+    payload = extract_json.extract(raw)
+    assert stable_ref in payload.summary
+
+
+@pytest.mark.parametrize(
+    "false_positive",
+    [
+        "slice the array at index 4",  # lowercase 'slice' — common in code prose
+        "phase-5",  # hyphenated form used in branch names and tags
+        "in a later phase 5 we will",  # lowercase 'phase' in prose
+    ],
+)
+def test_task_ref_check_skips_lowercase_and_hyphenated(false_positive):
+    # Case sensitivity is the false-positive guard: title-case `Slice N` /
+    # `Phase N` are task-scoped; lowercase or hyphenated forms are not.
+    raw = _wrap({"summary": f"Clean change. {false_positive}.", "comments": []})
+    payload = extract_json.extract(raw)
+    assert false_positive in payload.summary
+
+
 def test_style_fires_before_cap_when_both_apply():
     # 11 em-dash findings: style is the root cause; cap is downstream noise.
     # Operator should see the voice problem first, not be told to cull one.

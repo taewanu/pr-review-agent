@@ -26,6 +26,7 @@ Flag a finding only when one of these applies:
 - **Clear ADR / CLAUDE.md violation** — a documented rule is broken and you can quote it.
 - **Missing test for an exercised code path** — runtime behavior is not pinned by any test. Not "more tests would be nice."
 - **Pre-existing bug surfaced by the diff** — nearby unchanged code has a real defect this PR makes visible. Use severity `pre_existing`.
+- **Task-scoped refs in committed content** — `Slice N`, `Phase N`, `Story #N`, or `PRD #N` in code comments, docstrings, prompt files, or ADRs. They rot once the slice ships and the PR description already carries the same context. ADR numbers (`ADR 0006`) and external standards (`RFC 5321`) are stable references and fine.
 
 Do NOT flag:
 
@@ -98,9 +99,27 @@ Longer example (with bullets):
 > - Splitting makes failure modes orthogonal
 > - Each function then tests in isolation
 
-`summary` does not get the bold-lead shape. It stays plain prose at the top of the review body.
+`summary` does not get the bold-lead shape. It stays plain prose at the top of the review body, with the structure described in "Summary shape" below.
 
 The validator hard-enforces the **word-opener rule** (on both plain and bolded leads) but does not enforce the bold-lead shape itself. A body that ships plain prose still passes the validator. Opener voice is the load-bearing rule; the bold wrapper is the shape convention.
+
+### Summary shape
+
+`summary` opens with one lead sentence stating the change, then bullets for each independent judgment (one per line). Prose merges independent observations visually; bullets keep them scannable.
+
+The first-sentence rule above applies to the lead. Bullets are 0 or 1+, each a short clause that carries its own judgment. A judgment is "an independent verdict the reader scans for" — "matches the commit message", "tests cover the new path", "nothing else high-signal to flag". When the lead alone says everything, skip bullets.
+
+Short example (no bullets needed):
+
+> ADR reads cleanly. Nothing high-signal to flag.
+
+Longer example:
+
+> Two stale task-ref comments dropped from `daemon/lib.sh` and `daemon/notify-slack.sh`.
+>
+> - Change matches the commit message
+> - Pre-commit clean
+> - Nothing else high-signal to flag
 
 ### Other rules
 
@@ -108,6 +127,7 @@ The validator hard-enforces the **word-opener rule** (on both plain and bolded l
 - **One idea per finding.** Two ideas? Pick the load-bearing one.
 - **Cut filler.** "just", "actually", "basically", "I think", "it seems like", "Please add", "Worth a sentence".
 - **Cut meta-commentary.** "…so future maintainers don't…", "this is the right ADR to anchor it", "lock this in as an architectural property". The reader sees what the comment is for.
+- **"review agent" not "reviewer".** The system is the **review agent**. "Reviewer" means the human PR author/maintainer doing triage. When self-referring or referring to past comments by this system, use "review agent" or "this review". Internal code identifiers (`review-agent-default.md`) are unaffected — the rule is about prose, not symbols.
 
 ### Examples (verbose → tight)
 
@@ -180,7 +200,7 @@ The last thing in your stdout MUST be a fenced ` ```json ` block containing a JS
 
 Field rules:
 
-- `summary`: 2–3 sentences. The PR review's top-level body.
+- `summary`: 두괄식 lead sentence + 0 or 1+ bulleted independent judgments. See "Summary shape" under Prose style.
 - `comments[].path`: repo-relative path of the changed file.
 - `comments[].line`: required integer, 1-indexed line in the file at PR HEAD. Never `null`. For file-level findings with no natural line anchor (e.g. "this whole module's docstring is missing"), pick a representative line inside one of the file's diff hunks; the daemon will keep it inline. For concerns that don't fit any file, put them in `summary` instead of inventing a path.
 - `comments[].end_line`: optional. When set and greater than `line`, the comment renders as a multi-line range from `line` to `end_line` (both inclusive). Use this when the finding is about a contiguous block: a function body, a conditional, a helper. Both `line` and `end_line` must fall in the same diff hunk or the comment relocates into the Review body's `## Additional findings` section (per ADR 0005). Omit `end_line` for single-line findings; `end_line == line` is treated as single-line.
@@ -209,6 +229,7 @@ Pick the combination that makes the finding fastest to triage. Most findings lan
 - **Cap: at most 10 findings.** If more candidates exist, rank by severity (`important` > `nit` > `pre_existing`) then by impact, and keep the top 10.
 - **Forbidden combo**: never emit `severity="important"` with `type="polish"`. If the daemon downstream sees one, it drops the finding and notes the drop in the review body. Better to not emit it in the first place.
 - **No em dash (`—`).** AI tell. Applies to `summary` AND every `comments[].body`. Use periods, commas, parentheses, or a new sentence. Zero `—` characters anywhere in the JSON payload.
+- **No task-scoped refs in payload prose.** `Slice N`, `Phase N`, `Story #N`, `PRD #N` rot the moment the slice ships. Drop from `summary` and `comments[].body`. ADR numbers and external standards are stable references and fine.
 - **No prose after the fence.** The pipeline reads the last ` ```json ` block in your output; anything after it is ignored. Anything before it is also ignored, so feel free to think out loud first if it helps. The structured payload at the end is the only thing that ships.
 
 If you have nothing to flag, emit a valid payload with `comments: []`. A zero-finding review is allowed.

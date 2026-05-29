@@ -27,6 +27,17 @@ FORBIDDEN_PREFIXES = (
     "Maybe ",
 )
 FORBIDDEN_SUMMARY_PREFIXES = ("**",) + FORBIDDEN_PREFIXES
+# Task-scoped identifiers rot the moment the slice ships and the PR description
+# already carries the same context. Case-sensitive on Slice/Phase so lowercase
+# code prose ("phase=5", "slice the array") doesn't trip. ADR numbers and
+# external standards (RFC, ISO) are stable references and intentionally not
+# matched here.
+TASK_REF_PATTERNS = (
+    re.compile(r"\bSlice \d+\b"),
+    re.compile(r"\bPhase \d+\b"),
+    re.compile(r"\bStory #\d+\b"),
+    re.compile(r"\bPRD #?\d+\b"),
+)
 
 
 class ExtractError(Exception):
@@ -107,6 +118,13 @@ def _forbidden_prefix(
     return None
 
 
+def _find_task_ref(text: str) -> str | None:
+    for pattern in TASK_REF_PATTERNS:
+        if (match := pattern.search(text)) is not None:
+            return match.group(0)
+    return None
+
+
 def _validate_style(payload: ReviewPayload) -> None:
     """Post-hoc voice checks. Routes through ADR 0005 as a system failure."""
     violations: list[str] = []
@@ -114,11 +132,15 @@ def _validate_style(payload: ReviewPayload) -> None:
         violations.append("summary contains em dash")
     if (prefix := _forbidden_prefix(payload.summary, FORBIDDEN_SUMMARY_PREFIXES)) is not None:
         violations.append(f"summary opens with forbidden prefix {prefix.rstrip()!r}")
+    if (ref := _find_task_ref(payload.summary)) is not None:
+        violations.append(f"summary contains task-scoped ref {ref!r}")
     for i, c in enumerate(payload.comments):
         if EM_DASH in c.body:
             violations.append(f"comments[{i}].body contains em dash")
         if (prefix := _forbidden_prefix(c.body, FORBIDDEN_PREFIXES, strip_bold=True)) is not None:
             violations.append(f"comments[{i}].body opens with forbidden prefix {prefix.rstrip()!r}")
+        if (ref := _find_task_ref(c.body)) is not None:
+            violations.append(f"comments[{i}].body contains task-scoped ref {ref!r}")
     if violations:
         raise ExtractError("style-violation", "; ".join(violations))
 
