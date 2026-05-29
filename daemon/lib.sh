@@ -107,6 +107,30 @@ discover_sentinel_sha() {
   return 1
 }
 
+# bundle_operator_agents <scratch-dir>
+# Copies operator's agent + slash-command files from this repo's .claude/ into
+# the scratch clone's .claude/ so claude -p (which loads from cwd) finds them
+# without requiring target-repo setup (ADR 0007). Target-repo files (already
+# present in the scratch from the clone) win via the `[[ -e dst ]] || cp`
+# guard — a repo can ship its own override.
+bundle_operator_agents() {
+  local scratch="$1"
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  mkdir -p "$scratch/.claude/agents" "$scratch/.claude/commands"
+  local f base
+  for f in "$repo_root/.claude/agents/review-agent-"*.md; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f")"
+    [[ -e "$scratch/.claude/agents/$base" ]] || cp "$f" "$scratch/.claude/agents/$base"
+  done
+  for f in "$repo_root/.claude/commands/review-pr.md" "$repo_root/.claude/commands/reply-pr.md"; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f")"
+    [[ -e "$scratch/.claude/commands/$base" ]] || cp "$f" "$scratch/.claude/commands/$base"
+  done
+}
+
 # derive_project_identity <repo-root>
 # Sets PROJECT_URL/PROJECT_NAME from `git remote get-url origin`. Returns
 # non-zero if the origin is missing or not a parseable github.com URL.
