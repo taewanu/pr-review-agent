@@ -3,8 +3,9 @@
 # unaddressed threads, dispatches the reply agent to verify each claim
 # against the file at HEAD, posts threaded acks with addressed-sentinel.
 #
-# Push-back is V2.1; unverified threads are silently skipped and retry on
-# the next tick after new commits land.
+# Replies are emitted as `confirmed` (file matches operator's claim) or
+# `pushback` (file shows the mismatch). Non-claim replies (thanks, questions)
+# get no reply and remain unaddressed until the operator posts a fix claim.
 #
 # Usage:
 #   bash daemon/reply-pr.sh [--keep-scratch] <pr-url>
@@ -202,11 +203,19 @@ if "replies" not in data or not isinstance(data["replies"], list):
     print("reply agent: missing or non-list 'replies' key", file=sys.stderr)
     sys.exit(1)
 required = ("in_reply_to_id", "addressed_comment_id", "body")
+valid_modes = ("confirmed", "pushback")
 for i, r in enumerate(data["replies"]):
     missing = [k for k in required if k not in r]
     if missing:
         print("category=schema-invalid", file=sys.stderr)
         print(f"reply agent: replies[{i}] missing keys: {missing}", file=sys.stderr)
+        sys.exit(1)
+    # mode optional with `confirmed` default (#37). Normalise so downstream
+    # consumers (logging, future metrics) can rely on it always being set.
+    mode = r.setdefault("mode", "confirmed")
+    if mode not in valid_modes:
+        print("category=schema-invalid", file=sys.stderr)
+        print(f"reply agent: replies[{i}] mode {mode!r} not in {valid_modes}", file=sys.stderr)
         sys.exit(1)
 print(json.dumps(data))
 PYEOF
@@ -216,7 +225,9 @@ then
 fi
 
 REPLY_COUNT="$(jq '.replies | length' "$PAYLOAD_FILE")"
-log_info "$REPLY_COUNT reply/replies verified"
+CONFIRMED_COUNT="$(jq '[.replies[] | select(.mode == "confirmed")] | length' "$PAYLOAD_FILE")"
+PUSHBACK_COUNT="$(jq '[.replies[] | select(.mode == "pushback")] | length' "$PAYLOAD_FILE")"
+log_info "$REPLY_COUNT reply/replies ready (${CONFIRMED_COUNT} confirmed, ${PUSHBACK_COUNT} pushback)"
 if [[ "$REPLY_COUNT" -eq 0 ]]; then
   exit 0
 fi
