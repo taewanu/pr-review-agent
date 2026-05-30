@@ -68,29 +68,29 @@ log_info "checking for unaddressed replies: $PR_URL"
 # https://docs.github.com/en/rest/pulls/comments
 COMMENTS_JSON="$(gh api --paginate "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments")"
 
-# Find unaddressed reply threads: an operator reply on our finding with no
-# later reply from us in the same thread. Sentinel in our replies is V2.1
-# metadata, not used by this timestamp-based detection.
+# Find unaddressed reply threads via the addressed-sentinel (#39). Replaces
+# the V2 `user.login != $login` filter which was dormant in 1-operator setups
+# (daemon and operator share an identity). Multi-user behavior unchanged.
 THREADS_JSON="$(jq --arg login "$GITHUB_USER" '
   . as $all
+  # IDs we have already acked, extracted from prior acks sentinel markers.
+  | [.[] | (.body // "") | scan("pr-review-agent:addressed:([0-9]+)") | .[0]]
+    as $addressed
   | (map({key: (.id | tostring), value: .}) | from_entries) as $by_id
   | map(
-      select(
-        .in_reply_to_id != null
-        and .user.login != $login
-        and ($by_id[(.in_reply_to_id | tostring)].user.login == $login)
-      )
+      # Bind .id to $cur first; piping into $addressed shifts `.` to the array,
+      # so a naked `.id` inside `index(...)` would fail.
+      . as $cur
+      | select(
+          $cur.in_reply_to_id != null
+          # parent must be our finding
+          and ($by_id[($cur.in_reply_to_id | tostring)].user.login == $login)
+          # exclude our own acks (body carries the sentinel)
+          and (($cur.body // "") | test("pr-review-agent:addressed:") | not)
+          # exclude replies already in the addressed-set
+          and (($addressed | index($cur.id | tostring)) | not)
+        )
       | . as $op
-      | (
-          $all
-          | map(select(
-              .user.login == $login
-              and .in_reply_to_id == $op.in_reply_to_id
-              and .created_at > $op.created_at
-            ))
-          | length
-        ) as $our_later
-      | select($our_later == 0)
       | ($by_id[($op.in_reply_to_id | tostring)]) as $parent
       | ($parent.line // $parent.original_line) as $endL
       | ($parent.start_line // $parent.original_start_line // $endL) as $startL
