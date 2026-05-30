@@ -233,7 +233,8 @@ if [[ "$REPLY_COUNT" -eq 0 ]]; then
 fi
 
 # Post each reply. /comments/{id}/replies inherits path+line from the parent;
-# body is the only field. Sentinel footer flags addressed-by-us for V2.1.
+# body is the only field. Sentinel footer flags addressed-by-us so the next
+# polling cycle's sentinel-based detection (#39) skips this reply.
 log_step "posting replies"
 POST_ERR="$(mktemp -t pr-review-reply-post.XXXXXX)"
 post_ok=0

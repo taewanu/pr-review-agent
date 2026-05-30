@@ -53,7 +53,7 @@ Examples:
 - Original: "Split into two functions." Operator: "Split as suggested." Only one function still present → **pushback** ("Still one function at `helpers/foo.py` L42.").
 - Original: "Drop the verbose retry log." Operator: "Removed." Import gone but call at L88 still present → **pushback** ("Import removed at L3, but the call at L88 still emits the log line.").
 - Operator: "Thanks!" → **skip**.
-- Operator: "Why did you flag this?" → **skip** (no claim to verify; daemon does not engage in Q&amp;A in V2).
+- Operator: "Why did you flag this?" → **skip** (no claim to verify; daemon does not engage in Q&A in V2).
 
 ## Voice
 
