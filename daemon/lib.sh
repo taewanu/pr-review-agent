@@ -74,32 +74,45 @@ state_write() {
 }
 
 # discover_sentinel_sha <owner> <repo> <pr-number> <login>
-# Reads the prior reviewed SHA from the most recent operator-authored review
-# body per ADR 0006. Exit codes drive the caller's fallback policy:
+# Reads the prior reviewed SHA from the most recent operator-authored review or
+# PR comment carrying the ADR 0006 sentinel. Comments are scanned too so the SHA
+# survives a submit-modal body-wipe that strips it from the review (#49). Exit
+# codes drive the caller's fallback policy:
 #   0 — sentinel found (stdout has SHA)
-#   1 — API ok, no review carries a sentinel (stdout empty)
-#   2 — API call failed (network, 5xx, auth break)
+#   1 — APIs ok, nothing carries a sentinel (stdout empty)
+#   2 — the reviews API call failed (network, 5xx, auth break)
 # 1 lets the caller fall through to state and accept first-review on empty;
 # 2 demands the caller skip the tick instead of misreading "could not check"
-# as "no prior review". `--paginate` keeps PRs with >30 reviews from silent
-# truncation.
+# as "no prior review". `--paginate` keeps PRs with >30 reviews/comments from
+# silent truncation.
 discover_sentinel_sha() {
   local owner="$1" repo="$2" pr="$3" login="$4"
-  local reviews_json stderr_capture
+  local reviews_json comments_json stderr_capture
   stderr_capture="$(mktemp -t pr-review-discover.XXXXXX)"
   if ! reviews_json="$(gh api --paginate "repos/${owner}/${repo}/pulls/${pr}/reviews" 2>"$stderr_capture")"; then
     log_err "sentinel discovery: gh api .../pulls/${pr}/reviews failed: $(<"$stderr_capture")"
     rm -f "$stderr_capture"
     return 2
   fi
+  # Comments are best-effort: a failure here degrades to reviews-only rather
+  # than escalating to a return-2 skip, since reviews (the primary source)
+  # already succeeded.
+  if ! comments_json="$(gh api --paginate "repos/${owner}/${repo}/issues/${pr}/comments" 2>"$stderr_capture")"; then
+    log_err "sentinel discovery: gh api .../issues/${pr}/comments failed (degrading to reviews-only): $(<"$stderr_capture")"
+    comments_json="[]"
+  fi
   rm -f "$stderr_capture"
+  # One timeline across both sources, newest first; a still-pending review's
+  # submitted_at is null, so fall back to created_at.
   local sha
-  sha="$(jq -r --arg login "$login" '
-    [.[] | select(.user.login == $login)]
-    | sort_by(.submitted_at // .created_at) | reverse
+  sha="$(jq -rn --argjson reviews "$reviews_json" --argjson comments "$comments_json" --arg login "$login" '
+    ([$reviews[]  | {login: .user.login, ts: (.submitted_at // .created_at), body}]
+     + [$comments[] | {login: .user.login, ts: .created_at, body}])
+    | [.[] | select(.login == $login)]
+    | sort_by(.ts) | reverse
     | [.[] | .body | capture("<!-- pr-review-agent:sha:(?<sha>[0-9a-f]{40}) -->"; "")? | .sha]
     | first // ""
-  ' <<<"$reviews_json")"
+  ')"
   if [[ -n "$sha" ]]; then
     printf '%s\n' "$sha"
     return 0
