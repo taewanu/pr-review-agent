@@ -152,3 +152,25 @@ derive_project_identity() {
   PROJECT_URL="https://github.com/${derived_owner}/${derived_repo}"
   PROJECT_NAME="$derived_repo"
 }
+
+# post_pickup_ack <owner> <repo> <pr-number> <head-sha>
+# Posts a transient "reviewing" PR comment (#48) so the operator has a PR-side
+# signal during the multi-minute review, and prints the new comment's id on
+# stdout. Best-effort: on any failure it prints nothing and still returns 0, so
+# a missing ack never aborts the review.
+post_pickup_ack() {
+  local owner="$1" repo="$2" pr="$3" sha="$4"
+  local body="👀 Reviewing \`${sha:0:12}\`… drafting a pending review."
+  gh api "repos/${owner}/${repo}/issues/${pr}/comments" \
+    -f body="$body" --jq '.id' 2>/dev/null || true
+}
+
+# delete_comment <owner> <repo> <comment-id>
+# Deletes an issue comment by id; a no-op on an empty id. Best-effort (returns 0
+# even when the delete fails) — used to clear the pickup ack (#48) once the
+# review lands, where a failed cleanup is not worth aborting over.
+delete_comment() {
+  local owner="$1" repo="$2" comment_id="$3"
+  [[ -n "$comment_id" ]] || return 0
+  gh api -X DELETE "repos/${owner}/${repo}/issues/comments/${comment_id}" >/dev/null 2>&1 || true
+}

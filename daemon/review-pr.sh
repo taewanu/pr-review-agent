@@ -72,6 +72,19 @@ PR_NUMBER="${BASH_REMATCH[3]}"
 # placeholder field populated.
 HEAD_OID=""
 
+# Transient pickup-ack comment id (#48); set once posted, deleted by cleanup().
+ACK_COMMENT_ID=""
+
+# Single EXIT path for everything this run creates: the pickup ack (#48) and the
+# scratch clone, neither of which should outlive the run. The two globals it
+# reads default to empty, so it no-ops cleanly if the run dies before they're set.
+cleanup() {
+  delete_comment "$BASE_OWNER" "$BASE_REPO" "$ACK_COMMENT_ID"
+  if [[ $KEEP_SCRATCH -eq 0 && -n "${SCRATCH:-}" ]]; then
+    rm -rf "$SCRATCH"
+  fi
+}
+
 # Parse the `category=<slug>` first stderr line emitted by extract-json.py and
 # post-review.sh on failure. Falls back to `unknown` so the structured failure
 # line is always populated.
@@ -97,11 +110,21 @@ HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
 SCRATCH="$(mktemp -d -t pr-review-agent.XXXXXX)"
+trap cleanup EXIT
 if [[ $KEEP_SCRATCH -eq 1 ]]; then
   log_info "scratch (will be preserved): $SCRATCH"
 else
-  trap 'rm -rf "$SCRATCH"' EXIT
   log_info "scratch: $SCRATCH"
+fi
+
+# Post the pickup ack before the multi-minute review so the operator sees the PR
+# is being looked at; cleanup() removes it on exit once the posted review (or
+# the next tick) takes over as the signal.
+ACK_COMMENT_ID="$(post_pickup_ack "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$HEAD_OID")"
+if [[ -n "$ACK_COMMENT_ID" ]]; then
+  log_info "posted pickup ack (comment ${ACK_COMMENT_ID})"
+else
+  log_info "pickup ack unavailable (non-fatal)"
 fi
 
 gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
