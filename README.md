@@ -70,7 +70,7 @@ tail -f .daemon.log                # follow the launchd log
 
 ## Submitting a review
 
-The daemon drafts a **Pending** review; submitting it is your call. One trap to know about — a direct consequence of posting under your own identity ([ADR 0003](docs/adr/0003-identity-model.md)): GitHub's "Finish your review" web modal posts an empty `body` when you leave its textarea blank, **silently overwriting the summary the daemon drafted**. Inline comments survive; the summary is gone for good (a `PUT` to restore it returns `422`).
+The daemon drafts a **Pending** review; submitting it is your call — and there's one trap. GitHub's "Finish your review" web modal posts an empty `body` when you leave its textarea blank, **silently overwriting the summary the daemon drafted**. Inline comments survive; the summary is gone for good (`PUT`-recovery returns `422`). This is a consequence of posting under your own identity ([ADR 0003](docs/adr/0003-identity-model.md)) — bot-identity tools never reach a human-submit step.
 
 Two ways to submit without losing the summary:
 
