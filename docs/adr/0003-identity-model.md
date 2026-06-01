@@ -31,4 +31,5 @@ Option C remains a reserved future option for organization-scale deployments tha
 - Self-review labeling on the operator's own PRs is real but bounded by the pending review state: nothing is publicly visible until the operator submits, and the operator can edit, delete, or cancel the entire review before publication.
 - The body marker makes AI-drafted content visually distinguishable in the GitHub UI even though the author label is the operator's name. The summary footer links back to the project.
 - Forks reuse the operator's identity model unchanged. No per-fork bot-account creation.
+- The human-submit step is unique to Option A: the operator clicks "Finish your review" in GitHub's web modal, which posts an empty `body` if the textarea is left blank and silently overwrites the drafted summary (`PUT`-recovery returns `422`). Bot-identity tools (Option C) never reach this step. Safe submit paths are documented in the README ("Submitting a review").
 - A later switch to Option C is feasible: review agent output and daemon flow are unchanged; only the credential and the posting account change. The body marker and footer can be retained or removed at that point.

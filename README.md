@@ -68,6 +68,24 @@ bash daemon/review-pr.sh <pr-url>  # review one PR ad-hoc
 tail -f .daemon.log                # follow the launchd log
 ```
 
+## Submitting a review
+
+The daemon drafts a **Pending** review; submitting it is your call — and there's one trap. GitHub's "Finish your review" web modal posts an empty `body` when you leave its textarea blank, **silently overwriting the summary the daemon drafted**. Inline comments survive; the summary is gone for good (`PUT`-recovery returns `422`). This is a consequence of posting under your own identity ([ADR 0003](docs/adr/0003-identity-model.md)) — bot-identity tools never reach a human-submit step.
+
+Two ways to submit without losing the summary:
+
+- **API (recommended)** — omitting `body` preserves the drafted summary:
+  ```bash
+  gh api -X POST repos/:owner/:repo/pulls/:n/reviews/:id/events -f event=COMMENT
+  ```
+- **Web UI** — type any character into the modal textarea before submitting (pasting the original summary back also works).
+
+If the summary is already wiped, repost it as a regular PR comment — `PUT`-recovery does not work:
+
+```bash
+gh pr comment <pr-url> --body-file <summary-file>
+```
+
 ## Forking
 
 The review footer link and preview-release banner derive from `git remote get-url origin`. Any clone uses its own owner/repo with no config edit.
