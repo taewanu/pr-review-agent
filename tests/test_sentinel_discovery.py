@@ -15,7 +15,6 @@ import json
 import os
 import stat
 import subprocess
-import textwrap
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -41,45 +40,62 @@ def _review(
     }
 
 
+def _comment(
+    body: str,
+    *,
+    login: str = "operator",
+    created_at: str = "2026-05-28T10:00:00Z",
+) -> dict:
+    return {"user": {"login": login}, "body": body, "created_at": created_at}
+
+
 def _sentinel_body(sha: str) -> str:
     return f"summary\n\n---\n\n_AI-drafted_\n<!-- pr-review-agent:sha:{sha} -->"
 
 
 def _run(
     reviews: list[dict] | str,
+    comments: list[dict] | None = None,
     login: str = "operator",
     fail_stderr: str = "",
+    fail_comments: bool = False,
 ) -> tuple[str, int, str]:
-    """Invoke discover_sentinel_sha with a stub `gh` that emits the given JSON.
+    """Invoke discover_sentinel_sha with a stub `gh` that dispatches by URL.
 
-    Pass `reviews` as a list to be JSON-serialized, or as the string "FAIL" to
-    have the stub exit non-zero (simulating API failure). `fail_stderr` lets
-    a FAIL stub write a specific message to stderr so callers can assert it
-    propagates into the function's log_err output.
+    discover_sentinel_sha makes two `gh api` calls — `.../pulls/N/reviews`
+    (primary) and `.../issues/N/comments` (the #49 body-wipe backup). The stub
+    matches on the requested path so each call gets its own payload.
+
+    Pass `reviews="FAIL"` to make the reviews call exit non-zero (the function
+    must then return 2 before it ever reaches comments). `fail_comments=True`
+    fails only the comments call, exercising the degrade-to-reviews-only path.
+    `fail_stderr` is the message a failing call writes to stderr.
     """
     import tempfile
 
+    def _branch(data: list[dict], fail: bool) -> str:
+        if fail:
+            line = fail_stderr.replace("'", "'\\''")
+            return f"echo '{line}' >&2\nexit 1"
+        return "cat <<'JSON_EOF'\n" + json.dumps(data) + "\nJSON_EOF"
+
+    reviews_fail = reviews == "FAIL"
+    reviews_branch = _branch([] if reviews_fail else reviews, reviews_fail)
+    comments_branch = _branch(comments or [], fail_comments)
+
     with tempfile.TemporaryDirectory() as tmp:
         stub = Path(tmp) / "gh"
-        if reviews == "FAIL":
-            stderr_line = fail_stderr.replace("'", "'\\''")
-            script = textwrap.dedent(
-                f"""\
-                #!/usr/bin/env bash
-                echo '{stderr_line}' >&2
-                exit 1
-                """
-            )
-        else:
-            payload = json.dumps(reviews)
-            script = textwrap.dedent(
-                f"""\
-                #!/usr/bin/env bash
-                cat <<'JSON_EOF'
-                {payload}
-                JSON_EOF
-                """
-            )
+        # Heredoc terminators must sit at column 0, so the case body is not
+        # indented.
+        script = (
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            '*"/issues/"*"/comments"*)\n'
+            f"{comments_branch}\n;;\n"
+            '*"/pulls/"*"/reviews"*)\n'
+            f"{reviews_branch}\n;;\n"
+            "esac\n"
+        )
         stub.write_text(script)
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         env = os.environ.copy()
@@ -189,3 +205,45 @@ def test_skips_reviews_without_sentinel_when_picking_most_recent():
     )
     assert rc == 0
     assert sha == SENTINEL_SHA_A
+
+
+def test_finds_sentinel_in_comment_when_review_body_wiped():
+    # The #49 payoff: a blank-modal submit wiped the sentinel from the review
+    # body, but the mirrored PR comment still carries it.
+    sha, rc, _ = _run(
+        reviews=[_review("")],
+        comments=[_comment(_sentinel_body(SENTINEL_SHA_A))],
+    )
+    assert rc == 0
+    assert sha == SENTINEL_SHA_A
+
+
+def test_picks_most_recent_sentinel_across_reviews_and_comments():
+    # Reviews and comments share one timeline; the newer comment wins.
+    sha, rc, _ = _run(
+        reviews=[_review(_sentinel_body(SENTINEL_SHA_A), submitted_at="2026-05-28T10:00:00Z")],
+        comments=[_comment(_sentinel_body(SENTINEL_SHA_B), created_at="2026-05-28T12:00:00Z")],
+    )
+    assert rc == 0
+    assert sha == SENTINEL_SHA_B
+
+
+def test_comments_api_failure_degrades_to_reviews_only():
+    # Reviews are primary: if only the comments call fails, still return the
+    # review sentinel with rc 0 rather than escalating to the rc-2 skip.
+    sha, rc, _ = _run(
+        reviews=[_review(_sentinel_body(SENTINEL_SHA_A))],
+        fail_comments=True,
+    )
+    assert rc == 0
+    assert sha == SENTINEL_SHA_A
+
+
+def test_filters_comment_sentinel_by_login():
+    # A sentinel in someone else's comment must not be mistaken for ours.
+    sha, rc, _ = _run(
+        reviews=[_review("ours, no sentinel", login="operator")],
+        comments=[_comment(_sentinel_body(SENTINEL_SHA_A), login="someone-else")],
+    )
+    assert rc == 1
+    assert sha == ""

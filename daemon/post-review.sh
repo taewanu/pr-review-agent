@@ -200,8 +200,22 @@ payload="$(jq -n \
     comments: $comments
   } + (if $commit_id == "" then {} else {commit_id: $commit_id} end)')"
 
+# A PR-comment copy of the review body — a body-wipe safety net (#49). GitHub's
+# submit modal blanks the review body when its textarea is left empty, with no
+# way to recover it. Folded in <details> to stay unobtrusive on a clean submit.
+# The sha-sentinel inside lets discover_sentinel_sha recover the reviewed SHA
+# even after a wipe. The blank line after </summary> is required for GitHub to
+# render the inner markdown.
+mirror_comment_body="<details>
+<summary>🤖 Review summary backup — restore from here if GitHub blanks the summary on submit</summary>
+
+${body_with_additional}
+
+</details>"
+
 if [[ $DRY_RUN -eq 1 ]]; then
-  printf '%s\n' "$payload"
+  jq -n --argjson review "$payload" --arg mirror "$mirror_comment_body" \
+    '{review: $review, mirror_comment: $mirror}'
   exit 0
 fi
 
@@ -214,18 +228,30 @@ log_info "posting Pending review to ${OWNER}/${REPO}#${NUMBER}"
 out_file="$(mktemp -t pr-review-post.XXXXXX)"
 trap 'rm -f "$out_file"' EXIT
 
-if printf '%s' "$payload" | gh api \
+if ! printf '%s' "$payload" | gh api \
   --method POST \
   "repos/${OWNER}/${REPO}/pulls/${NUMBER}/reviews" \
   --input - >"$out_file" 2>&1; then
-  cat "$out_file"
-  exit 0
+  if grep -q "User can only have one pending review per pull request" "$out_file"; then
+    printf 'category=pending-conflict\n' >&2
+  else
+    printf 'category=post-failed\n' >&2
+  fi
+  cat "$out_file" >&2
+  exit 1
 fi
+cat "$out_file"
 
-if grep -q "User can only have one pending review per pull request" "$out_file"; then
-  printf 'category=pending-conflict\n' >&2
+# Best-effort: a failure here must NOT fail the run. The Pending review is
+# already posted, and a non-zero exit would trigger a retry that hits the
+# one-pending-review-per-PR limit and never recovers. Worst case the operator
+# loses the backup, not the review.
+mirror_err="$(mktemp -t pr-review-mirror.XXXXXX)"
+if printf '%s' "$mirror_comment_body" \
+  | gh pr comment "$NUMBER" --repo "${OWNER}/${REPO}" --body-file - >/dev/null 2>"$mirror_err"; then
+  log_info "mirrored summary to PR comment (body-wipe safety net)"
 else
-  printf 'category=post-failed\n' >&2
+  log_err "mirror comment failed (non-fatal): $(<"$mirror_err")"
 fi
-cat "$out_file" >&2
-exit 1
+rm -f "$mirror_err"
+exit 0
