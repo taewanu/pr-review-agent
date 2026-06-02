@@ -15,7 +15,9 @@ repos:
         # -x follows `source=` directives across files. Without it, the
         # commit-stage hook (staged files only) misses cross-file definitions
         # while --all-files passes them in the same invocation.
-        args: [-x]
+        # --enable=SC2162 flags `read` without -r (off by default); a missing
+        # -r silently eats backslashes and corrupts multi-line JSON payloads.
+        args: [-x, --enable=SC2162]
 
   - repo: https://github.com/scop/pre-commit-shfmt
     rev: v3.13.1-1
