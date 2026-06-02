@@ -163,7 +163,6 @@ bundle_operator_agents "$SCRATCH"
 THREADS_BASENAME=".pr-review-threads.json"
 THREADS_FILE="$SCRATCH/$THREADS_BASENAME"
 RAW_FILE="$SCRATCH/.pr-review-reply-raw.txt"
-PAYLOAD_FILE="$SCRATCH/.pr-review-reply-payload.json"
 
 printf '%s\n' "$THREADS_JSON" >"$THREADS_FILE"
 
@@ -177,89 +176,18 @@ if [[ ! -s "$RAW_FILE" ]]; then
   exit 1
 fi
 
-log_step "extracting payload"
-# Inline extractor (schema diverges from extract-json.py). Same fence
-# convention: last ```json block wins.
-if ! python3 - "$RAW_FILE" >"$PAYLOAD_FILE" <<'PYEOF'
-import json
-import re
-import sys
-from pathlib import Path
-
-raw = Path(sys.argv[1]).read_text()
-matches = re.findall(r"```json\s*\n(.*?)\n```", raw, re.DOTALL)
-if not matches:
-    print("category=no-fence", file=sys.stderr)
-    print("reply agent: no ```json fence in output", file=sys.stderr)
-    sys.exit(1)
-try:
-    data = json.loads(matches[-1])
-except json.JSONDecodeError as exc:
-    print("category=parse-error", file=sys.stderr)
-    print(f"reply agent: JSON decode failed: {exc}", file=sys.stderr)
-    sys.exit(1)
-if "replies" not in data or not isinstance(data["replies"], list):
-    print("category=schema-invalid", file=sys.stderr)
-    print("reply agent: missing or non-list 'replies' key", file=sys.stderr)
-    sys.exit(1)
-required = ("in_reply_to_id", "addressed_comment_id", "body")
-valid_modes = ("confirmed", "pushback")
-for i, r in enumerate(data["replies"]):
-    missing = [k for k in required if k not in r]
-    if missing:
-        print("category=schema-invalid", file=sys.stderr)
-        print(f"reply agent: replies[{i}] missing keys: {missing}", file=sys.stderr)
-        sys.exit(1)
-    # mode optional with `confirmed` default (#37). Normalise so downstream
-    # consumers (logging, future metrics) can rely on it always being set.
-    mode = r.setdefault("mode", "confirmed")
-    if mode not in valid_modes:
-        print("category=schema-invalid", file=sys.stderr)
-        print(f"reply agent: replies[{i}] mode {mode!r} not in {valid_modes}", file=sys.stderr)
-        sys.exit(1)
-print(json.dumps(data))
-PYEOF
-then
-  log_failure "extract-failed" "$PR_URL" "$HEAD_OID" "reply agent payload invalid"
-  exit 1
-fi
-
-REPLY_COUNT="$(jq '.replies | length' "$PAYLOAD_FILE")"
-CONFIRMED_COUNT="$(jq '[.replies[] | select(.mode == "confirmed")] | length' "$PAYLOAD_FILE")"
-PUSHBACK_COUNT="$(jq '[.replies[] | select(.mode == "pushback")] | length' "$PAYLOAD_FILE")"
-log_info "$REPLY_COUNT reply/replies ready (${CONFIRMED_COUNT} confirmed, ${PUSHBACK_COUNT} pushback)"
-if [[ "$REPLY_COUNT" -eq 0 ]]; then
-  exit 0
-fi
-
-# Post each reply. /comments/{id}/replies inherits path+line from the parent;
-# body is the only field. Sentinel footer flags addressed-by-us so the next
-# polling cycle's sentinel-based detection (#39) skips this reply.
 log_step "posting replies"
 POST_ERR="$(mktemp -t pr-review-reply-post.XXXXXX)"
-post_ok=0
-while IFS= read -r reply; do
-  in_reply_to_id="$(jq -r '.in_reply_to_id' <<<"$reply")"
-  addressed_id="$(jq -r '.addressed_comment_id' <<<"$reply")"
-  body="$(jq -r '.body' <<<"$reply")"
-
-  full_body="${body}
-
-<!-- pr-review-agent:addressed:${addressed_id} -->"
-
-  # jq builds {body: "..."} so `gh api --input -` sees a proper JSON payload.
-  # Earlier draft used `-f body=@-`, but `-f`/--raw-field doesn't expand `@-`
-  # (that's `-F`/--field), so the literal string "@-" was getting posted.
-  body_json="$(jq -n --arg b "$full_body" '{body: $b}')"
-
-  if printf '%s' "$body_json" | gh api \
-    --method POST \
-    "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments/${in_reply_to_id}/replies" \
-    --input - >"$POST_ERR" 2>&1; then
-    post_ok=$((post_ok + 1))
-  else
-    log_err "reply POST failed for comment ${in_reply_to_id}: $(<"$POST_ERR")"
-  fi
-done < <(jq -c '.replies[]' "$PAYLOAD_FILE")
-
-log_step "done — posted $post_ok/$REPLY_COUNT"
+# Extract + validate + POST in one Python process (#36); keeps the body bytes
+# intact end to end (see post_reply.py). stderr carries progress, and on
+# failure a `category=` line feeds log_failure.
+if python3 "$SCRIPT_DIR/post_reply.py" \
+  --owner "$OWNER" --repo "$REPO" --number "$PR_NUMBER" \
+  --raw "$RAW_FILE" 2>"$POST_ERR"; then
+  cat "$POST_ERR" >&2
+else
+  cat "$POST_ERR" >&2
+  category="$(grep -m1 '^category=' "$POST_ERR" | cut -d= -f2 || true)"
+  log_failure "${category:-post-failed}" "$PR_URL" "$HEAD_OID" "reply posting failed"
+  exit 1
+fi
