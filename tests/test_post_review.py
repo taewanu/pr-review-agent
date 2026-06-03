@@ -154,6 +154,34 @@ def test_sentinel_omitted_when_head_sha_unset():
     assert "pr-review-agent:sha:" not in body
 
 
+def test_own_pr_submits_comment_review():
+    # ADR 0008: own PRs auto-submit a COMMENT review in the create POST itself,
+    # via an `event` field. Others' PRs omit it and stay pending.
+    review = _run_post_review("--own-pr")["review"]
+    assert review.get("event") == "COMMENT"
+    # Others' path (default) carries no event key — the review stays pending.
+    assert "event" not in _run_post_review()["review"]
+
+
+def test_own_pr_skips_body_wipe_mirror():
+    # Own PRs never touch the submit modal, so there is no wipe to back up: the
+    # mirror is reported as null rather than a redundant comment body.
+    assert _run_post_review("--own-pr")["mirror_comment"] is None
+
+
+def test_own_pr_footer_says_edit_not_submit_or_delete():
+    # The review is already submitted, so the action line is post-hoc, not the
+    # pre-submit submit/cancel of a pending review. It says "edit" rather than
+    # "delete" because GitHub rejects deleting a submitted review (REST and
+    # GraphQL both 422); an unwanted one can only be edited or have its comments
+    # hidden.
+    body = _run_post_review("--own-pr")["review"]["body"]
+    assert "Edit as needed." in body
+    assert "delete" not in body.lower()
+    assert "Submit, edit, or cancel as needed." not in body
+    assert "🤖 Auto-submitted by" in body
+
+
 def test_footer_reflects_git_remote_identity():
     # Zero-config path: the daemon parses the local git origin to fill the
     # footer/banner. Body must surface that derived identity. Test stays

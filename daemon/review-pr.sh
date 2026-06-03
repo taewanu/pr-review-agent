@@ -97,17 +97,29 @@ extract_category() {
 
 log_info "PR ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}"
 
-meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid)"
+meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid,author)"
 HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
 HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
 HEAD_OID="$(jq -r '.headRefOid // empty' <<<"$meta")"
+PR_AUTHOR="$(jq -r '.author.login // empty' <<<"$meta")"
 if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HEAD_OID" ]]; then
   log_err "gh pr view returned incomplete metadata for $PR_URL (closed PR with deleted fork?)"
   exit 1
 fi
 HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
+
+# Own-vs-others gates the submit path (ADR 0008): own PRs auto-submit a COMMENT
+# review, others' stay pending. The operator is the gh-authenticated identity
+# (ADR 0003), as in reply-pr.sh. Derived here, not passed from poll.sh, so the
+# manual one-shot is correct too; a blank author falls through to the others' path.
+OPERATOR="$(gh api user --jq '.login' 2>/dev/null || true)"
+OWN_PR=0
+if [[ -n "$PR_AUTHOR" && "$PR_AUTHOR" == "$OPERATOR" ]]; then
+  OWN_PR=1
+  log_info "own PR (author == operator '$OPERATOR'): auto-submitting a COMMENT review"
+fi
 
 SCRATCH="$(mktemp -d -t pr-review-agent.XXXXXX)"
 trap cleanup EXIT
@@ -202,17 +214,23 @@ DROPPED_COMBO="${DROPPED_COMBO:-0}"
 
 jq -r '.summary' "$PAYLOAD_FILE" >"$SUMMARY_FILE"
 
-log_step "posting Pending review"
-if ! bash "$SCRIPT_DIR/post-review.sh" \
-  --owner "$BASE_OWNER" \
-  --repo "$BASE_REPO" \
-  --number "$PR_NUMBER" \
-  --head-sha "$HEAD_OID" \
-  --summary-file "$SUMMARY_FILE" \
-  --anchored "$ANCHORED_FILE" \
-  --unanchored "$UNANCHORED_FILE" \
-  --dropped-combo "$DROPPED_COMBO" \
-  2>"$POST_ERR"; then
+post_args=(
+  --owner "$BASE_OWNER"
+  --repo "$BASE_REPO"
+  --number "$PR_NUMBER"
+  --head-sha "$HEAD_OID"
+  --summary-file "$SUMMARY_FILE"
+  --anchored "$ANCHORED_FILE"
+  --unanchored "$UNANCHORED_FILE"
+  --dropped-combo "$DROPPED_COMBO"
+)
+if [[ $OWN_PR -eq 1 ]]; then
+  post_args+=(--own-pr)
+  log_step "submitting COMMENT review (own PR)"
+else
+  log_step "posting Pending review"
+fi
+if ! bash "$SCRIPT_DIR/post-review.sh" "${post_args[@]}" 2>"$POST_ERR"; then
   cat "$POST_ERR" >&2
   category="$(extract_category "$POST_ERR")"
   reason="gh api POST failed"

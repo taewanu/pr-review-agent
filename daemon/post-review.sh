@@ -7,6 +7,7 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 DRY_RUN=0
+OWN_PR=0
 HEAD_SHA=""
 OWNER=""
 REPO=""
@@ -49,6 +50,10 @@ while [[ $# -gt 0 ]]; do
     --dropped-combo)
       DROPPED_COMBO="$2"
       shift 2
+      ;;
+    --own-pr)
+      OWN_PR=1
+      shift
       ;;
     --dry-run)
       DRY_RUN=1
@@ -122,7 +127,15 @@ fi
 # Review-body footer per ADR 0001 D3. Identity from derive_project_identity
 # above. The leading `\n\n---\n\n` detaches the footer from whatever ends the
 # body (summary, dropped-note, `## Additional findings`, or nothing).
-footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
+# Own PRs auto-submit a COMMENT review (ADR 0008), so the action line is
+# post-hoc (edit) rather than pre-submit (submit/cancel on a pending one). It
+# says "edit", not "delete": GitHub rejects deleting a submitted review, so an
+# unwanted auto-submitted review can only be edited or have its comments hidden.
+if [[ $OWN_PR -eq 1 ]]; then
+  footer=$'\n\n---\n\n🤖 Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit as needed.'
+else
+  footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
+fi
 
 # Dedup sentinel per ADR 0006. Encodes the reviewed SHA so the next tick can
 # parse it from `gh api .../reviews` and skip same-SHA re-reviews / scope the
@@ -191,14 +204,25 @@ comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
   )
 ' "$ANCHORED")"
 
+# Own PRs submit a COMMENT review in this same POST (ADR 0008): an `event` of
+# COMMENT creates and submits in one call, with no pending stage. Omitting
+# `event` (others' PRs) leaves the review PENDING for the operator to submit.
+event=""
+if [[ $OWN_PR -eq 1 ]]; then
+  event="COMMENT"
+fi
+
 payload="$(jq -n \
   --arg body "$body_with_additional" \
   --argjson comments "$comments_json" \
   --arg commit_id "$HEAD_SHA" \
+  --arg event "$event" \
   '{
     body: $body,
     comments: $comments
-  } + (if $commit_id == "" then {} else {commit_id: $commit_id} end)')"
+  }
+  + (if $commit_id == "" then {} else {commit_id: $commit_id} end)
+  + (if $event == "" then {} else {event: $event} end)')"
 
 # A PR-comment copy of the review body — a body-wipe safety net (#49). GitHub's
 # submit modal blanks the review body when its textarea is left empty, with no
@@ -206,6 +230,9 @@ payload="$(jq -n \
 # The sha-sentinel inside lets discover_sentinel_sha recover the reviewed SHA
 # even after a wipe. The blank line after </summary> is required for GitHub to
 # render the inner markdown.
+#
+# Own PRs auto-submit via the API (ADR 0008), never touching the submit modal,
+# so there is no wipe to back up: the mirror is skipped and reported as null.
 mirror_comment_body="<details>
 <summary>🤖 Review summary backup — restore from here if GitHub blanks the summary on submit</summary>
 
@@ -214,12 +241,20 @@ ${body_with_additional}
 </details>"
 
 if [[ $DRY_RUN -eq 1 ]]; then
-  jq -n --argjson review "$payload" --arg mirror "$mirror_comment_body" \
-    '{review: $review, mirror_comment: $mirror}'
+  if [[ $OWN_PR -eq 1 ]]; then
+    jq -n --argjson review "$payload" '{review: $review, mirror_comment: null}'
+  else
+    jq -n --argjson review "$payload" --arg mirror "$mirror_comment_body" \
+      '{review: $review, mirror_comment: $mirror}'
+  fi
   exit 0
 fi
 
-log_info "posting Pending review to ${OWNER}/${REPO}#${NUMBER}"
+if [[ $OWN_PR -eq 1 ]]; then
+  log_info "submitting COMMENT review to ${OWNER}/${REPO}#${NUMBER} (own-PR auto-submit)"
+else
+  log_info "posting Pending review to ${OWNER}/${REPO}#${NUMBER}"
+fi
 
 # Capture both streams: gh api writes the 422 response body to stdout and a
 # short status line to stderr. The pending-conflict marker is in the response
@@ -241,6 +276,11 @@ if ! printf '%s' "$payload" | gh api \
   exit 1
 fi
 cat "$out_file"
+
+# Skip the body-wipe mirror on own PRs (ADR 0008): API submit, no modal, no wipe.
+if [[ $OWN_PR -eq 1 ]]; then
+  exit 0
+fi
 
 # Best-effort: a failure here must NOT fail the run. The Pending review is
 # already posted, and a non-zero exit would trigger a retry that hits the
