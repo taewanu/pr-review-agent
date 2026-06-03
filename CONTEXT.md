@@ -5,7 +5,7 @@ Local daemon that drafts PR reviews via Claude Code and posts them under the ope
 ## Language
 
 **Pending review**:
-A GitHub PR Review object in the `PENDING` state. On **others' PRs** (author ≠ Operator) it is both the artifact and the safety gate: nothing is publicly visible until the Operator submits it. On the Operator's **own PRs** the gate is ceremony (you are reviewing your own code, and GitHub blocks self-APPROVE), so the daemon submits a COMMENT review directly instead. It lands immediately, and the Operator edits or deletes it after the fact. One review per PR-tick either way. No separate "dry-run" mode exists.
+A GitHub PR Review object in the `PENDING` state. On **others' PRs** (author ≠ Operator) it is both the artifact and the safety gate: nothing is publicly visible until the Operator submits it. On the Operator's **own PRs** the gate is ceremony (you are reviewing your own code, and GitHub blocks self-APPROVE), so the daemon submits a COMMENT review directly instead. It lands immediately, and the Operator edits it after the fact (a submitted review cannot be deleted). One review per PR-tick either way. No separate "dry-run" mode exists.
 _Avoid_: dry-run, draft review (the platform term is "pending"), preview
 
 **Review body**:
