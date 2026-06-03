@@ -127,10 +127,12 @@ fi
 # Review-body footer per ADR 0001 D3. Identity from derive_project_identity
 # above. The leading `\n\n---\n\n` detaches the footer from whatever ends the
 # body (summary, dropped-note, `## Additional findings`, or nothing).
-# Own PRs auto-submit a COMMENT review (ADR 0008), so the action line says
-# edit/delete (post-hoc) rather than submit/cancel (pre-submit on a pending one).
+# Own PRs auto-submit a COMMENT review (ADR 0008), so the action line is
+# post-hoc (edit) rather than pre-submit (submit/cancel on a pending one). It
+# says "edit", not "delete": GitHub rejects deleting a submitted review, so an
+# unwanted auto-submitted review can only be edited or have its comments hidden.
 if [[ $OWN_PR -eq 1 ]]; then
-  footer=$'\n\n---\n\n🤖 Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit or delete as needed.'
+  footer=$'\n\n---\n\n🤖 Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit as needed.'
 else
   footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
 fi

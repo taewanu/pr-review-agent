@@ -169,11 +169,15 @@ def test_own_pr_skips_body_wipe_mirror():
     assert _run_post_review("--own-pr")["mirror_comment"] is None
 
 
-def test_own_pr_footer_says_edit_or_delete_not_submit():
-    # The review is already submitted, so the action line is post-hoc
-    # (edit/delete), not the pre-submit submit/cancel of a pending review.
+def test_own_pr_footer_says_edit_not_submit_or_delete():
+    # The review is already submitted, so the action line is post-hoc, not the
+    # pre-submit submit/cancel of a pending review. It says "edit" rather than
+    # "delete" because GitHub rejects deleting a submitted review (REST and
+    # GraphQL both 422); an unwanted one can only be edited or have its comments
+    # hidden.
     body = _run_post_review("--own-pr")["review"]["body"]
-    assert "Edit or delete as needed." in body
+    assert "Edit as needed." in body
+    assert "delete" not in body.lower()
     assert "Submit, edit, or cancel as needed." not in body
     assert "🤖 Auto-submitted by" in body
 
