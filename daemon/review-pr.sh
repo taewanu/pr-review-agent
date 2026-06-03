@@ -75,10 +75,15 @@ HEAD_OID=""
 # Transient pickup-ack comment id (#48); set once posted, deleted by cleanup().
 ACK_COMMENT_ID=""
 
-# Single EXIT path for everything this run creates: the pickup ack (#48) and the
-# scratch clone, neither of which should outlive the run. The two globals it
-# reads default to empty, so it no-ops cleanly if the run dies before they're set.
+# Per-PR lock path (#67); set once acquired, released by cleanup().
+LOCK_FILE=""
+
+# Single EXIT path for everything this run creates: the per-PR lock (#67), the
+# pickup ack (#48), and the scratch clone, none of which should outlive the run.
+# The globals it reads default to empty, so it no-ops cleanly if the run dies
+# before they're set.
 cleanup() {
+  release_pr_lock "${LOCK_FILE:-}"
   delete_comment "$BASE_OWNER" "$BASE_REPO" "$ACK_COMMENT_ID"
   if [[ $KEEP_SCRATCH -eq 0 && -n "${SCRATCH:-}" ]]; then
     rm -rf "$SCRATCH"
@@ -121,8 +126,27 @@ if [[ -n "$PR_AUTHOR" && "$PR_AUTHOR" == "$OPERATOR" ]]; then
   log_info "own PR (author == operator '$OPERATOR'): auto-submitting a COMMENT review"
 fi
 
-SCRATCH="$(mktemp -d -t pr-review-agent.XXXXXX)"
+# Take the per-PR lock before any work, skipping if a review of this PR is
+# already in flight (#67; rationale on acquire_pr_lock). The EXIT trap moves up
+# to here so the lock is released on every exit below, including the dedup skip;
+# cleanup() no-ops on the still-empty ack/scratch globals.
+if ! LOCK_FILE="$(acquire_pr_lock "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER")"; then
+  log_info "review already in progress for ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}, skipping"
+  exit 0
+fi
 trap cleanup EXIT
+
+# Idempotency for the sequential case: skip if the operator already reviewed this
+# exact HEAD (the lock above covers the concurrent case). poll.sh dedups before
+# dispatch, but the manual one-shot bypasses that. A discovery failure falls
+# through to reviewing rather than skipping on uncertainty.
+if existing_sha="$(discover_sentinel_sha "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")" \
+  && [[ "$existing_sha" == "$HEAD_OID" ]]; then
+  log_info "already reviewed ${HEAD_OID:0:12}, skipping"
+  exit 0
+fi
+
+SCRATCH="$(mktemp -d -t pr-review-agent.XXXXXX)"
 if [[ $KEEP_SCRATCH -eq 1 ]]; then
   log_info "scratch (will be preserved): $SCRATCH"
 else
