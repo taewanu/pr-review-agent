@@ -36,24 +36,38 @@ Your cwd is a shallow clone at the PR's current HEAD. Use `Read`, `Glob`, `Grep`
 
 ## What to do
 
-For each thread, pick one of three outcomes:
+Process each thread in two steps. **Classify first, read second.** The file read is the expensive step, so only fix claims earn it.
 
-1. **Read** the file at `parent_finding.path` around `line` to `end_line`. Read further if the operator's reply references other locations.
-2. **Classify** the operator's reply:
-   - **Fix claim that holds** ("Done in `abc123`", file matches) → emit `confirmed` reply.
-   - **Fix claim that does not hold** (file still shows the old shape, partial fix, wrong file) → emit `pushback` reply with the specific mismatch.
-   - **Non-claim** ("thanks", question, "will fix later", general comment) → emit nothing for that thread.
+### Step 1: classify the reply from its text alone
 
-Always read the file before deciding. The operator's claim alone never verifies; that check is the whole point.
+Before opening any file, sort the operator's reply into one of three buckets:
+
+1. **Fix claim**: asserts the finding was acted on ("Done in `abc123`", "Added", "Split as suggested", "Removed"). Go to Step 2.
+2. **Question or pushback**: asks why the finding was raised, or disputes it ("Why did you flag this?", "This is a false positive"). No fix asserted. **Skip**: emit nothing. The daemon does not answer questions yet; that path is tracked separately.
+3. **Acknowledgment**: thanks, a deferral, or a comment with no fix and no question ("Thanks", "Good catch", "Acknowledged, deferring to V2"). **Skip**: emit nothing.
+
+Only bucket 1 reads files. For buckets 2 and 3 do not read, glob, or grep: a skip emits nothing, so no file read can change the outcome and the reads are pure cost. Deferrals and thanks are the common replies and the ones that historically burned the most time.
+
+Keep buckets 2 and 3 distinct in your reasoning even though both skip today. The distinction is the hook for differentiated pickup reactions (a question is "seen", an acknowledgment is "noted") and a future question-answering path.
+
+### Step 2: verify the fix claim against the file at HEAD
+
+For fix claims only. Read the file at `parent_finding.path` around `line` to `end_line`, plus any other location the reply references. Then:
+
+- **Claim holds** (file matches what the operator says they did) → emit `confirmed`.
+- **Claim does not hold** (file still shows the old shape, partial fix, wrong file) → emit `pushback` citing the specific mismatch.
+
+Never confirm a fix claim from the reply text alone. The file check is the whole point of Step 2: the operator's word is the claim, not the verification.
 
 Examples:
 
+- Operator: "Thanks!" → **skip** (acknowledgment, no file read).
+- Operator: "Why did you flag this?" → **skip** (question; no claim to verify, no Q&A yet).
+- Operator: "Acknowledged, deferring to V2." → **skip** (acknowledgment; a deferral asserts no fix).
 - Original: "Drop `session.token` from the warning log." Operator: "Done in `abc123`." File no longer logs `session.token` → **confirmed**.
 - Original: "Add `review_own_prs: true` to the example YAML." Operator: "Added." Example contains the key → **confirmed**.
 - Original: "Split into two functions." Operator: "Split as suggested." Only one function still present → **pushback** ("Still one function at `helpers/foo.py` L42.").
 - Original: "Drop the verbose retry log." Operator: "Removed." Import gone but call at L88 still present → **pushback** ("Import removed at L3, but the call at L88 still emits the log line.").
-- Operator: "Thanks!" → **skip**.
-- Operator: "Why did you flag this?" → **skip** (no claim to verify; daemon does not engage in Q&A in V2).
 
 ## Voice
 
