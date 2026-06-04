@@ -120,6 +120,62 @@ discover_sentinel_sha() {
   return 1
 }
 
+# Per-PR review lock. ADR 0008's own-PR auto-submit dropped the implicit "one
+# pending review per PR" constraint that serialized concurrent reviews (a second
+# pending POST was rejected with 422). A submitted COMMENT review has no such
+# limit, so a manual review-pr.sh run overlapping a daemon tick would double-post
+# (#67); these helpers reinstate serialization locally. macOS has no `flock`, so
+# the lock is a noclobber lockfile: `set -o noclobber` makes `>` fail when the
+# file exists, and the holder PID and epoch are written in the same redirect, so
+# a half-written lock is never observable.
+#
+# Override $PR_REVIEW_LOCK_STALE_SECONDS for tests.
+_lock_path() {
+  printf '%s/%s-%s-%s.lock' "$(_state_dir)" "$1" "$2" "$3"
+}
+
+# acquire_pr_lock <owner> <repo> <pr-number>
+# Non-blocking. On success prints the lock path on stdout and returns 0. Returns
+# 1 if a live lock is already held. A lock whose holder process is gone, or that
+# has outlived PR_REVIEW_LOCK_STALE_SECONDS (default 1800, longer than any real
+# review), is treated as abandoned and reclaimed.
+acquire_pr_lock() {
+  local owner="$1" repo="$2" pr="$3"
+  local dir lockfile stale holder created now
+  dir="$(_state_dir)"
+  mkdir -p "$dir"
+  lockfile="$(_lock_path "$owner" "$repo" "$pr")"
+  stale="${PR_REVIEW_LOCK_STALE_SECONDS:-1800}"
+  if (set -o noclobber; printf '%s %s\n' "$$" "$(date +%s)" >"$lockfile") 2>/dev/null; then
+    printf '%s\n' "$lockfile"
+    return 0
+  fi
+  # Held. Reclaim only if the holder is gone or the lock outlived the stale
+  # window; an empty read (a lock mid-acquisition) counts as live. The
+  # reclaim-then-recreate races if two runs hit the same stale lock at once,
+  # acceptable since that only follows a prior holder's crash.
+  read -r holder created <"$lockfile" 2>/dev/null || true
+  now="$(date +%s)"
+  if { [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; } \
+    || { [[ -n "$created" ]] && ((now - created > stale)); }; then
+    rm -f "$lockfile"
+    if (set -o noclobber; printf '%s %s\n' "$$" "$(date +%s)" >"$lockfile") 2>/dev/null; then
+      printf '%s\n' "$lockfile"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# release_pr_lock <lock-path>
+# Removes the lock. No-op on an empty path so a cleanup trap can call it
+# unconditionally even if the run exited before acquiring.
+release_pr_lock() {
+  local lockfile="${1:-}"
+  [[ -n "$lockfile" ]] && rm -f "$lockfile"
+  return 0
+}
+
 # bundle_operator_agents <scratch-dir>
 # Copies operator's agent + slash-command files from this repo's .claude/ into
 # the scratch clone's .claude/ so claude -p (which loads from cwd) finds them
