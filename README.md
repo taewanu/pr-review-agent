@@ -13,7 +13,7 @@ Automated PR review agent that posts under your own GitHub identity. A macOS `la
 5. It posts the findings as a **Pending** review on your GitHub identity.
 6. You open the PR and submit, edit, or dismiss.
 
-The daemon never auto-submits. What gets posted under your name is your call.
+On a colleague's PR the daemon never auto-submits: what lands under your name is your call. On your own PRs it submits a `COMMENT` review directly (your code, your words, editable after), per [ADR 0008](docs/adr/0008-own-pr-auto-submit.md).
 
 ## Why this exists
 
@@ -70,21 +70,15 @@ tail -f .daemon.log                # follow the launchd log
 
 ## Submitting a review
 
-The daemon drafts a **Pending** review; submitting it is your call — and there's one trap. GitHub's "Finish your review" web modal posts an empty `body` when you leave its textarea blank, **silently overwriting the summary the daemon drafted**. Inline comments survive; the summary is gone for good (`PUT`-recovery returns `422`). This is a consequence of posting under your own identity ([ADR 0003](docs/adr/0003-identity-model.md)) — bot-identity tools never reach a human-submit step.
+**Your own PRs** auto-submit: the daemon posts a `COMMENT` review directly, no pending stage ([ADR 0008](docs/adr/0008-own-pr-auto-submit.md)). It is your code and your words, so you edit or hide it after the fact rather than vetting it first.
 
-Two ways to submit without losing the summary:
-
-- **API (recommended)** — omitting `body` preserves the drafted summary:
-  ```bash
-  gh api -X POST repos/:owner/:repo/pulls/:n/reviews/:id/events -f event=COMMENT
-  ```
-- **Web UI** — type any character into the modal textarea before submitting (pasting the original summary back also works).
-
-If the summary is already wiped, repost it as a regular PR comment — `PUT`-recovery does not work:
+**Others' PRs** stay pending until you submit. Submit with the helper:
 
 ```bash
-gh pr comment <pr-url> --body-file <summary-file>
+bash daemon/submit-review.sh <pr-url>
 ```
+
+It submits via the GitHub API (`POST .../reviews/:id/events`), which preserves the drafted summary. Submit by hand and there's a trap: GitHub's "Finish your review" web modal posts an empty `body` when you leave its textarea blank, **silently overwriting the summary the daemon drafted** (inline comments survive; the summary is gone for good, `PUT`-recovery returns `422`). The helper never touches the modal, so use it.
 
 ## Forking
 
