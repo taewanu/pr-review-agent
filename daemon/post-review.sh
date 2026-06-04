@@ -224,29 +224,8 @@ payload="$(jq -n \
   + (if $commit_id == "" then {} else {commit_id: $commit_id} end)
   + (if $event == "" then {} else {event: $event} end)')"
 
-# A PR-comment copy of the review body — a body-wipe safety net (#49). GitHub's
-# submit modal blanks the review body when its textarea is left empty, with no
-# way to recover it. Folded in <details> to stay unobtrusive on a clean submit.
-# The sha-sentinel inside lets discover_sentinel_sha recover the reviewed SHA
-# even after a wipe. The blank line after </summary> is required for GitHub to
-# render the inner markdown.
-#
-# Own PRs auto-submit via the API (ADR 0008), never touching the submit modal,
-# so there is no wipe to back up: the mirror is skipped and reported as null.
-mirror_comment_body="<details>
-<summary>🤖 Review summary backup — restore from here if GitHub blanks the summary on submit</summary>
-
-${body_with_additional}
-
-</details>"
-
 if [[ $DRY_RUN -eq 1 ]]; then
-  if [[ $OWN_PR -eq 1 ]]; then
-    jq -n --argjson review "$payload" '{review: $review, mirror_comment: null}'
-  else
-    jq -n --argjson review "$payload" --arg mirror "$mirror_comment_body" \
-      '{review: $review, mirror_comment: $mirror}'
-  fi
+  printf '%s\n' "$payload"
   exit 0
 fi
 
@@ -276,22 +255,3 @@ if ! printf '%s' "$payload" | gh api \
   exit 1
 fi
 cat "$out_file"
-
-# Skip the body-wipe mirror on own PRs (ADR 0008): API submit, no modal, no wipe.
-if [[ $OWN_PR -eq 1 ]]; then
-  exit 0
-fi
-
-# Best-effort: a failure here must NOT fail the run. The Pending review is
-# already posted, and a non-zero exit would trigger a retry that hits the
-# one-pending-review-per-PR limit and never recovers. Worst case the operator
-# loses the backup, not the review.
-mirror_err="$(mktemp -t pr-review-mirror.XXXXXX)"
-if printf '%s' "$mirror_comment_body" \
-  | gh pr comment "$NUMBER" --repo "${OWNER}/${REPO}" --body-file - >/dev/null 2>"$mirror_err"; then
-  log_info "mirrored summary to PR comment (body-wipe safety net)"
-else
-  log_err "mirror comment failed (non-fatal): $(<"$mirror_err")"
-fi
-rm -f "$mirror_err"
-exit 0

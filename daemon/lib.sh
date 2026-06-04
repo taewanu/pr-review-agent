@@ -222,24 +222,68 @@ derive_project_identity() {
   PROJECT_NAME="$derived_repo"
 }
 
-# post_pickup_ack <owner> <repo> <pr-number> <head-sha>
-# Posts a transient "reviewing" PR comment (#48) so the operator has a PR-side
-# signal during the multi-minute review, and prints the new comment's id on
-# stdout. Best-effort: on any failure it prints nothing and still returns 0, so
-# a missing ack never aborts the review.
-post_pickup_ack() {
-  local owner="$1" repo="$2" pr="$3" sha="$4"
-  local body="👀 Reviewing \`${sha:0:12}\`… drafting a pending review."
+# Marker identifying the agent's edit-in-place review-status comment (#60).
+# find_status_comment keys on it to reuse the one comment across ticks rather
+# than post a second. Distinct from the sha sentinel, which lives in the Review
+# body and drives dedup; this marker never does.
+STATUS_COMMENT_MARKER='<!-- pr-review-agent:status -->'
+
+# render_status_comment <head-line> <scope-label> <file-count> <files>
+# Assembles the status-comment body (#60): header, diff scope (commit range +
+# file list, folded in <details> so a wide PR stays compact), and the marker
+# find_status_comment keys on. Scope only — never the review findings, which
+# would duplicate the Review object.
+render_status_comment() {
+  local head_line="$1" scope_label="$2" file_count="$3" files="$4"
+  local noun="files"
+  [[ "$file_count" == "1" ]] && noun="file"
+  local bullets
+  # sed script is literal (drop blank lines, wrap each path in `- ` … ``); the
+  # `$` is sed's end-of-line, not a shell expansion.
+  # shellcheck disable=SC2016
+  bullets="$(printf '%s\n' "$files" | sed '/^[[:space:]]*$/d; s/^/- `/; s/$/`/')"
+  printf '%s\n\n_Scope: %s_\n\n<details><summary>%s %s</summary>\n\n%s\n\n</details>\n\n%s\n' \
+    "$head_line" "$scope_label" "$file_count" "$noun" "$bullets" "$STATUS_COMMENT_MARKER"
+}
+
+# diff_paths <unified-diff-file>
+# Prints the `b/` path of each `diff --git` header, one per line — the file
+# list for the status-comment scope.
+diff_paths() {
+  local diff_file="$1"
+  [[ -r "$diff_file" ]] || return 0
+  sed -n 's|^diff --git a/.* b/||p' "$diff_file"
+}
+
+# find_status_comment <owner> <repo> <pr-number> <operator>
+# Prints the id of the operator's status comment (the one carrying
+# STATUS_COMMENT_MARKER) so a re-review edits it rather than posting a second
+# (#60). Best-effort: returns 0 even on gh failure, falling back to a fresh
+# post. `last` wins if more than one slipped through.
+find_status_comment() {
+  local owner="$1" repo="$2" pr="$3" operator="$4"
+  [[ -n "$operator" ]] || return 0
+  gh api "repos/${owner}/${repo}/issues/${pr}/comments" --paginate \
+    --jq ".[] | select(.user.login == \"${operator}\") | select(.body | contains(\"${STATUS_COMMENT_MARKER}\")) | .id" \
+    2>/dev/null | tail -1 || true
+}
+
+# post_status_comment <owner> <repo> <pr-number> <body>
+# Posts a new issue comment and prints its id. Best-effort: prints nothing and
+# returns 0 on failure, so a missing status comment never aborts the review.
+post_status_comment() {
+  local owner="$1" repo="$2" pr="$3" body="$4"
   gh api "repos/${owner}/${repo}/issues/${pr}/comments" \
     -f body="$body" --jq '.id' 2>/dev/null || true
 }
 
-# delete_comment <owner> <repo> <comment-id>
-# Deletes an issue comment by id; a no-op on an empty id. Best-effort (returns 0
-# even when the delete fails) — used to clear the pickup ack (#48) once the
-# review lands, where a failed cleanup is not worth aborting over.
-delete_comment() {
-  local owner="$1" repo="$2" comment_id="$3"
+# edit_status_comment <owner> <repo> <comment-id> <body>
+# Edits an issue comment in place; a no-op on an empty id. Best-effort (returns
+# 0 even on failure) — a failed status edit is not worth aborting a landed
+# review over.
+edit_status_comment() {
+  local owner="$1" repo="$2" comment_id="$3" body="$4"
   [[ -n "$comment_id" ]] || return 0
-  gh api -X DELETE "repos/${owner}/${repo}/issues/comments/${comment_id}" >/dev/null 2>&1 || true
+  gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
+    -f body="$body" >/dev/null 2>&1 || true
 }

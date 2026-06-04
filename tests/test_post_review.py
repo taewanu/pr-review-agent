@@ -39,8 +39,8 @@ FIXTURE_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 def _run_post_review(*extra_args: str, head_sha: str | None = FIXTURE_HEAD_SHA) -> dict:
-    """Returns the full --dry-run object: {"review": <api-payload>,
-    "mirror_comment": <PR-comment body for the #49 body-wipe backup>}."""
+    """Returns the --dry-run review payload (the object POSTed to the reviews
+    API: body + comments, plus commit_id/event when set)."""
     args = [
         "bash",
         str(DAEMON / "post-review.sh"),
@@ -93,7 +93,7 @@ def _strip_identity(body: str) -> str:
 
 
 def test_dry_run_payload_matches_snapshot():
-    actual = _run_post_review()["review"]
+    actual = _run_post_review()
     actual["body"] = _strip_identity(actual["body"])
     expected = json.loads((FIXTURE / "expected_payload.json").read_text())
     assert actual == expected, (
@@ -106,7 +106,7 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     # Locks in the ADR 0005 per-finding-failure rendering: an italic note sits
     # between the summary and `## Additional findings` so the operator sees the
     # redaction in the body itself, not just in stderr.
-    actual = _run_post_review("--dropped-combo", "2")["review"]
+    actual = _run_post_review("--dropped-combo", "2")
     actual["body"] = _strip_identity(actual["body"])
     expected = json.loads((FIXTURE / "expected_payload_dropped_2.json").read_text())
     assert actual == expected, (
@@ -115,28 +115,12 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     )
 
 
-def test_mirror_comment_wraps_full_review_body_in_details():
-    # #49 backup: the posted review body, verbatim, inside <details>.
-    result = _run_post_review()
-    mirror = result["mirror_comment"]
-    assert mirror.startswith("<details>")
-    assert "<summary>" in mirror
-    assert mirror.rstrip().endswith("</details>")
-    assert result["review"]["body"] in mirror
-
-
-def test_mirror_comment_carries_sentinel_so_dedup_survives_body_wipe():
-    # After a wipe this comment is the only surviving copy of the sha-sentinel.
-    mirror = _run_post_review()["mirror_comment"]
-    assert f"<!-- pr-review-agent:sha:{FIXTURE_HEAD_SHA} -->" in mirror
-
-
 def test_sentinel_present_and_matches_adr_0006_format():
     # ADR 0006 fixes the sentinel format so the dedup migration parser in
     # `daemon/poll.sh` can grep it byte-exactly. Locks the regex separately
     # from the full-payload snapshot so a format regression points at this
     # test, not at a scrolling JSON diff.
-    body = _run_post_review()["review"]["body"]
+    body = _run_post_review()["body"]
     match = re.search(r"<!-- pr-review-agent:sha:([0-9a-f]{40}) -->", body)
     assert match, "ADR 0006 sentinel missing from review body"
     assert match.group(1) == FIXTURE_HEAD_SHA
@@ -150,23 +134,17 @@ def test_sentinel_omitted_when_head_sha_unset():
     # Dry-run / debug invocations may omit --head-sha. The script should emit
     # no sentinel rather than a malformed `pr-review-agent:sha:` with an empty
     # value the parser would never accept.
-    body = _run_post_review(head_sha=None)["review"]["body"]
+    body = _run_post_review(head_sha=None)["body"]
     assert "pr-review-agent:sha:" not in body
 
 
 def test_own_pr_submits_comment_review():
     # ADR 0008: own PRs auto-submit a COMMENT review in the create POST itself,
     # via an `event` field. Others' PRs omit it and stay pending.
-    review = _run_post_review("--own-pr")["review"]
+    review = _run_post_review("--own-pr")
     assert review.get("event") == "COMMENT"
     # Others' path (default) carries no event key — the review stays pending.
-    assert "event" not in _run_post_review()["review"]
-
-
-def test_own_pr_skips_body_wipe_mirror():
-    # Own PRs never touch the submit modal, so there is no wipe to back up: the
-    # mirror is reported as null rather than a redundant comment body.
-    assert _run_post_review("--own-pr")["mirror_comment"] is None
+    assert "event" not in _run_post_review()
 
 
 def test_own_pr_footer_says_edit_not_submit_or_delete():
@@ -175,7 +153,7 @@ def test_own_pr_footer_says_edit_not_submit_or_delete():
     # "delete" because GitHub rejects deleting a submitted review (REST and
     # GraphQL both 422); an unwanted one can only be edited or have its comments
     # hidden.
-    body = _run_post_review("--own-pr")["review"]["body"]
+    body = _run_post_review("--own-pr")["body"]
     assert "Edit as needed." in body
     assert "delete" not in body.lower()
     assert "Submit, edit, or cancel as needed." not in body
@@ -187,7 +165,7 @@ def test_footer_reflects_git_remote_identity():
     # footer/banner. Body must surface that derived identity. Test stays
     # correct on canonical and fork checkouts alike by querying git directly.
     owner, repo = _git_remote_identity()
-    body = _run_post_review()["review"]["body"]
+    body = _run_post_review()["body"]
     assert f"[{repo}](https://github.com/{owner}/{repo})" in body
 
 
@@ -195,9 +173,7 @@ if __name__ == "__main__":
     import sys
 
     extra = sys.argv[1:]
-    # Snapshot stays the bare review payload; the mirror_comment is structural
-    # (asserted directly in tests) so it is not snapshotted.
-    payload = _run_post_review(*extra)["review"]
+    payload = _run_post_review(*extra)
     payload["body"] = _strip_identity(payload["body"])
     suffix = "_dropped_2" if "--dropped-combo" in extra else ""
     out = FIXTURE / f"expected_payload{suffix}.json"
