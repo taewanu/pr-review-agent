@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # reply-pr.sh — ack operator inline replies on prior findings. Lists
-# unaddressed threads, dispatches the reply agent to verify each claim
-# against the file at HEAD, posts threaded acks with addressed-sentinel.
+# unaddressed threads, dispatches the reply agent to classify and verify each
+# claim against the file at HEAD, then posts the acks.
 #
-# Replies are emitted as `confirmed` (file matches operator's claim) or
-# `pushback` (file shows the mismatch). Non-claim replies (thanks, questions)
-# get no reply and remain unaddressed until the operator posts a fix claim.
+# Fix claims get a threaded text reply with the addressed-sentinel: `confirmed`
+# (file matches the operator's claim) or `pushback` (file shows the mismatch).
+# Every thread also gets a pickup reaction on the operator's reply comment,
+# chosen by bucket: eyes ("seen") for fix claims and questions, +1 ("noted")
+# for acknowledgments. Non-claim replies get the reaction as their terminal
+# ack instead of the prior silence.
 #
 # Usage:
 #   bash daemon/reply-pr.sh [--keep-scratch] <pr-url>

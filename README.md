@@ -80,6 +80,16 @@ bash daemon/submit-review.sh <pr-url>
 
 It submits via the GitHub API (`POST .../reviews/:id/events`), which preserves the drafted summary. Use it rather than GitHub's "Finish your review" web modal, which can blank the summary.
 
+## Replying to findings
+
+Reply inline to a finding and the daemon picks it up on the next polling cycle. It classifies your reply and leaves a pickup reaction on it:
+
+- **Fix claim** ("Done in `abc123`", "Removed"): 👀, then a threaded reply that either confirms the fix against the file at HEAD or pushes back with the specific mismatch.
+- **Question or pushback** ("Why flag this?"): 👀 ("seen"). The daemon does not answer questions yet, so the reaction is the only ack for now.
+- **Acknowledgment** ("Thanks", "Deferring to V2"): 👍 ("noted"), no text reply.
+
+**Solo-attribution non-goal:** in a single-identity setup ([ADR 0003](docs/adr/0003-identity-model.md)) the daemon and you share one login, so the reaction lands on your own comment. A user token carries no metadata to distinguish "daemon 👀" from "human 👀"; the only true fix is a separate bot identity (a GitHub App), which the operator-identity model rules out, the same blocker as the pickup check-run path. Accepted: 👀 is the least-human self-react, and the sole reader is the operator who configured the daemon.
+
 ## Forking
 
 The review footer link and preview-release banner derive from `git remote get-url origin`. Any clone uses its own owner/repo with no config edit.
