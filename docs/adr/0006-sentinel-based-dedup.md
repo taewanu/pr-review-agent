@@ -1,18 +1,18 @@
-# ADR 0006 — Sentinel-based dedup for iterative review
+# ADR 0006: Sentinel-based dedup for iterative review
 
 Date: 2026-05-28
 Status: Accepted
 
 ## Context
 
-A *sentinel* here means a structured marker — an HTML comment — embedded in the posted review body, carrying the reviewed SHA so the next tick can parse it and know what the previous tick did. Same pattern used by Dependabot, Renovate, and GitHub Actions bots to identify their own prior posts.
+A *sentinel* here means a structured marker (an HTML comment) embedded in the posted review body, carrying the reviewed SHA so the next tick can parse it and know what the previous tick did. Same pattern used by Dependabot, Renovate, and GitHub Actions bots to identify their own prior posts.
 
 Phase-4 ships a local state file at `~/.local/state/pr-review-agent/<owner>-<repo>-<pr>.json` that records the last-reviewed HEAD SHA. Same-SHA dedup is simple: if HEAD has not advanced since the last tick, skip the review.
 
 V2 (PRD #21) raises two requirements the state file does not meet:
 
 - **Iterative review needs the *base* SHA, not just the *latest* SHA.** Diff-since-last-review scoping wants to feed the review agent only the lines that changed between the previous reviewed SHA and HEAD. The state file holds one SHA per PR; when a new tick fires, that prior SHA is overwritten and the base for the next-next tick is lost.
-- **State must survive machine moves and multi-operator setups.** A laptop reformat, a daemon migration, or a second operator running their own daemon all break local-only state. The dedup record needs to live where the reviews live — on GitHub.
+- **State must survive machine moves and multi-operator setups.** A laptop reformat, a daemon migration, or a second operator running their own daemon all break local-only state. The dedup record needs to live where the reviews live: on GitHub.
 
 ## Decision
 
@@ -25,7 +25,7 @@ Single-key HTML comments under a `pr-review-agent` namespace.
     <!-- pr-review-agent:sha:<40-char-hex-sha> -->
 
 - One marker, one fact. Multiple markers per body OK; each is grepped by an independent regex.
-- ASCII alphanumeric + `:` + `-` only — no quotes, braces, or non-ASCII inside the comment, so GitHub's markdown sanitizer round-trips it unchanged.
+- ASCII alphanumeric + `:` + `-` only: no quotes, braces, or non-ASCII inside the comment, so GitHub's markdown sanitizer round-trips it unchanged.
 - Operator identity comes from the review's `user.login` field on the API response; it does not need to be repeated inside the sentinel.
 - Timestamp comes from the review's `submitted_at` / `created_at` field; same reason.
 
@@ -54,9 +54,9 @@ Per-tick lookup of the prior-reviewed SHA for a given PR:
 2. Filter to `user.login == $GITHUB_USER`.
 3. Sort descending by `submitted_at`, falling back to `created_at` for pending reviews where `submitted_at` is null.
 4. For each review in order, grep the body for `<!-- pr-review-agent:sha:([0-9a-f]{40}) -->`. The first match is the prior reviewed SHA.
-5. If step 1 failed (network, 5xx, auth break), fall through to `state_read`. Skip the PR-tick if state is also empty — "could not check" is distinct from "no prior review".
+5. If step 1 failed (network, 5xx, auth break), fall through to `state_read`. Skip the PR-tick if state is also empty: "could not check" is distinct from "no prior review".
 6. If step 1 succeeded but no review carries a sentinel, fall through to `state_read` (the phase-4 file).
-7. If step 6 also returns no SHA, the PR is a first-review case — full base..HEAD diff.
+7. If step 6 also returns no SHA, the PR is a first-review case: full base..HEAD diff.
 
 Multi-operator: each operator's daemon only sees its own login at step 2, so cross-operator sentinels never collide.
 
@@ -76,19 +76,19 @@ The migration is reversible during phase-5: a sentinel-write regression is cover
 | --- | --- |
 | Cross-machine continuity | Laptop reformat or daemon migration survives. Sentinel is on GitHub, not on disk. |
 | Multi-operator coexistence | Each daemon greps its own `user.login` reviews; sentinels from other operators are ignored. |
-| Diff-since-last-review base | The sentinel SHA is the base for `git diff <sentinel_sha>..HEAD` scoping — PRD #21's incremental review acceptance criterion. |
+| Diff-since-last-review base | The sentinel SHA is the base for `git diff <sentinel_sha>..HEAD` scoping: PRD #21's incremental review acceptance criterion. |
 | Failure under `pending-conflict` ([ADR 0005](./0005-failure-handling-policy.md)) | Post fails, sentinel never lands, state file untouched. Next tick retries the same SHA naturally. |
 | Failure under per-finding drops | Per-finding drops do not block the post; the review still ships and the sentinel still lands. |
 | First-review case (no prior sentinel, no state) | Full base..HEAD diff, logged at info level so initial uptake is visible in the daemon log. |
-| Discovery API failure (network, 5xx, auth break) | Fall back to `state_read`. If state is also empty, skip the PR-tick rather than classifying as first-review — "could not check" is distinct from "no prior review". Logged at warn level so a persistent API outage surfaces. |
+| Discovery API failure (network, 5xx, auth break) | Fall back to `state_read`. If state is also empty, skip the PR-tick rather than classifying as first-review: "could not check" is distinct from "no prior review". Logged at warn level so a persistent API outage surfaces. |
 | Sentinel parse failure | Treated as no sentinel found; fall through to state file. Logged at warn level so a sanitizer regression surfaces. |
 | Sanitizer round-trip | A round-trip test posts a review with the sentinel, GETs the review back, and asserts the sentinel survives byte-exact. Pinned because the post pipeline is where a sanitizer regression would slip silently. |
-| Backfill | Pre-phase-5 reviews carry no sentinel. The daemon treats them as if no prior review existed — full diff on first phase-5 tick. No retroactive sentinel-write. |
+| Backfill | Pre-phase-5 reviews carry no sentinel. The daemon treats them as if no prior review existed: full diff on first phase-5 tick. No retroactive sentinel-write. |
 
 ## Related
 
-- [ADR 0001](./0001-architecture-baseline.md) D3 — pending-review-per-tick model; the sentinel travels in the same review body.
-- [ADR 0003](./0003-identity-model.md) — operator identity and the review-body footer convention; the sentinel sits one line below the footer.
-- [ADR 0005](./0005-failure-handling-policy.md) — system-vs-per-finding failure taxonomy; sentinel-write piggybacks on the existing post failure path with no new category.
-- PRD #21 — V2 acceptance criteria including stateless markers and diff-since-last-review.
-- `project_v1_v2_release_plan.md` — phase-5 work breakdown.
+- [ADR 0001](./0001-architecture-baseline.md) D3: pending-review-per-tick model; the sentinel travels in the same review body.
+- [ADR 0003](./0003-identity-model.md): operator identity and the review-body footer convention; the sentinel sits one line below the footer.
+- [ADR 0005](./0005-failure-handling-policy.md): system-vs-per-finding failure taxonomy; sentinel-write piggybacks on the existing post failure path with no new category.
+- PRD #21: V2 acceptance criteria including stateless markers and diff-since-last-review.
+- `project_v1_v2_release_plan.md`: phase-5 work breakdown.
