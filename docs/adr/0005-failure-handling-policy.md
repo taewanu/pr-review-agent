@@ -1,4 +1,4 @@
-# ADR 0005 — Failure-handling policy for PR-ticks
+# ADR 0005: Failure-handling policy for PR-ticks
 
 Date: 2026-05-20
 Status: Accepted
@@ -8,9 +8,9 @@ Status: Accepted
 A PR-tick runs an LLM (the review agent) and a deterministic pipeline (extract →
 validate → post). Failures arrive in two flavors:
 
-- **System failures** — the review agent produced no parseable structured
+- **System failures:** the review agent produced no parseable structured
   output, or auth/network broke. Cannot be fixed by retrying the same tick.
-- **Per-finding failures** — the payload parses fine but one item violates a
+- **Per-finding failures:** the payload parses fine but one item violates a
   schema constraint (forbidden severity×type combo) or a positioning
   constraint (`line` outside diff).
 
@@ -22,9 +22,9 @@ summary fallback rather than abort. The two pulls need to be reconciled.
 
 A PR-tick stops on system failures and degrades on per-finding failures.
 
-- **System failures** — log an actionable error to stderr, exit non-zero, post
+- **System failures:** log an actionable error to stderr, exit non-zero, post
   nothing. Same-SHA dedup (later slice) makes the next tick retry naturally.
-- **Per-finding failures** — drop or relocate the affected finding and
+- **Per-finding failures:** drop or relocate the affected finding and
   continue. Always surface the action in the posted summary so degradation is
   visible, not silent.
 

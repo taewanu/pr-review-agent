@@ -1,4 +1,4 @@
-# ADR 0007 — Operator-bundled agent definitions for cross-repo review
+# ADR 0007: Operator-bundled agent definitions for cross-repo review
 
 Date: 2026-05-29
 Status: Accepted
