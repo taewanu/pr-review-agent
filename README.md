@@ -78,7 +78,7 @@ tail -f .daemon.log                # follow the launchd log
 bash daemon/submit-review.sh <pr-url>
 ```
 
-It submits via the GitHub API (`POST .../reviews/:id/events`), which preserves the drafted summary. Submit by hand and there's a trap: GitHub's "Finish your review" web modal posts an empty `body` when you leave its textarea blank, **silently overwriting the summary the daemon drafted** (inline comments survive; the summary is gone for good, `PUT`-recovery returns `422`). The helper never touches the modal, so use it.
+It submits via the GitHub API (`POST .../reviews/:id/events`), which preserves the drafted summary. Use it rather than GitHub's "Finish your review" web modal, which can blank the summary.
 
 ## Forking
 
