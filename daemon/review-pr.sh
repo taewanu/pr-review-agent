@@ -72,19 +72,19 @@ PR_NUMBER="${BASH_REMATCH[3]}"
 # placeholder field populated.
 HEAD_OID=""
 
-# Transient pickup-ack comment id (#48); set once posted, deleted by cleanup().
-ACK_COMMENT_ID=""
+# Durable edit-in-place status comment id (#60); set once posted/reused, edited
+# in place — never deleted, so it outlives the run. Not touched by cleanup().
+STATUS_COMMENT_ID=""
 
 # Per-PR lock path (#67); set once acquired, released by cleanup().
 LOCK_FILE=""
 
-# Single EXIT path for everything this run creates: the per-PR lock (#67), the
-# pickup ack (#48), and the scratch clone, none of which should outlive the run.
-# The globals it reads default to empty, so it no-ops cleanly if the run dies
-# before they're set.
+# Single EXIT path for the run-scoped artifacts: the per-PR lock (#67) and the
+# scratch clone, neither of which should outlive the run. The status comment
+# (#60) is deliberately durable, so it is not cleaned up here. The globals it
+# reads default to empty, so it no-ops cleanly if the run dies before they're set.
 cleanup() {
   release_pr_lock "${LOCK_FILE:-}"
-  delete_comment "$BASE_OWNER" "$BASE_REPO" "$ACK_COMMENT_ID"
   if [[ $KEEP_SCRATCH -eq 0 && -n "${SCRATCH:-}" ]]; then
     rm -rf "$SCRATCH"
   fi
@@ -153,16 +153,6 @@ else
   log_info "scratch: $SCRATCH"
 fi
 
-# Post the pickup ack before the multi-minute review so the operator sees the PR
-# is being looked at; cleanup() removes it on exit once the posted review (or
-# the next tick) takes over as the signal.
-ACK_COMMENT_ID="$(post_pickup_ack "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$HEAD_OID")"
-if [[ -n "$ACK_COMMENT_ID" ]]; then
-  log_info "posted pickup ack (comment ${ACK_COMMENT_ID})"
-else
-  log_info "pickup ack unavailable (non-fatal)"
-fi
-
 gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
 (
   cd "$SCRATCH"
@@ -208,6 +198,32 @@ if [[ -n "$LAST_SHA" ]]; then
 fi
 if [[ $diff_scoped -eq 0 ]]; then
   gh pr diff "$PR_URL" >"$DIFF_FILE"
+fi
+
+# Post (or reuse) the durable status comment before the multi-minute review, so
+# the operator sees the PR is being looked at and the scope being read (#60).
+# Scope comes from the same diff: file list plus commit range (full PR first,
+# <last-sha>..HEAD on re-review). One comment per PR, reused across ticks.
+STATUS_FILES="$(diff_paths "$DIFF_FILE")"
+STATUS_FILE_COUNT="$(printf '%s' "$STATUS_FILES" | grep -c . || true)"
+if [[ $diff_scoped -eq 1 ]]; then
+  STATUS_SCOPE="\`${LAST_SHA:0:12}..${HEAD_OID:0:12}\`"
+else
+  STATUS_SCOPE="full PR"
+fi
+reviewing_body="$(render_status_comment \
+  "👀 Reviewing \`${HEAD_OID:0:12}\`…" "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
+STATUS_COMMENT_ID="$(find_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
+if [[ -n "$STATUS_COMMENT_ID" ]]; then
+  edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewing_body"
+  log_info "status comment reused (${STATUS_COMMENT_ID})"
+else
+  STATUS_COMMENT_ID="$(post_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$reviewing_body")"
+  if [[ -n "$STATUS_COMMENT_ID" ]]; then
+    log_info "status comment posted (${STATUS_COMMENT_ID})"
+  else
+    log_info "status comment unavailable (non-fatal)"
+  fi
 fi
 
 log_step "running review agent via claude -p"
@@ -264,5 +280,17 @@ if ! bash "$SCRIPT_DIR/post-review.sh" "${post_args[@]}" 2>"$POST_ERR"; then
   log_failure "$category" "$PR_URL" "$HEAD_OID" "$reason"
   exit 1
 fi
+
+# The review landed: edit the status comment in place into its terminal state
+# (#60). N counts every surfaced finding: inline (anchored) plus relocated
+# (unanchored). It is a status figure, not the findings themselves, which stay
+# in the Review object.
+findings_total=$(($(jq 'length' "$ANCHORED_FILE") + $(jq 'length' "$UNANCHORED_FILE")))
+finding_noun="findings"
+[[ "$findings_total" -eq 1 ]] && finding_noun="finding"
+reviewed_body="$(render_status_comment \
+  "✅ Reviewed \`${HEAD_OID:0:12}\` — ${findings_total} ${finding_noun}" \
+  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
+edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
 
 log_step "done"

@@ -5,7 +5,7 @@ pipeline. #36 collapses it to one Python process so the body bytes survive end
 to end. These tests pin that: a body carrying `\n`, `\t`, `\\`, a backticked
 regex `` `\n[^\n]` `` and non-ASCII must reach `gh ... --input -` byte-for-byte.
 
-`gh` is stubbed via a tmpdir on PATH (mirrors test_pickup_ack), but the stub
+`gh` is stubbed via a tmpdir on PATH (mirrors test_status_comment), but the stub
 additionally records its stdin — that captured payload is the wire image whose
 `body` we assert equals the input plus the addressed-sentinel footer.
 """
