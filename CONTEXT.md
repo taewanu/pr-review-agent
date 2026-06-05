@@ -56,6 +56,44 @@ _Avoid_: workspace, sandbox, checkout dir
 The per-repo configuration file the daemon reads on each PR-tick. Single file; carries structured fields (path filters, max findings, active review agents) plus a multiline `instructions:` field for prose review guidance. Lives at the repo root, committed alongside source.
 _Avoid_: REVIEW.md (Anthropic Code Review's pattern uses a separate markdown file; ours bundles prose into the YAML `instructions:` field)
 
+**Status comment**:
+A pr-review-agent-owned issue comment on the PR, edited in place, showing the review scope (#60). One per PR, mutable. Identified by the Status marker so a re-review edits it rather than posting a second. Carries scope only, never findings (those live in the Review object).
+_Avoid_: ACK comment, review (it is not a Review object), status check (a GitHub commit status, unrelated)
+
+**Sentinel**:
+Umbrella term for the hidden HTML-comment markers that drive dedup. A Sentinel is invisible in rendered markdown and lives in a comment body pr-review-agent owns. Two kinds: the Sha sentinel and the Reply sentinel.
+_Avoid_: marker (broader; the Status marker is not a Sentinel), tag
+
+**Sha sentinel**:
+`pr-review-agent:sha:<SHA>` embedded in the Review body. Drives review-dedup: the daemon skips a PR-tick whose HEAD SHA already carries one (ADR 0006).
+
+**Reply sentinel**:
+`pr-review-agent:reply:<reply-id>`, where `<reply-id>` is an Operator reply's comment id. Drives reply-dedup so a processed reply is not re-dispatched (#39, #79). Two carriers: a fix_claim's threaded text reply, or, for a non-claim thread, the parent Finding's Inline comment body.
+_Avoid_: addressed sentinel (implies the finding was resolved; the marker only means pr-review-agent processed the reply)
+
+**Status marker**:
+`pr-review-agent:status`. Identifies the Status comment for edit-in-place reuse. Not a Sentinel: it drives no dedup (a lib.sh invariant).
+
+**Reply thread**:
+A Finding plus its chain of replies; the unit `reply-pr.sh` processes.
+
+**Operator reply**:
+A comment the Operator writes inside a Reply thread, in reply to a Finding.
+
+**Reply agent**:
+The Claude Code subagent `review-agent-reply`. Classifies each Operator reply into a Bucket and verifies a fix_claim against the file at HEAD. Stateless and does not post (the daemon posts). The `review-agent-*` prefix is the product-name namespace, not a "reviewing" claim.
+_Avoid_: agent alone (see Review agent), "the agent replies" (the daemon posts, not the agent)
+
+**Bucket**:
+The Reply agent's classification of an Operator reply: `fix_claim`, `question`, or `acknowledgment`. Only `fix_claim` earns a file read and a text reply; the other two are reaction-only.
+
+**Ack reaction**:
+The reaction the daemon posts on an Operator reply (👀 for fix_claim/question, 👍 for acknowledgment): a user-facing acknowledgment, never a dedup signal (a reaction carries no author provenance the daemon can trust). For a non-claim thread it is the only ack, so its landing is guaranteed (retried until it POSTs, and the Reply sentinel is embedded only once it lands); for a fix_claim it is a light "seen" on top of the text reply.
+_Avoid_: pickup reaction (old code term; "pickup" collides with the early-signal idea in #48), emoji (loses the typed, per-user, removable reaction semantics), ack alone (collides with the acknowledgment Bucket)
+
+**review-dedup / reply-dedup**:
+Concept labels (kebab) for the two dedup rules: "do not re-review the same SHA" (review-dedup, the Sha sentinel) and "do not re-process the same Operator reply" (reply-dedup, the Reply sentinel).
+
 ## Roadmap
 
 **Version (V1, V2, V2.1, …)**:
