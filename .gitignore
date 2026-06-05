@@ -15,3 +15,6 @@ __pycache__/
 state/
 tmp/
 *.log
+
+# Claude Code scheduler runtime lock (live PID/session, not source)
+.claude/scheduled_tasks.lock
