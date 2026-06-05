@@ -79,22 +79,22 @@ Keep replies short: 1 to 2 sentences. Inline thread replies, not standalone find
 
 Same two-part shape for both `confirmed` and `pushback`:
 
-1. **Bold lead sentence**. For `confirmed`: lead with "Confirmed", a noun phrase, or the diagnosis. For `pushback`: lead with what is still wrong, citing file and line.
+1. **Bold lead sentence**, diagnosis only. For `confirmed`: lead with "Confirmed", a noun phrase, or what the file now shows. For `pushback`: lead with what is still wrong. **Do not cite the file or line in the prose.** The daemon turns your `verified_*` fields into a blob link to the exact line, so a file/line in the prose duplicates it. Name the symbol or the shape, not its coordinates.
 2. **Optional** one short supporting sentence with the specific evidence checked.
 
 ### Confirmed examples
 
-> **Confirmed at `daemon/lib.sh` L88-L95.** Stderr now captured to a tmpfile and surfaced through `log_err`.
+> **Confirmed.** Stderr now captured to a tmpfile and surfaced through `log_err`.
 
-> **`session.token` no longer in the warning log path.** Drop landed cleanly at `auth/session.py` L42.
+> **`session.token` no longer in the warning log path.** The drop landed cleanly.
 
 ### Pushback examples
 
-> **`session.token` still emitted at `auth/session.py` L42.** Line reads `logger.warning(f"got {session.token}")`.
+> **`session.token` still emitted.** Line reads `logger.warning(f"got {session.token}")`.
 
-> **Original concern still visible at `daemon/poll.sh` L115.** The rc=2 skip branch is not in this file; current code falls through to first-review.
+> **Original concern still visible.** The rc=2 skip branch is not in this file; current code falls through to first-review.
 
-> **Import removed at L3, but the call at L88 still emits the log line.** Partial fix; the call site needs the same treatment.
+> **Import removed, but the call still emits the log line.** Partial fix; the call site needs the same treatment.
 
 The opener-word rules from `review-agent-default` apply inside the bold:
 
@@ -113,14 +113,19 @@ The last thing in your stdout MUST be a fenced ` ```json ` block. Emit **one ent
       "addressed_comment_id": "67890",
       "bucket": "fix_claim",
       "mode": "confirmed",
-      "body": "**Confirmed at ...**"
+      "body": "**Confirmed.** ...",
+      "verified_path": "daemon/lib.sh",
+      "verified_line": 88,
+      "verified_end_line": 95
     },
     {
       "in_reply_to_id": "23456",
       "addressed_comment_id": "78901",
       "bucket": "fix_claim",
       "mode": "pushback",
-      "body": "**Original concern still visible at ...**"
+      "body": "**Original concern still visible.** ...",
+      "verified_path": "daemon/poll.sh",
+      "verified_line": 115
     },
     {
       "in_reply_to_id": "34567",
@@ -140,7 +145,8 @@ The last thing in your stdout MUST be a fenced ` ```json ` block. Emit **one ent
 - `in_reply_to_id`: copy `parent_finding.comment_id` from input. Identifies where to attach a text reply on GitHub.
 - `addressed_comment_id`: copy `operator_reply.comment_id` from input. The pipeline reacts to this comment and embeds its id in a Reply sentinel so the next polling cycle knows the reply was processed (in the text reply for fix claims, in the parent finding's body for non-claims).
 - `bucket`: `fix_claim`, `question`, or `acknowledgment` from Step 1. Drives the Ack reaction.
-- `mode` and `body`: **`fix_claim` only.** `mode` is `confirmed` or `pushback` (defaults to `confirmed` if omitted; always set it explicitly). `body` is the reply markdown; the pipeline appends a sentinel footer of the form `<!-- pr-review-agent:reply:<addressed_comment_id> -->`. Omit both for `question` and `acknowledgment`.
+- `mode` and `body`: **`fix_claim` only.** `mode` is `confirmed` or `pushback` (defaults to `confirmed` if omitted; always set it explicitly). `body` is the reply markdown; the pipeline appends a provenance marker and a sentinel footer of the form `<!-- pr-review-agent:reply:<addressed_comment_id> -->`. Omit both for `question` and `acknowledgment`.
+- `verified_path` / `verified_line` / `verified_end_line`: **`fix_claim` only, optional.** The file and line you verified at HEAD; the daemon turns them into a blob-at-HEAD link to that exact location. `verified_path` is the path you read; `verified_line` is the relevant current line (for `confirmed`, where the fix sits; for `pushback`, where the mismatch still shows); `verified_end_line` is the range end, omit it for a single line. Omit all three when there is nothing to anchor, for example a fix confirmed by deletion where the code no longer exists. Emit the line you actually read in the file as it now stands, never the original finding's line.
 
 ## Hard constraints
 

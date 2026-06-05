@@ -36,7 +36,10 @@ NASTY_BODY = (
     "unicode 안녕 café"
 )
 
-EXPECTED_BODY = NASTY_BODY + "\n\n<!-- pr-review-agent:reply:222 -->"
+# Default _run() passes no --head-sha and no verified_* fields, so a fix_claim
+# body carries no blob link: just the prose, the provenance marker, and the
+# sentinel. Link assembly is exercised separately below.
+EXPECTED_BODY = NASTY_BODY + "\n\n🤖 _pr-review-agent_\n\n<!-- pr-review-agent:reply:222 -->"
 
 
 def _raw(replies: list[dict]) -> str:
@@ -46,11 +49,17 @@ def _raw(replies: list[dict]) -> str:
 
 
 def _run(
-    raw: str, *, dry_run: bool = False, gh_exit: int = 0, threads: list[dict] | None = None
+    raw: str,
+    *,
+    dry_run: bool = False,
+    gh_exit: int = 0,
+    threads: list[dict] | None = None,
+    head_sha: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[tuple[str, str]]]:
     """Run post_reply.py with a per-call-recording `gh` stub. Returns
     (result, calls) where calls is a list of (argv, stdin) tuples in order.
-    `threads` writes a --threads file supplying parent Finding bodies (#79)."""
+    `threads` writes a --threads file supplying parent Finding bodies (#79).
+    `head_sha`, when set, is passed as --head-sha so the blob link is built."""
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
         raw_file = tmpd / "raw.txt"
@@ -87,6 +96,8 @@ def _run(
             threads_file = tmpd / "threads.json"
             threads_file.write_text(json.dumps(threads))
             args += ["--threads", str(threads_file)]
+        if head_sha is not None:
+            args += ["--head-sha", head_sha]
         if dry_run:
             args.append("--dry-run")
         result = subprocess.run(args, capture_output=True, text=True, env=env)
@@ -134,6 +145,63 @@ def test_fix_claim_round_trips_body_and_posts_eyes_reaction():
     react_call = _find(calls, "pulls/comments/222/reactions")
     assert react_call is not None, "fix_claim must react on the operator comment"
     assert json.loads(react_call[1]) == {"content": "eyes"}
+
+
+HEAD_SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+
+
+def _reply_body(calls: list[tuple[str, str]]) -> str:
+    reply_call = _find(calls, "/replies")
+    assert reply_call is not None
+    return json.loads(reply_call[1])["body"]
+
+
+def test_fix_claim_builds_blob_link_for_a_range():
+    reply = _reply(verified_path="daemon/lib.sh", verified_line=88, verified_end_line=95)
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    expected = f"[`a1b2c3d:L88-L95`](https://github.com/example/example/blob/{HEAD_SHA}/daemon/lib.sh#L88-L95)"
+    assert expected in body, body
+    assert "🤖 _pr-review-agent_" in body
+    # Location lives in the link only — the prose body carried no coordinates.
+    assert body.startswith(NASTY_BODY)
+
+
+def test_fix_claim_builds_blob_link_for_a_single_line():
+    reply = _reply(verified_path="auth/session.py", verified_line=42)
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    expected = (
+        f"[`a1b2c3d:L42`](https://github.com/example/example/blob/{HEAD_SHA}/auth/session.py#L42)"
+    )
+    assert expected in body, body
+
+
+def test_pushback_builds_blob_link_too():
+    reply = _reply(mode="pushback", verified_path="daemon/poll.sh", verified_line=115)
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    assert f"/blob/{HEAD_SHA}/daemon/poll.sh#L115" in body, body
+    assert "🤖 _pr-review-agent_" in body
+
+
+def test_fix_claim_without_verified_fields_has_marker_but_no_link():
+    # head sha present, but the agent emitted nothing to anchor (e.g. a fix
+    # confirmed by deletion): marker still appended, no blob link.
+    _, calls = _run(_raw([_reply()]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    assert "🤖 _pr-review-agent_" in body
+    assert "/blob/" not in body, body
+
+
+def test_fix_claim_without_head_sha_has_no_link():
+    # No --head-sha (older invocation path): the link cannot be built even with
+    # verified fields present, but the marker still lands.
+    reply = _reply(verified_path="daemon/lib.sh", verified_line=88)
+    _, calls = _run(_raw([reply]))
+    body = _reply_body(calls)
+    assert "/blob/" not in body, body
+    assert "🤖 _pr-review-agent_" in body
 
 
 def test_acknowledgment_posts_plus_one_reaction_only():

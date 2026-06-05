@@ -203,6 +203,7 @@ POST_ERR="$(mktemp -t pr-review-reply-post.XXXXXX)"
 # failure a `category=` line feeds log_failure.
 if python3 "$SCRIPT_DIR/post_reply.py" \
   --owner "$OWNER" --repo "$REPO" --number "$PR_NUMBER" \
+  --head-sha "$HEAD_OID" \
   --raw "$RAW_FILE" --threads "$THREADS_FILE" 2>"$POST_ERR"; then
   cat "$POST_ERR" >&2
 else

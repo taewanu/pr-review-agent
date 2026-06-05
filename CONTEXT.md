@@ -87,6 +87,10 @@ _Avoid_: agent alone (see Review agent), "the agent replies" (the daemon posts, 
 **Bucket**:
 The Reply agent's classification of an Operator reply: `fix_claim`, `question`, or `acknowledgment`. Only `fix_claim` earns a file read and a text reply; the other two are reaction-only.
 
+**Reply mode (`confirmed` / `pushback`)**:
+The Reply agent's verdict on a `fix_claim`, posted by the daemon as a threaded text reply. `confirmed` = the file at HEAD matches the Operator's claimed fix; `pushback` = the file still shows the mismatch, cited with file evidence. Both are **daemon-authored**; the Operator only supplies the `fix_claim` that triggers the verdict. The Operator never "pushes back" in this vocabulary: an Operator disputing a Finding ("why flag this?", "false positive") is the `question` Bucket, not pushback.
+_Avoid_: pushback for an Operator's dispute of a Finding (that is the `question` Bucket); rejection / denial (pushback cites file evidence, it does not deny intent)
+
 **Ack reaction**:
 The reaction the daemon posts on an Operator reply (👀 for fix_claim/question, 👍 for acknowledgment): a user-facing acknowledgment, never a dedup signal (a reaction carries no author provenance the daemon can trust). For a non-claim thread it is the only ack, so its landing is guaranteed (retried until it POSTs, and the Reply sentinel is embedded only once it lands); for a fix_claim it is a light "seen" on top of the text reply.
 _Avoid_: pickup reaction (old code term; "pickup" collides with the early-signal idea in #48), emoji (loses the typed, per-user, removable reaction semantics), ack alone (collides with the acknowledgment Bucket)
