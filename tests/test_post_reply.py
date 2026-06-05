@@ -55,11 +55,15 @@ def _run(
     gh_exit: int = 0,
     threads: list[dict] | None = None,
     head_sha: str | None = None,
+    head_owner: str | None = None,
+    head_repo: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[tuple[str, str]]]:
     """Run post_reply.py with a per-call-recording `gh` stub. Returns
     (result, calls) where calls is a list of (argv, stdin) tuples in order.
     `threads` writes a --threads file supplying parent Finding bodies (#79).
-    `head_sha`, when set, is passed as --head-sha so the blob link is built."""
+    `head_sha`, when set, is passed as --head-sha so the blob link is built.
+    `head_owner`/`head_repo` override the blob link's repo (the fork on a
+    cross-repo PR); --owner/--repo stay the base repo for the API calls."""
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
         raw_file = tmpd / "raw.txt"
@@ -98,6 +102,10 @@ def _run(
             args += ["--threads", str(threads_file)]
         if head_sha is not None:
             args += ["--head-sha", head_sha]
+        if head_owner is not None:
+            args += ["--head-owner", head_owner]
+        if head_repo is not None:
+            args += ["--head-repo", head_repo]
         if dry_run:
             args.append("--dry-run")
         result = subprocess.run(args, capture_output=True, text=True, env=env)
@@ -183,6 +191,19 @@ def test_pushback_builds_blob_link_too():
     body = _reply_body(calls)
     assert f"/blob/{HEAD_SHA}/daemon/poll.sh#L115" in body, body
     assert "🤖 _pr-review-agent_" in body
+
+
+def test_blob_link_targets_head_repo_not_base():
+    # Cross-repo PR: the comment API calls hit the base repo (example/example),
+    # but the blob link must point at the head repo where head_sha lives, or it
+    # 404s.
+    reply = _reply(verified_path="daemon/lib.sh", verified_line=88)
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA, head_owner="forker", head_repo="thefork")
+    body = _reply_body(calls)
+    assert f"https://github.com/forker/thefork/blob/{HEAD_SHA}/daemon/lib.sh#L88" in body, body
+    assert "example/example/blob" not in body, body
+    # The threaded reply itself still POSTs to the base repo's PR.
+    assert _find(calls, "repos/example/example/pulls/999/comments") is not None
 
 
 def test_fix_claim_without_verified_fields_has_marker_but_no_link():

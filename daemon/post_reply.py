@@ -131,11 +131,13 @@ def build_link(
     nothing to anchor (no head sha, or the agent emitted no line, for example a
     confirmed-by-deletion).
 
-    The daemon reply asserts the file's *current* state, so it points at the blob
-    at HEAD (#11), not a per-commit diff. The anchor is GitHub's plain `#L<n>`
-    blob form; the sha256 path hash is the per-commit *diff* anchor and does not
-    apply here. The label shows a short sha plus line so the destination reads
-    without hovering; the URL carries the full sha for stability."""
+    `owner`/`repo` must be the **head** repo: `head_sha` is a commit in the fork,
+    so a base-repo blob URL 404s on a cross-repo PR. The daemon reply asserts the
+    file's *current* state, so it points at the blob at HEAD (#11), not a
+    per-commit diff. The anchor is GitHub's plain `#L<n>` blob form; the sha256
+    path hash is the per-commit *diff* anchor and does not apply here. The label
+    shows a short sha plus line so the destination reads without hovering; the URL
+    carries the full sha for stability."""
     if not (head_sha and path and line):
         return None
     try:
@@ -155,10 +157,12 @@ def build_link(
 
 def link_for(args: argparse.Namespace, reply: dict) -> str | None:
     """The blob-at-HEAD link for one fix_claim reply, from its `verified_*`
-    fields plus the run's owner/repo/head-sha. None when nothing to anchor."""
+    fields plus the head repo and head sha. None when nothing to anchor. The link
+    targets the head repo (where `head_sha` lives), falling back to the base
+    owner/repo when not supplied so same-repo PRs and older callers still link."""
     return build_link(
-        args.owner,
-        args.repo,
+        args.head_owner or args.owner,
+        args.head_repo or args.repo,
         args.head_sha,
         reply.get("verified_path"),
         reply.get("verified_line"),
@@ -240,6 +244,16 @@ def main() -> int:
         "--head-sha",
         default="",
         help="PR HEAD sha; the blob-at-HEAD reply link is built against it (#11)",
+    )
+    parser.add_argument(
+        "--head-owner",
+        default="",
+        help="head repo owner for the blob link (the fork on a cross-repo PR); defaults to --owner",
+    )
+    parser.add_argument(
+        "--head-repo",
+        default="",
+        help="head repo name for the blob link; defaults to --repo",
     )
     parser.add_argument(
         "--threads",
