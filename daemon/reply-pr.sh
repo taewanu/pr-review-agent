@@ -174,10 +174,23 @@ RAW_FILE="$SCRATCH/.pr-review-reply-raw.txt"
 printf '%s\n' "$THREADS_JSON" >"$THREADS_FILE"
 
 log_step "running reply agent via claude -p"
+# Wall-clock backstop (#76). #51 removed the cause of the 745s reply-runtime
+# spike, but only as a prompt instruction; this enforces a ceiling no matter how
+# the agent behaves. Sized above the observed legitimate ceiling (review runs
+# land ~60-120s; a reply run does less) and below the runaway. Partial output on
+# timeout is discarded, not parsed.
+REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
+reply_rc=0
 (
   cd "$SCRATCH"
-  claude -p "/reply-pr $PR_URL --threads $THREADS_BASENAME" >"$RAW_FILE"
-)
+  run_with_timeout "$REPLY_AGENT_TIMEOUT" \
+    claude -p "/reply-pr $PR_URL --threads $THREADS_BASENAME" >"$RAW_FILE"
+) || reply_rc=$?
+if [[ "$reply_rc" -eq "$TIMEOUT_EXIT" ]]; then
+  log_failure "reply-timeout" "$PR_URL" "$HEAD_OID" \
+    "reply agent exceeded ${REPLY_AGENT_TIMEOUT}s"
+  exit 1
+fi
 if [[ ! -s "$RAW_FILE" ]]; then
   log_failure "empty-stdout" "$PR_URL" "$HEAD_OID" "reply agent produced no output"
   exit 1
