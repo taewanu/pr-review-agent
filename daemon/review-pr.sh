@@ -227,10 +227,21 @@ else
 fi
 
 log_step "running review agent via claude -p"
+# Wall-clock backstop (#76), symmetric with the reply agent: same unbounded
+# `claude -p` shape, same 300s rationale (see reply-pr.sh). Partial output on
+# timeout is discarded, not parsed.
+REVIEW_AGENT_TIMEOUT="${REVIEW_AGENT_TIMEOUT:-300}"
+review_rc=0
 (
   cd "$SCRATCH"
-  claude -p "/review-pr $PR_URL --diff $DIFF_BASENAME" >"$RAW_FILE"
-)
+  run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
+    claude -p "/review-pr $PR_URL --diff $DIFF_BASENAME" >"$RAW_FILE"
+) || review_rc=$?
+if [[ "$review_rc" -eq "$TIMEOUT_EXIT" ]]; then
+  log_failure "review-timeout" "$PR_URL" "$HEAD_OID" \
+    "review agent exceeded ${REVIEW_AGENT_TIMEOUT}s"
+  exit 1
+fi
 if [[ ! -s "$RAW_FILE" ]]; then
   log_failure "empty-stdout" "$PR_URL" "$HEAD_OID" "claude produced no output"
   exit 1

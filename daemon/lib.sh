@@ -24,6 +24,26 @@ log_failure() {
     "$category" "$url" "$sha" "$reason" >&2
 }
 
+# Exit status the shell reports when a process is killed by SIGALRM (128 + 14).
+# run_with_timeout returns this on timeout; callers branch on it to route to the
+# ADR 0005 failure path instead of parsing the truncated output.
+# shellcheck disable=SC2034  # consumed by reply-pr.sh / review-pr.sh
+readonly TIMEOUT_EXIT=142
+
+# run_with_timeout <seconds> <command...>
+# Caps a command's wall-clock runtime. macOS has no coreutils `timeout`, so we
+# lean on perl's alarm: it arms a SIGALRM timer, then `exec`s the command into
+# the same process. The timer survives exec (it is kernel state, not perl's
+# memory) while exec resets SIGALRM to its default of terminate, so an
+# over-running command dies at the cap. Returns the command's own exit status,
+# or $TIMEOUT_EXIT on timeout. Orphaned grandchildren may briefly outlive the
+# kill, acceptable for a backstop: stdout closes and the tick fails over anyway.
+run_with_timeout() {
+  local secs="$1"
+  shift
+  perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
+}
+
 # State tracking for same-SHA dedup. One file per PR. Layered behind the
 # sentinel-based dedup (ADR 0006) as a fallback when GitHub's reviews API is
 # unavailable.
