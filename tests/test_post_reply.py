@@ -1,11 +1,13 @@
-"""Round-trip + schema tests for daemon/post_reply.py (#36, #55).
+"""Round-trip + schema tests for daemon/post_reply.py (#36, #55, #79).
 
 The reply poster used to be a bash `python heredoc | jq | while read -r | gh`
 pipeline. #36 collapses it to one Python process so the body bytes survive end
-to end. #55 adds a per-thread pickup reaction. These tests pin both: a body
-carrying `\n`, `\t`, `\\`, a backticked regex `` `\n[^\n]` `` and non-ASCII
-must reach `gh ... --input -` byte-for-byte, and each bucket must POST its
-reaction.
+to end. #55 adds a per-thread Ack reaction. #79 embeds a Reply sentinel in the
+parent Finding for non-claim threads so they dedup. These tests pin all three:
+a body carrying `\n`, `\t`, `\\`, a backticked regex `` `\n[^\n]` `` and
+non-ASCII must reach `gh ... --input -` byte-for-byte, each bucket must POST its
+reaction, and a non-claim thread must PATCH the parent Finding only once its
+reaction lands.
 
 `gh` is stubbed via a tmpdir on PATH (mirrors test_status_comment). The stub
 records each call's argv and stdin on its own line so a fix_claim's two POSTs
@@ -34,7 +36,7 @@ NASTY_BODY = (
     "unicode 안녕 café"
 )
 
-EXPECTED_BODY = NASTY_BODY + "\n\n<!-- pr-review-agent:addressed:222 -->"
+EXPECTED_BODY = NASTY_BODY + "\n\n<!-- pr-review-agent:reply:222 -->"
 
 
 def _raw(replies: list[dict]) -> str:
@@ -44,10 +46,11 @@ def _raw(replies: list[dict]) -> str:
 
 
 def _run(
-    raw: str, *, dry_run: bool = False, gh_exit: int = 0
+    raw: str, *, dry_run: bool = False, gh_exit: int = 0, threads: list[dict] | None = None
 ) -> tuple[subprocess.CompletedProcess, list[tuple[str, str]]]:
     """Run post_reply.py with a per-call-recording `gh` stub. Returns
-    (result, calls) where calls is a list of (argv, stdin) tuples in order."""
+    (result, calls) where calls is a list of (argv, stdin) tuples in order.
+    `threads` writes a --threads file supplying parent Finding bodies (#79)."""
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
         raw_file = tmpd / "raw.txt"
@@ -80,6 +83,10 @@ def _run(
             "--raw",
             str(raw_file),
         ]
+        if threads is not None:
+            threads_file = tmpd / "threads.json"
+            threads_file.write_text(json.dumps(threads))
+            args += ["--threads", str(threads_file)]
         if dry_run:
             args.append("--dry-run")
         result = subprocess.run(args, capture_output=True, text=True, env=env)
@@ -105,6 +112,17 @@ def _find(calls: list[tuple[str, str]], needle: str) -> tuple[str, str] | None:
     return next((c for c in calls if needle in c[0]), None)
 
 
+def _threads(finding_id: str, body: str) -> list[dict]:
+    """A minimal --threads payload carrying one parent Finding body, keyed by
+    the comment id a non-claim reply's `in_reply_to_id` points at."""
+    return [
+        {
+            "parent_finding": {"comment_id": finding_id, "body": body},
+            "operator_reply": {"comment_id": "222", "body": "..."},
+        }
+    ]
+
+
 def test_fix_claim_round_trips_body_and_posts_eyes_reaction():
     result, calls = _run(_raw([_reply()]))
     assert result.returncode == 0, result.stderr
@@ -120,7 +138,7 @@ def test_fix_claim_round_trips_body_and_posts_eyes_reaction():
 
 def test_acknowledgment_posts_plus_one_reaction_only():
     reply = {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "acknowledgment"}
-    result, calls = _run(_raw([reply]))
+    result, calls = _run(_raw([reply]), threads=_threads("1", "FINDING"))
     assert result.returncode == 0, result.stderr
     assert _find(calls, "/replies") is None, "acknowledgment posts no text reply"
     react_call = _find(calls, "pulls/comments/222/reactions")
@@ -130,12 +148,50 @@ def test_acknowledgment_posts_plus_one_reaction_only():
 
 def test_question_posts_eyes_reaction_only():
     reply = {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "question"}
-    result, calls = _run(_raw([reply]))
+    result, calls = _run(_raw([reply]), threads=_threads("1", "FINDING"))
     assert result.returncode == 0, result.stderr
     assert _find(calls, "/replies") is None, "question posts no text reply"
     react_call = _find(calls, "pulls/comments/222/reactions")
     assert react_call is not None
     assert json.loads(react_call[1]) == {"content": "eyes"}
+
+
+def test_non_claim_embeds_reply_sentinel_in_parent_finding():
+    # The reaction lands, so the parent Finding is PATCHed with the captured
+    # body plus the Reply sentinel keyed on the operator reply id.
+    reply = {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "acknowledgment"}
+    result, calls = _run(_raw([reply]), threads=_threads("1", "FINDING body"))
+    assert result.returncode == 0, result.stderr
+    patch_call = _find(calls, "--method PATCH")
+    assert patch_call is not None, "non-claim must PATCH the parent finding"
+    assert "pulls/comments/1" in patch_call[0]
+    assert json.loads(patch_call[1])["body"] == "FINDING body\n\n<!-- pr-review-agent:reply:222 -->"
+
+
+def test_non_claim_failed_reaction_skips_sentinel_patch():
+    # The reaction is the thread's only ack, so a failed reaction must not leave
+    # a sentinel behind — the next cycle retries the reaction first.
+    reply = {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "acknowledgment"}
+    result, calls = _run(_raw([reply]), gh_exit=1, threads=_threads("1", "FINDING body"))
+    assert result.returncode == 0
+    assert _find(calls, "reactions") is not None, "reaction is attempted"
+    assert _find(calls, "--method PATCH") is None, "no sentinel PATCH when the reaction fails"
+
+
+def test_two_non_claims_on_one_finding_accumulate_both_sentinels():
+    # Two operator replies on the same Finding in one cycle: the second PATCH
+    # appends to the body the first one extended, so neither sentinel is lost.
+    replies = [
+        {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "acknowledgment"},
+        {"in_reply_to_id": "1", "addressed_comment_id": "333", "bucket": "question"},
+    ]
+    result, calls = _run(_raw(replies), threads=_threads("1", "FINDING body"))
+    assert result.returncode == 0, result.stderr
+    patches = [c for c in calls if "--method PATCH" in c[0]]
+    assert len(patches) == 2
+    final_body = json.loads(patches[-1][1])["body"]
+    assert "<!-- pr-review-agent:reply:222 -->" in final_body
+    assert "<!-- pr-review-agent:reply:333 -->" in final_body
 
 
 def test_dry_run_emits_plan_without_calling_gh():
@@ -149,14 +205,15 @@ def test_dry_run_emits_plan_without_calling_gh():
     assert plan[0]["reply_payload"]["body"] == EXPECTED_BODY
 
 
-def test_dry_run_non_claim_has_reaction_no_reply_payload():
+def test_dry_run_non_claim_has_reaction_and_sentinel_patch():
     reply = {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "acknowledgment"}
     result, _ = _run(_raw([reply]), dry_run=True)
     assert result.returncode == 0, result.stderr
     entry = json.loads(result.stdout)["plan"][0]
     assert entry["reaction"] == "+1"
     assert "reply_payload" not in entry
-    assert "in_reply_to_id" not in entry
+    assert entry["sentinel_patch"]["finding_id"] == "1"
+    assert entry["sentinel_patch"]["sentinel"] == "<!-- pr-review-agent:reply:222 -->"
 
 
 def test_mode_defaults_to_confirmed_for_fix_claim():

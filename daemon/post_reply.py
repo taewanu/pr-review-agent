@@ -6,18 +6,26 @@ gh: three layers where a missing `read -r` or a stray `jq -r` silently mangles
 process and hands it to `gh --input -`, so the body bytes stay intact end to
 end; tests/test_post_reply.py pins the round-trip.
 
-Each processed thread also gets a pickup reaction on the operator's reply
+Each processed thread also gets an Ack reaction on the operator's reply
 comment, chosen by the agent's classification bucket: fix-claims and questions
 read as "seen / verifying" (eyes), acknowledgments read as "noted, no action"
 (+1). The reaction POST is idempotent on GitHub (200 if the same user+content
 reaction already exists, 201 if newly created), so re-running a polling cycle
 cannot double-react and we skip a dedup GET entirely.
 
+A non-claim thread (question, acknowledgment) carries no text reply, so its
+dedup marker is the Reply sentinel embedded in the parent Finding's comment
+body via a silent PATCH, gated on the Ack reaction landing first: the reaction
+is that thread's only ack, so it must win before we mark the reply processed.
+fix_claim keeps its sentinel in the text reply. Parent Finding bodies come from
+--threads (the same JSON the reply agent consumed), so the PATCH needs no GET.
+
 On failure, stderr carries a `category=<x>` line (no-fence, parse-error,
 schema-invalid) so reply-pr.sh's log_failure mapping is unchanged.
 
 Usage:
-  python3 post_reply.py --owner O --repo R --number N --raw RAWFILE [--dry-run]
+  python3 post_reply.py --owner O --repo R --number N --raw RAWFILE \
+    [--threads THREADSFILE] [--dry-run]
 """
 
 from __future__ import annotations
@@ -37,7 +45,7 @@ VALID_MODES = ("confirmed", "pushback")
 # reaction-only acks that replace the prior silence.
 VALID_BUCKETS = ("fix_claim", "question", "acknowledgment")
 
-# Pickup reaction per bucket. GitHub's reaction set is fixed to
+# Ack reaction per bucket. GitHub's reaction set is fixed to
 # +1/-1/laugh/confused/heart/hooray/rocket/eyes, so the design note's 🙏 is not
 # postable; +1 is the "noted" marker. fix_claim/question read as "seen".
 BUCKET_REACTION = {
@@ -46,9 +54,10 @@ BUCKET_REACTION = {
     "acknowledgment": "+1",
 }
 
-# `\n\n` separates the agent's prose from the sentinel; the next polling
-# cycle's sentinel-based detection (#39) greps this marker to skip the reply.
-SENTINEL = "<!-- pr-review-agent:addressed:{id} -->"
+# Reply sentinel. `{id}` is the operator reply's comment id, so the next polling
+# cycle's detection (#39) skips that reply. Carried in a fix_claim's text reply
+# or, for a non-claim thread, in the parent Finding's comment body (#79).
+SENTINEL = "<!-- pr-review-agent:reply:{id} -->"
 
 
 class PayloadError(Exception):
@@ -105,7 +114,7 @@ def extract_payload(raw: str) -> dict:
 
 
 def build_body(body: str, addressed_id: str) -> str:
-    """Agent body plus the addressed-sentinel footer, byte-for-byte."""
+    """Agent body plus the Reply sentinel footer, byte-for-byte."""
     return f"{body}\n\n{SENTINEL.format(id=addressed_id)}"
 
 
@@ -128,13 +137,31 @@ def post_reply(
 
 
 def post_reaction(owner: str, repo: str, comment_id: str, content: str) -> tuple[int, str]:
-    """POST a pickup reaction on the operator's reply comment. Idempotent on
+    """POST an Ack reaction on the operator's reply comment. Idempotent on
     GitHub's side (keyed on user+content), so a blind POST every cycle is safe
     and needs no GET-reactions dedup."""
     payload = json.dumps({"content": content})
     endpoint = f"repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions"
     proc = subprocess.run(
         ["gh", "api", "--method", "POST", endpoint, "--input", "-"],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, proc.stderr
+
+
+def patch_finding(owner: str, repo: str, finding_id: str, body: str) -> tuple[int, str]:
+    """PATCH a Finding's Inline comment body to embed the Reply sentinel for a
+    non-claim thread. The sentinel rides in a comment we own (the parent
+    Finding), invisible in rendered markdown, so the next polling cycle's
+    detection skips the reply. Same idiom as lib.sh's status-comment edit; body
+    is the full replacement, so callers pass the captured body plus footer."""
+    payload = json.dumps({"body": body})
+    endpoint = f"repos/{owner}/{repo}/pulls/comments/{finding_id}"
+    proc = subprocess.run(
+        ["gh", "api", "--method", "PATCH", endpoint, "--input", "-"],
         input=payload,
         capture_output=True,
         text=True,
@@ -150,6 +177,11 @@ def main() -> int:
     parser.add_argument("--number", required=True)
     parser.add_argument("--raw", required=True, help="reply agent stdout capture")
     parser.add_argument(
+        "--threads",
+        help="threads JSON the reply agent consumed; supplies parent Finding "
+        "bodies for the non-claim Reply-sentinel PATCH",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the actions that would be posted, do not call gh",
@@ -163,6 +195,16 @@ def main() -> int:
         print(f"category={exc.category}", file=sys.stderr)
         print(exc, file=sys.stderr)
         return 1
+
+    # Parent Finding bodies keyed by comment id (== a reply's in_reply_to_id),
+    # so a non-claim PATCH appends the sentinel to the captured body with no GET.
+    finding_bodies: dict[str, str] = {}
+    if args.threads:
+        for t in json.loads(Path(args.threads).read_text()):
+            pf = t.get("parent_finding") or {}
+            cid = pf.get("comment_id")
+            if cid is not None:
+                finding_bodies[str(cid)] = pf.get("body") or ""
 
     replies = data["replies"]
     fix = sum(1 for r in replies if r["bucket"] == "fix_claim")
@@ -180,29 +222,42 @@ def main() -> int:
         for r in replies:
             bucket = r["bucket"]
             addressed_id = str(r["addressed_comment_id"])
+            in_reply_to_id = str(r["in_reply_to_id"])
             entry = {
                 "addressed_comment_id": addressed_id,
                 "bucket": bucket,
                 "reaction": BUCKET_REACTION[bucket],
             }
             if bucket == "fix_claim":
-                entry["in_reply_to_id"] = str(r["in_reply_to_id"])
+                entry["in_reply_to_id"] = in_reply_to_id
                 entry["reply_payload"] = {"body": build_body(r["body"], addressed_id)}
+            else:
+                entry["sentinel_patch"] = {
+                    "finding_id": in_reply_to_id,
+                    "sentinel": SENTINEL.format(id=addressed_id),
+                }
             plan.append(entry)
         print(json.dumps({"plan": plan}, ensure_ascii=False))
         return 0
 
+    nonclaim = len(replies) - fix
     text_ok = 0
     react_ok = 0
+    patch_ok = 0
+    # Running copy of each Finding body so two non-claim replies on the same
+    # Finding in one cycle accumulate both sentinels instead of clobbering: the
+    # second PATCH appends to the body the first one already extended.
+    finding_work = dict(finding_bodies)
+
     for r in replies:
         bucket = r["bucket"]
         addressed_id = str(r["addressed_comment_id"])
+        in_reply_to_id = str(r["in_reply_to_id"])
 
         # Text reply: fix_claim only. A failed POST leaves no sentinel, so the
         # next polling cycle re-detects and retries this thread (best-effort,
         # matching the prior bash loop).
         if bucket == "fix_claim":
-            in_reply_to_id = str(r["in_reply_to_id"])
             full_body = build_body(r["body"], addressed_id)
             rc, err = post_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
             if rc == 0:
@@ -213,21 +268,46 @@ def main() -> int:
                     file=sys.stderr,
                 )
 
-        # Pickup reaction: every bucket. Idempotent, so no dedup needed.
+        # Ack reaction: every bucket. Idempotent, so no dedup needed.
         content = BUCKET_REACTION[bucket]
         rc, err = post_reaction(args.owner, args.repo, addressed_id, content)
-        if rc == 0:
-            react_ok += 1
-        else:
+        if rc != 0:
             print(
                 f"reaction POST failed for comment {addressed_id}: {err.strip()}",
                 file=sys.stderr,
             )
+            # The reaction is a non-claim thread's only ack, so skip the
+            # sentinel PATCH and let the next cycle retry the reaction first.
+            continue
+        react_ok += 1
 
-    print(
-        f"done — {text_ok}/{fix} replies, {react_ok}/{len(replies)} reactions posted",
-        file=sys.stderr,
-    )
+        # Non-claim dedup: the reaction carries no author provenance, so embed
+        # the Reply sentinel in the parent Finding (a comment we own) once the
+        # reaction lands. fix_claim already carries its sentinel in the reply.
+        if bucket != "fix_claim":
+            base = finding_work.get(in_reply_to_id)
+            if base is None:
+                print(
+                    f"no parent body for finding {in_reply_to_id}; "
+                    f"skipping sentinel PATCH for reply {addressed_id}",
+                    file=sys.stderr,
+                )
+                continue
+            new_body = f"{base}\n\n{SENTINEL.format(id=addressed_id)}"
+            rc, err = patch_finding(args.owner, args.repo, in_reply_to_id, new_body)
+            if rc == 0:
+                finding_work[in_reply_to_id] = new_body
+                patch_ok += 1
+            else:
+                print(
+                    f"sentinel PATCH failed for finding {in_reply_to_id}: {err.strip()}",
+                    file=sys.stderr,
+                )
+
+    summary = f"done — {text_ok}/{fix} replies, {react_ok}/{len(replies)} reactions"
+    if nonclaim:
+        summary += f", {patch_ok}/{nonclaim} sentinels"
+    print(summary + " posted", file=sys.stderr)
     return 0
 
 

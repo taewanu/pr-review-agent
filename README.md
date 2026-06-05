@@ -82,7 +82,7 @@ It submits via the GitHub API (`POST .../reviews/:id/events`), which preserves t
 
 ## Replying to findings
 
-Reply inline to a finding and the daemon picks it up on the next polling cycle. It classifies your reply and leaves a pickup reaction on it:
+Reply inline to a finding and the daemon picks it up on the next polling cycle. It classifies your reply and leaves an Ack reaction on it:
 
 - **Fix claim** ("Done in `abc123`", "Removed"): 👀, then a threaded reply that either confirms the fix against the file at HEAD or pushes back with the specific mismatch.
 - **Question or pushback** ("Why flag this?"): 👀 ("seen"). The daemon does not answer questions yet, so the reaction is the only ack for now.
