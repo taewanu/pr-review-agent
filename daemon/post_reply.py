@@ -59,6 +59,12 @@ BUCKET_REACTION = {
 # or, for a non-claim thread, in the parent Finding's comment body (#79).
 SENTINEL = "<!-- pr-review-agent:reply:{id} -->"
 
+# Provenance marker appended to every daemon text reply (#11). Answers "who
+# wrote this" under the shared solo identity (ADR 0003). Not "drafted": a posted
+# reply is never a draft. The trailing `_` closes the markdown italic; it carries
+# no colon, so the sentinel scan in reply-pr.sh never false-matches it.
+MARKER = "🤖 _pr-review-agent_"
+
 
 class PayloadError(Exception):
     """Carries a log_failure category so reply-pr.sh can classify the exit."""
@@ -113,9 +119,67 @@ def extract_payload(raw: str) -> dict:
     return data
 
 
-def build_body(body: str, addressed_id: str) -> str:
-    """Agent body plus the Reply sentinel footer, byte-for-byte."""
-    return f"{body}\n\n{SENTINEL.format(id=addressed_id)}"
+def build_link(
+    owner: str,
+    repo: str,
+    head_sha: str,
+    path: str | None,
+    line: object,
+    end_line: object = None,
+) -> str | None:
+    """A blob-at-HEAD deep link to the verified line(s), or None when there is
+    nothing to anchor (no head sha, or the agent emitted no line, for example a
+    confirmed-by-deletion).
+
+    `owner`/`repo` must be the **head** repo: `head_sha` is a commit in the fork,
+    so a base-repo blob URL 404s on a cross-repo PR. The daemon reply asserts the
+    file's *current* state, so it points at the blob at HEAD (#11), not a
+    per-commit diff. The anchor is GitHub's plain `#L<n>` blob form; the sha256
+    path hash is the per-commit *diff* anchor and does not apply here. The label
+    shows a short sha plus line so the destination reads without hovering; the URL
+    carries the full sha for stability."""
+    if not (head_sha and path and line):
+        return None
+    try:
+        start = int(line)
+        end = int(end_line) if end_line else None
+    except (TypeError, ValueError):
+        return None
+    if end and end != start:
+        frag = f"L{start}-L{end}"
+        label = f"{head_sha[:7]}:L{start}-L{end}"
+    else:
+        frag = f"L{start}"
+        label = f"{head_sha[:7]}:L{start}"
+    url = f"https://github.com/{owner}/{repo}/blob/{head_sha}/{path}#{frag}"
+    return f"[`{label}`]({url})"
+
+
+def link_for(args: argparse.Namespace, reply: dict) -> str | None:
+    """The blob-at-HEAD link for one fix_claim reply, from its `verified_*`
+    fields plus the head repo and head sha. None when nothing to anchor. The link
+    targets the head repo (where `head_sha` lives), falling back to the base
+    owner/repo when not supplied so same-repo PRs and older callers still link."""
+    return build_link(
+        args.head_owner or args.owner,
+        args.head_repo or args.repo,
+        args.head_sha,
+        reply.get("verified_path"),
+        reply.get("verified_line"),
+        reply.get("verified_end_line"),
+    )
+
+
+def build_body(body: str, addressed_id: str, link: str | None = None) -> str:
+    """Agent body, the optional blob-at-HEAD link, the provenance marker, and the
+    Reply sentinel footer, joined byte-for-byte. Location lives in the link, not
+    the prose, so the agent body never repeats the file and line."""
+    parts = [body]
+    if link:
+        parts.append(link)
+    parts.append(MARKER)
+    parts.append(SENTINEL.format(id=addressed_id))
+    return "\n\n".join(parts)
 
 
 def post_reply(
@@ -177,6 +241,21 @@ def main() -> int:
     parser.add_argument("--number", required=True)
     parser.add_argument("--raw", required=True, help="reply agent stdout capture")
     parser.add_argument(
+        "--head-sha",
+        default="",
+        help="PR HEAD sha; the blob-at-HEAD reply link is built against it (#11)",
+    )
+    parser.add_argument(
+        "--head-owner",
+        default="",
+        help="head repo owner for the blob link (the fork on a cross-repo PR); defaults to --owner",
+    )
+    parser.add_argument(
+        "--head-repo",
+        default="",
+        help="head repo name for the blob link; defaults to --repo",
+    )
+    parser.add_argument(
         "--threads",
         help="threads JSON the reply agent consumed; supplies parent Finding "
         "bodies for the non-claim Reply-sentinel PATCH",
@@ -230,7 +309,9 @@ def main() -> int:
             }
             if bucket == "fix_claim":
                 entry["in_reply_to_id"] = in_reply_to_id
-                entry["reply_payload"] = {"body": build_body(r["body"], addressed_id)}
+                entry["reply_payload"] = {
+                    "body": build_body(r["body"], addressed_id, link_for(args, r))
+                }
             else:
                 entry["sentinel_patch"] = {
                     "finding_id": in_reply_to_id,
@@ -258,7 +339,7 @@ def main() -> int:
         # next polling cycle re-detects and retries this thread (best-effort,
         # matching the prior bash loop).
         if bucket == "fix_claim":
-            full_body = build_body(r["body"], addressed_id)
+            full_body = build_body(r["body"], addressed_id, link_for(args, r))
             rc, err = post_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
             if rc == 0:
                 text_ok += 1
