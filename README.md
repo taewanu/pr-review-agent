@@ -6,7 +6,7 @@ Automated PR review agent that posts under your own GitHub identity. A macOS `la
 
 ## How it works
 
-1. After install (`bin/install.sh`), `launchd` fires `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300).
+1. After install (`bin/install.sh`), a `launchd` `KeepAlive` job runs `daemon/run.sh` — a loop that drives `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300) and is restarted on crash, logout, and reboot ([ADR 0009](docs/adr/0009-explicit-polling-loop.md)).
 2. The daemon lists open PRs for each watched repo via `gh`.
 3. It skips drafts, PRs labeled `no-ai-review`, and PRs whose HEAD SHA was already reviewed.
 4. For the rest, it runs the review agent (`.claude/agents/review-agent-default.md`) via headless Claude Code (`claude -p`) against the diff, and anchors findings to file/line ranges.
@@ -41,11 +41,11 @@ cd pr-review-agent
 # at minimum: REPOS=<owner>/<repo>, GITHUB_USER=<your gh login>
 cp templates/.env.example .env
 
-# register the launchd job (writes plist into ~/Library/LaunchAgents/, runs launchctl load)
+# register the launchd job (writes the plist into ~/Library/LaunchAgents/ and bootstraps it)
 bash bin/install.sh
 ```
 
-The first polling cycle runs within 5 minutes (configurable via `POLL_INTERVAL_SECONDS`). Remove the job with `bash bin/uninstall.sh`.
+The loop starts immediately and runs a cycle every `POLL_INTERVAL_SECONDS` (default 300), surviving logout and reboot. Remove the job with `bash bin/uninstall.sh`.
 
 ## Configure
 
@@ -65,7 +65,11 @@ Label it `no-ai-review` (or whatever you set as `OPT_OUT_LABEL`). The daemon ski
 ```bash
 bash daemon/poll.sh                # run one polling cycle by hand
 bash daemon/review-pr.sh <pr-url>  # review one PR ad-hoc
-tail -f .daemon.log                # follow the launchd log
+bash daemon/run.sh                 # run the loop in the foreground (a pidfile singleton stops it racing the launchd loop)
+tail -f .daemon.log                # follow the log
+
+# is the loop alive? — seconds since its last cycle
+echo $(( $(date +%s) - $(cat ~/.local/state/pr-review-agent/daemon.heartbeat) ))s
 ```
 
 ## Submitting a review
