@@ -8,11 +8,14 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>__REPO_ROOT__/daemon/poll.sh</string>
+        <string>__REPO_ROOT__/daemon/run.sh</string>
     </array>
 
-    <key>StartInterval</key>
-    <integer>__POLL_INTERVAL_SECONDS__</integer>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 
     <key>StandardOutPath</key>
     <string>__REPO_ROOT__/.daemon.log</string>
@@ -29,6 +32,6 @@
     </dict>
 
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
 </dict>
 </plist>

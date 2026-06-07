@@ -34,25 +34,25 @@ if ! [[ "$poll_interval" =~ ^[0-9]+$ ]] || [[ "$poll_interval" -lt 1 ]]; then
   exit 1
 fi
 
-# Idempotent reinstall — unload existing job if any. `launchctl list` exits 0
-# when the label exists.
-if launchctl list "$PLIST_NAME" >/dev/null 2>&1; then
-  echo "Unloading existing $PLIST_NAME..."
-  launchctl unload "$PLIST_DST" 2>/dev/null || true
-fi
+# Idempotent reinstall — boot out any existing job first. Modern launchctl:
+# `load`/`unload` are deprecated and were observed not to arm the job reliably
+# (#83), so install/uninstall use bootstrap/bootout.
+DOMAIN="gui/$(id -u)"
+launchctl bootout "$DOMAIN/$PLIST_NAME" 2>/dev/null || true
 
 mkdir -p "$HOME/Library/LaunchAgents"
 
-# Substitute the four placeholders. `|` as sed delimiter avoids escaping slashes
-# in $PATH / $HOME / $REPO_ROOT.
+# Substitute the three placeholders. `|` as sed delimiter avoids escaping slashes
+# in $PATH / $HOME / $REPO_ROOT. The interval is no longer baked into the plist —
+# run.sh reads POLL_INTERVAL_SECONDS from .env at loop time (ADR 0009).
 sed \
   -e "s|__REPO_ROOT__|${REPO_ROOT}|g" \
-  -e "s|__POLL_INTERVAL_SECONDS__|${poll_interval}|g" \
   -e "s|__PATH__|${PATH}|g" \
   -e "s|__HOME__|${HOME}|g" \
   "$PLIST_SRC" >"$PLIST_DST"
 
-launchctl load "$PLIST_DST"
+launchctl bootstrap "$DOMAIN" "$PLIST_DST"
+launchctl kickstart "$DOMAIN/$PLIST_NAME"
 
 echo "Installed $PLIST_DST"
 echo "  Repo:     $REPO_ROOT"

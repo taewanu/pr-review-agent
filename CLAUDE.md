@@ -16,7 +16,7 @@ Pre-commit hooks run lint, format, and security checks on staged files. CI mirro
 
 V1 ships two paths:
 
-**Automated polling** (primary): `bash bin/install.sh` registers a launchd job that fires `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300). Logs flow to `.daemon.log`. Stop with `bash bin/uninstall.sh`.
+**Automated polling** (primary): `bash bin/install.sh` registers a `KeepAlive` launchd job running `daemon/run.sh`, the polling loop, which drives `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300, read from `.env`). Per ADR 0009 launchd supervises the loop process rather than firing a `StartInterval` timer (which stalled silently across sleep/wake, #83); the loop holds a pidfile singleton and stamps a heartbeat each cycle. Logs flow to `.daemon.log`. Stop with `bash bin/uninstall.sh`. Liveness: `echo $(( $(date +%s) - $(cat ~/.local/state/pr-review-agent/daemon.heartbeat) ))s since last cycle`. A foreground `bash daemon/run.sh` is equally valid — the singleton keeps it from racing the launchd loop.
 
 **Manual one-shot** (debugging or single-PR runs): `bash daemon/review-pr.sh <pr-url>` runs the review pipeline once without polling. `bash daemon/reply-pr.sh <pr-url>` runs the operator-reply ack pass once without polling. `bash daemon/submit-review.sh <pr-url>` submits the drafted pending review on others' PRs via the API, preserving the body (own PRs auto-submit at review time per ADR 0008).
 
