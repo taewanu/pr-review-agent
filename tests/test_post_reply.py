@@ -1,13 +1,16 @@
-"""Round-trip + schema tests for daemon/post_reply.py (#36, #55, #79).
+"""Round-trip + schema tests for daemon/post_reply.py (#36, #55, #79, #74).
 
 The reply poster used to be a bash `python heredoc | jq | while read -r | gh`
 pipeline. #36 collapses it to one Python process so the body bytes survive end
 to end. #55 adds a per-thread Ack reaction. #79 embeds a Reply sentinel in the
-parent Finding for non-claim threads so they dedup. These tests pin all three:
-a body carrying `\n`, `\t`, `\\`, a backticked regex `` `\n[^\n]` `` and
-non-ASCII must reach `gh ... --input -` byte-for-byte, each bucket must POST its
-reaction, and a non-claim thread must PATCH the parent Finding only once its
-reaction lands.
+parent Finding for non-claim threads so they dedup. #74 turns the `question`
+bucket into a body-bearing answer (`stands`/`withdrawn`) that posts a text reply
+like fix_claim, leaving `acknowledgment` as the only PATCH-dedup bucket. These
+tests pin all of it: a body carrying `\n`, `\t`, `\\`, a backticked regex
+`` `\n[^\n]` `` and non-ASCII must reach `gh ... --input -` byte-for-byte, each
+bucket must POST its reaction, a body-bearing bucket carries its sentinel in the
+reply, and an acknowledgment PATCHes the parent Finding only once its reaction
+lands.
 
 `gh` is stubbed via a tmpdir on PATH (mirrors test_status_comment). The stub
 records each call's argv and stdin on its own line so a fix_claim's two POSTs
@@ -127,6 +130,21 @@ def _reply(**over) -> dict:
     return base
 
 
+def _question(**over) -> dict:
+    """An answered question (#74): a body-bearing bucket like fix_claim, but its
+    mode is stands/withdrawn. Same posting path as _reply (text reply + sentinel
+    in the reply), distinct only in the per-bucket mode value-set."""
+    base = {
+        "in_reply_to_id": "111",
+        "addressed_comment_id": "222",
+        "bucket": "question",
+        "mode": "stands",
+        "body": NASTY_BODY,
+    }
+    base.update(over)
+    return base
+
+
 def _find(calls: list[tuple[str, str]], needle: str) -> tuple[str, str] | None:
     return next((c for c in calls if needle in c[0]), None)
 
@@ -235,14 +253,70 @@ def test_acknowledgment_posts_plus_one_reaction_only():
     assert json.loads(react_call[1]) == {"content": "+1"}
 
 
-def test_question_posts_eyes_reaction_only():
-    reply = {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "question"}
-    result, calls = _run(_raw([reply]), threads=_threads("1", "FINDING"))
+def test_question_stands_posts_text_reply_and_eyes_reaction():
+    # #74: an answered question is a body-bearing bucket. It POSTs a text reply
+    # carrying its sentinel and reacts eyes. The parent Finding is NOT PATCHed
+    # even though a parent body is available, because the sentinel rides in the
+    # reply (only acknowledgment uses the PATCH path now).
+    result, calls = _run(_raw([_question()]), threads=_threads("111", "FINDING"))
     assert result.returncode == 0, result.stderr
-    assert _find(calls, "/replies") is None, "question posts no text reply"
+
+    reply_call = _find(calls, "pulls/999/comments/111/replies")
+    assert reply_call is not None, "an answered question must POST a threaded reply"
+    assert json.loads(reply_call[1])["body"] == EXPECTED_BODY
+
     react_call = _find(calls, "pulls/comments/222/reactions")
     assert react_call is not None
     assert json.loads(react_call[1]) == {"content": "eyes"}
+
+    assert _find(calls, "--method PATCH") is None, (
+        "a question carries its sentinel in the reply, not a parent-Finding PATCH"
+    )
+
+
+def test_question_withdrawn_posts_a_text_concession():
+    # withdrawn is a text reply too, never emoji-only: the operator must be able
+    # to tell a conceded finding from a plain "thanks" ack.
+    reply = _question(
+        mode="withdrawn", body="**You're right, false positive.** Already masked at L84."
+    )
+    result, calls = _run(_raw([reply]))
+    assert result.returncode == 0, result.stderr
+    reply_call = _find(calls, "/replies")
+    assert reply_call is not None, "a withdrawn question still posts a concession"
+    body = json.loads(reply_call[1])["body"]
+    assert body.startswith("**You're right, false positive.**")
+    assert "<!-- pr-review-agent:reply:222 -->" in body
+    assert _find(calls, "--method PATCH") is None
+
+
+def test_question_builds_blob_link_like_a_fix_claim():
+    # stands anchors the line that still shows the problem; the link path is the
+    # same builder fix_claim uses.
+    reply = _question(verified_path="daemon/lib.sh", verified_line=88)
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    assert f"/blob/{HEAD_SHA}/daemon/lib.sh#L88" in body, body
+    assert "🤖 _pr-review-agent_" in body
+
+
+def test_question_mode_defaults_to_stands():
+    # No `mode` key on a question — default is the "holds" verdict (mirrors
+    # fix_claim defaulting to confirmed), and it still posts a reply.
+    reply = {"in_reply_to_id": "1", "addressed_comment_id": "2", "bucket": "question", "body": "x"}
+    result, calls = _run(_raw([reply]))
+    assert result.returncode == 0, result.stderr
+    assert "1 thread(s): 0 fix-claim, 1 question, 0 acknowledgment" in result.stderr
+    assert _find(calls, "/replies") is not None, "a question is body-bearing, so it posts a reply"
+
+
+def test_dry_run_question_has_reply_payload_not_sentinel_patch():
+    result, _ = _run(_raw([_question()]), dry_run=True)
+    entry = json.loads(result.stdout)["plan"][0]
+    assert entry["bucket"] == "question"
+    assert entry["reaction"] == "eyes"
+    assert "sentinel_patch" not in entry
+    assert entry["reply_payload"]["body"] == EXPECTED_BODY
 
 
 def test_non_claim_embeds_reply_sentinel_in_parent_finding():
@@ -268,11 +342,13 @@ def test_non_claim_failed_reaction_skips_sentinel_patch():
 
 
 def test_two_non_claims_on_one_finding_accumulate_both_sentinels():
-    # Two operator replies on the same Finding in one cycle: the second PATCH
+    # Two acknowledgments on the same Finding in one cycle: the second PATCH
     # appends to the body the first one extended, so neither sentinel is lost.
+    # (Only acknowledgment takes the PATCH path now; a question would post a
+    # reply instead, see test_question_stands_*.)
     replies = [
         {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "acknowledgment"},
-        {"in_reply_to_id": "1", "addressed_comment_id": "333", "bucket": "question"},
+        {"in_reply_to_id": "1", "addressed_comment_id": "333", "bucket": "acknowledgment"},
     ]
     result, calls = _run(_raw(replies), threads=_threads("1", "FINDING body"))
     assert result.returncode == 0, result.stderr
@@ -362,5 +438,44 @@ def test_fix_claim_missing_body_is_schema_invalid():
 
 def test_bad_mode_is_schema_invalid():
     result, _ = _run(_raw([_reply(mode="bogus")]))
+    assert result.returncode == 1
+    assert "category=schema-invalid" in result.stderr
+
+
+def test_question_missing_body_is_schema_invalid():
+    reply = {
+        "in_reply_to_id": "1",
+        "addressed_comment_id": "2",
+        "bucket": "question",
+        "mode": "stands",
+    }
+    result, _ = _run(_raw([reply]))
+    assert result.returncode == 1
+    assert "category=schema-invalid" in result.stderr
+
+
+def test_question_rejects_a_fix_claim_mode():
+    # confirmed/pushback belong to fix_claim; a question must use stands/withdrawn.
+    result, _ = _run(_raw([_question(mode="confirmed")]))
+    assert result.returncode == 1
+    assert "category=schema-invalid" in result.stderr
+
+
+def test_fix_claim_rejects_a_question_mode():
+    result, _ = _run(_raw([_reply(mode="stands")]))
+    assert result.returncode == 1
+    assert "category=schema-invalid" in result.stderr
+
+
+def test_empty_body_is_schema_invalid():
+    # A whitespace-only body passes key-presence but would post nothing under the
+    # "has body" discriminator, so the contract rejects it for body buckets.
+    result, _ = _run(_raw([_reply(body="   ")]))
+    assert result.returncode == 1
+    assert "category=schema-invalid" in result.stderr
+
+
+def test_question_empty_body_is_schema_invalid():
+    result, _ = _run(_raw([_question(body="")]))
     assert result.returncode == 1
     assert "category=schema-invalid" in result.stderr

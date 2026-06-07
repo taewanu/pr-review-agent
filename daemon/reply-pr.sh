@@ -3,13 +3,14 @@
 # unaddressed threads, dispatches the reply agent to classify and verify each
 # claim against the file at HEAD, then posts the acks.
 #
-# Fix claims get a threaded text reply with the Reply sentinel: `confirmed`
-# (file matches the operator's claim) or `pushback` (file shows the mismatch).
-# Every thread also gets an Ack reaction on the operator's reply comment,
-# chosen by bucket: eyes ("seen") for fix claims and questions, +1 ("noted")
-# for acknowledgments. Non-claim replies get the reaction as their terminal
-# ack instead of the prior silence, plus the Reply sentinel embedded in the
-# parent finding so the next cycle skips them (#79).
+# Fix claims and questions get a threaded text reply carrying the Reply
+# sentinel: a fix claim resolves to `confirmed`/`pushback` (file vs the
+# operator's claim), a question to `stands`/`withdrawn` (the finding holds, or
+# is conceded as a false positive). Every thread also gets an Ack reaction on
+# the operator's reply comment, chosen by bucket: eyes ("seen") for fix claims
+# and questions, +1 ("noted") for acknowledgments. An acknowledgment gets the
+# reaction as its terminal ack, plus the Reply sentinel embedded in the parent
+# finding so the next cycle skips it (#79).
 #
 # Usage:
 #   bash daemon/reply-pr.sh [--keep-scratch] <pr-url>
@@ -81,7 +82,8 @@ COMMENTS_JSON="$(gh api --paginate "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/co
 THREADS_JSON="$(jq --arg login "$GITHUB_USER" '
   . as $all
   # Operator-reply IDs we have already acked, read from prior Reply sentinels
-  # (a fix_claim reply body, or a non-claim parent finding body).
+  # (a body-bearing reply for fix claims and questions, or an acknowledgment
+  # parent finding body).
   | [.[] | (.body // "") | scan("pr-review-agent:(?:addressed|reply):([0-9]+)") | .[0]]
     as $addressed
   | (map({key: (.id | tostring), value: .}) | from_entries) as $by_id
@@ -93,7 +95,7 @@ THREADS_JSON="$(jq --arg login "$GITHUB_USER" '
           $cur.in_reply_to_id != null
           # parent must be our finding
           and ($by_id[($cur.in_reply_to_id | tostring)].user.login == $login)
-          # exclude our own fix_claim acks (reply body carries the sentinel)
+          # exclude our own body-bearing acks (the reply body carries the sentinel)
           and (($cur.body // "") | test("pr-review-agent:(addressed|reply):") | not)
           # exclude replies already in the addressed-set
           and (($addressed | index($cur.id | tostring)) | not)

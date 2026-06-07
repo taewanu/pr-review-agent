@@ -85,14 +85,19 @@ The Claude Code subagent `review-agent-reply`. Classifies each Operator reply in
 _Avoid_: agent alone (see Review agent), "the agent replies" (the daemon posts, not the agent)
 
 **Bucket**:
-The Reply agent's classification of an Operator reply: `fix_claim`, `question`, or `acknowledgment`. Only `fix_claim` earns a file read and a text reply; the other two are reaction-only.
+The Reply agent's classification of an Operator reply: `fix_claim`, `question`, or `acknowledgment`. `fix_claim` and `question` each earn a file read at HEAD and a text reply; `acknowledgment` is reaction-only.
 
-**Reply mode (`confirmed` / `pushback`)**:
-The Reply agent's verdict on a `fix_claim`, posted by the daemon as a threaded text reply. `confirmed` = the file at HEAD matches the Operator's claimed fix; `pushback` = the file still shows the mismatch, cited with file evidence. Both are **daemon-authored**; the Operator only supplies the `fix_claim` that triggers the verdict. The Operator never "pushes back" in this vocabulary: an Operator disputing a Finding ("why flag this?", "false positive") is the `question` Bucket, not pushback.
-_Avoid_: pushback for an Operator's dispute of a Finding (that is the `question` Bucket); rejection / denial (pushback cites file evidence, it does not deny intent)
+**Reply mode**:
+The Reply agent's verdict on a thread, posted by the daemon as a threaded text reply. Two value-sets, keyed by Bucket:
+
+- `fix_claim` → `confirmed` / `pushback`. `confirmed` = the file at HEAD matches the Operator's claimed fix; `pushback` = the file still shows the mismatch, cited with file evidence.
+- `question` → `stands` / `withdrawn`. `stands` = the Finding holds after re-examining the code at HEAD, with the reasoning given; `withdrawn` = the daemon concedes the Finding was wrong (a false positive) and retracts it.
+
+All four verdicts are **daemon-authored**; the Operator only supplies the reply that triggers the verdict. The Operator never "pushes back" in this vocabulary: an Operator disputing a Finding ("why flag this?", "false positive") is the `question` Bucket, which the daemon answers `stands` or `withdrawn`, never pushback.
+_Avoid_: pushback for an Operator's dispute of a Finding (that is the `question` Bucket; the daemon's reply to it is `stands`/`withdrawn`); rejection / denial (pushback cites file evidence, it does not deny intent); `confirmed`/`pushback` for a `question` verdict (those are `fix_claim`-only)
 
 **Ack reaction**:
-The reaction the daemon posts on an Operator reply (👀 for fix_claim/question, 👍 for acknowledgment): a user-facing acknowledgment, never a dedup signal (a reaction carries no author provenance the daemon can trust). For a non-claim thread it is the only ack, so its landing is guaranteed (retried until it POSTs, and the Reply sentinel is embedded only once it lands); for a fix_claim it is a light "seen" on top of the text reply.
+The reaction the daemon posts on an Operator reply (👀 for fix_claim/question, 👍 for acknowledgment): a user-facing acknowledgment, never a dedup signal (a reaction carries no author provenance the daemon can trust). For an `acknowledgment` it is the only ack, so its landing is guaranteed (retried until it POSTs, and the Reply sentinel is embedded only once it lands); for a `fix_claim` or `question` it is a light "seen" on top of the text reply.
 _Avoid_: pickup reaction (old code term; "pickup" collides with the early-signal idea in #48), emoji (loses the typed, per-user, removable reaction semantics), ack alone (collides with the acknowledgment Bucket)
 
 **review-dedup / reply-dedup**:

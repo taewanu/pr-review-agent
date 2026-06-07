@@ -13,11 +13,11 @@ read as "seen / verifying" (eyes), acknowledgments read as "noted, no action"
 reaction already exists, 201 if newly created), so re-running a polling cycle
 cannot double-react and we skip a dedup GET entirely.
 
-A non-claim thread (question, acknowledgment) carries no text reply, so its
-dedup marker is the Reply sentinel embedded in the parent Finding's comment
-body via a silent PATCH, gated on the Ack reaction landing first: the reaction
-is that thread's only ack, so it must win before we mark the reply processed.
-fix_claim keeps its sentinel in the text reply. Parent Finding bodies come from
+An acknowledgment carries no text reply, so its dedup marker is the Reply
+sentinel embedded in the parent Finding's comment body via a silent PATCH, gated
+on the Ack reaction landing first: the reaction is that thread's only ack, so it
+must win before we mark the reply processed. fix_claim and answered questions
+(#74) keep their sentinel in the text reply. Parent Finding bodies come from
 --threads (the same JSON the reply agent consumed), so the PATCH needs no GET.
 
 On failure, stderr carries a `category=<x>` line (no-fence, parse-error,
@@ -38,12 +38,17 @@ import sys
 from pathlib import Path
 
 REQUIRED = ("in_reply_to_id", "addressed_comment_id", "bucket")
-VALID_MODES = ("confirmed", "pushback")
 
-# Classification buckets emitted by review-agent-reply (#51). Only fix_claim
-# carries a text reply (mode + body); question and acknowledgment are
-# reaction-only acks that replace the prior silence.
+# Classification buckets. fix_claim and question carry a text reply (mode +
+# body, #74); acknowledgment is a reaction-only ack. The per-bucket mode
+# value-set lives in BUCKET_MODES; its first value is the "holds" default the
+# agent gets when it omits `mode` (fix_claim → confirmed #37, question → stands
+# #74). acknowledgment has no mode.
 VALID_BUCKETS = ("fix_claim", "question", "acknowledgment")
+BUCKET_MODES = {
+    "fix_claim": ("confirmed", "pushback"),
+    "question": ("stands", "withdrawn"),
+}
 
 # Ack reaction per bucket. GitHub's reaction set is fixed to
 # +1/-1/laugh/confused/heart/hooray/rocket/eyes, so the design note's 🙏 is not
@@ -55,8 +60,9 @@ BUCKET_REACTION = {
 }
 
 # Reply sentinel. `{id}` is the operator reply's comment id, so the next polling
-# cycle's detection (#39) skips that reply. Carried in a fix_claim's text reply
-# or, for a non-claim thread, in the parent Finding's comment body (#79).
+# cycle's detection (#39) skips that reply. Carried in a body-bearing reply
+# (fix_claim or answered question) or, for an acknowledgment, in the parent
+# Finding's comment body (#79).
 SENTINEL = "<!-- pr-review-agent:reply:{id} -->"
 
 # Provenance marker appended to every daemon text reply (#11). Answers "who
@@ -78,9 +84,11 @@ def extract_payload(raw: str) -> dict:
     """Parse the reply agent's stdout into a validated {"replies": [...]} dict.
 
     Same fence convention as extract-json.py: the last ```json block wins.
-    Every thread the agent processed appears here tagged with its `bucket`;
-    `mode` (default `confirmed`, #37) and `body` are required only for
-    fix_claim, the one bucket that posts a text reply.
+    Every thread the agent processed appears here tagged with its `bucket`.
+    `mode` and `body` are required for the body-bearing buckets (fix_claim and
+    question, #74); `mode`'s value-set is per-bucket (BUCKET_MODES) and defaults
+    to that bucket's "holds" verdict. An empty body is rejected: under the "has
+    body" poster discriminator it would silently post nothing.
     """
     matches = re.findall(r"```json\s*\n(.*?)\n```", raw, re.DOTALL)
     if not matches:
@@ -105,16 +113,19 @@ def extract_payload(raw: str) -> dict:
                 "schema-invalid",
                 f"reply agent: replies[{i}] bucket {bucket!r} not in {VALID_BUCKETS}",
             )
-        if bucket == "fix_claim":
-            if "body" not in r:
-                raise PayloadError(
-                    "schema-invalid", f"reply agent: replies[{i}] fix_claim missing 'body'"
-                )
-            mode = r.setdefault("mode", "confirmed")
-            if mode not in VALID_MODES:
+        if bucket in BUCKET_MODES:
+            body = r.get("body")
+            if not (isinstance(body, str) and body.strip()):
                 raise PayloadError(
                     "schema-invalid",
-                    f"reply agent: replies[{i}] mode {mode!r} not in {VALID_MODES}",
+                    f"reply agent: replies[{i}] {bucket} missing or empty 'body'",
+                )
+            valid = BUCKET_MODES[bucket]
+            mode = r.setdefault("mode", valid[0])
+            if mode not in valid:
+                raise PayloadError(
+                    "schema-invalid",
+                    f"reply agent: replies[{i}] {bucket} mode {mode!r} not in {valid}",
                 )
     return data
 
@@ -156,7 +167,7 @@ def build_link(
 
 
 def link_for(args: argparse.Namespace, reply: dict) -> str | None:
-    """The blob-at-HEAD link for one fix_claim reply, from its `verified_*`
+    """The blob-at-HEAD link for one body-bearing reply, from its `verified_*`
     fields plus the head repo and head sha. None when nothing to anchor. The link
     targets the head repo (where `head_sha` lives), falling back to the base
     owner/repo when not supplied so same-repo PRs and older callers still link."""
@@ -307,7 +318,7 @@ def main() -> int:
                 "bucket": bucket,
                 "reaction": BUCKET_REACTION[bucket],
             }
-            if bucket == "fix_claim":
+            if r.get("body"):
                 entry["in_reply_to_id"] = in_reply_to_id
                 entry["reply_payload"] = {
                     "body": build_body(r["body"], addressed_id, link_for(args, r))
@@ -321,7 +332,8 @@ def main() -> int:
         print(json.dumps({"plan": plan}, ensure_ascii=False))
         return 0
 
-    nonclaim = len(replies) - fix
+    text_total = fix + question  # body-bearing buckets post a text reply
+    sentinel_total = ack  # only acknowledgment dedups via a parent-Finding PATCH
     text_ok = 0
     react_ok = 0
     patch_ok = 0
@@ -334,11 +346,13 @@ def main() -> int:
         bucket = r["bucket"]
         addressed_id = str(r["addressed_comment_id"])
         in_reply_to_id = str(r["in_reply_to_id"])
+        has_body = bool(r.get("body"))
 
-        # Text reply: fix_claim only. A failed POST leaves no sentinel, so the
-        # next polling cycle re-detects and retries this thread (best-effort,
-        # matching the prior bash loop).
-        if bucket == "fix_claim":
+        # Text reply: any body-bearing bucket (fix_claim + answered question,
+        # #74). A failed POST leaves no sentinel, so the next polling cycle
+        # re-detects and retries this thread (best-effort, matching the prior
+        # bash loop).
+        if has_body:
             full_body = build_body(r["body"], addressed_id, link_for(args, r))
             rc, err = post_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
             if rc == 0:
@@ -357,15 +371,16 @@ def main() -> int:
                 f"reaction POST failed for comment {addressed_id}: {err.strip()}",
                 file=sys.stderr,
             )
-            # The reaction is a non-claim thread's only ack, so skip the
-            # sentinel PATCH and let the next cycle retry the reaction first.
+            # The reaction is a bodiless thread's only ack, so skip the sentinel
+            # PATCH and let the next cycle retry the reaction first.
             continue
         react_ok += 1
 
-        # Non-claim dedup: the reaction carries no author provenance, so embed
-        # the Reply sentinel in the parent Finding (a comment we own) once the
-        # reaction lands. fix_claim already carries its sentinel in the reply.
-        if bucket != "fix_claim":
+        # Bodiless dedup: an acknowledgment carries no text reply and no author
+        # provenance, so embed the Reply sentinel in the parent Finding (a
+        # comment we own) once the reaction lands. Body buckets already carry
+        # their sentinel in the reply.
+        if not has_body:
             base = finding_work.get(in_reply_to_id)
             if base is None:
                 print(
@@ -385,9 +400,9 @@ def main() -> int:
                     file=sys.stderr,
                 )
 
-    summary = f"done — {text_ok}/{fix} replies, {react_ok}/{len(replies)} reactions"
-    if nonclaim:
-        summary += f", {patch_ok}/{nonclaim} sentinels"
+    summary = f"done — {text_ok}/{text_total} replies, {react_ok}/{len(replies)} reactions"
+    if sentinel_total:
+        summary += f", {patch_ok}/{sentinel_total} sentinels"
     print(summary + " posted", file=sys.stderr)
     return 0
 
