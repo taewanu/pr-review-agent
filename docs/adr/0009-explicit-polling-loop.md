@@ -1,7 +1,7 @@
 # ADR 0009: Explicit polling loop instead of a launchd StartInterval timer
 
 Date: 2026-06-07
-Status: Proposed
+Status: Accepted
 
 ## Context
 

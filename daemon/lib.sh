@@ -196,6 +196,81 @@ release_pr_lock() {
   return 0
 }
 
+# Daemon singleton + heartbeat for the run.sh polling loop (ADR 0009). The loop
+# is the scheduling driver in place of a launchd StartInterval timer; the
+# singleton stops two loops (a foreground run.sh and the KeepAlive one) from both
+# driving ticks, and the heartbeat makes liveness observable. Same noclobber +
+# dead-holder-reclaim mechanism as the per-PR lock above, minus the stale window:
+# a loop is long-lived by design, so a live holder is never aged out — only a
+# dead one (a SIGKILLed loop that skipped its cleanup trap) is reclaimed.
+#
+# Override $PR_REVIEW_STATE_DIR for tests.
+_daemon_pid_path() {
+  printf '%s/daemon.pid' "$(_state_dir)"
+}
+
+_heartbeat_path() {
+  printf '%s/daemon.heartbeat' "$(_state_dir)"
+}
+
+# acquire_daemon_singleton
+# Non-blocking. Prints the pidfile path and returns 0 if no live loop holds it
+# (reclaiming a dead holder's file); returns 1 if a live run.sh already holds it.
+acquire_daemon_singleton() {
+  local dir pidfile holder
+  dir="$(_state_dir)"
+  mkdir -p "$dir"
+  pidfile="$(_daemon_pid_path)"
+  if (
+    set -o noclobber
+    printf '%s\n' "$$" >"$pidfile"
+  ) 2>/dev/null; then
+    printf '%s\n' "$pidfile"
+    return 0
+  fi
+  # Held. Reclaim only if the holder is gone; an empty read (a pidfile
+  # mid-write) counts as live and is left alone.
+  read -r holder <"$pidfile" 2>/dev/null || true
+  if [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; then
+    rm -f "$pidfile"
+    if (
+      set -o noclobber
+      printf '%s\n' "$$" >"$pidfile"
+    ) 2>/dev/null; then
+      printf '%s\n' "$pidfile"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# release_daemon_singleton <pidfile>
+# Removes the pidfile. No-op on an empty path so a cleanup trap can call it
+# unconditionally even if the loop exited before acquiring.
+release_daemon_singleton() {
+  local pidfile="${1:-}"
+  [[ -n "$pidfile" ]] && rm -f "$pidfile"
+  return 0
+}
+
+# write_heartbeat
+# Atomically stamps the heartbeat file with the current epoch, once per loop
+# cycle. Liveness is then "now - heartbeat < a couple of intervals"; a stale
+# stamp means the loop is dead or a tick is wedged.
+write_heartbeat() {
+  local dir hb tmp
+  dir="$(_state_dir)"
+  hb="$(_heartbeat_path)"
+  mkdir -p "$dir"
+  tmp="$(mktemp "$dir/.heartbeat.XXXXXX")" || return 1
+  if printf '%s\n' "$(date +%s)" >"$tmp"; then
+    mv "$tmp" "$hb"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
 # bundle_operator_agents <scratch-dir>
 # Copies operator's agent + slash-command files from this repo's .claude/ into
 # the scratch clone's .claude/ so claude -p (which loads from cwd) finds them

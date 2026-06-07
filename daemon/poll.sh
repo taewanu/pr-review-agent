@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# poll.sh — one polling tick. Lists open PRs across watched repos, dispatches
-# review-pr.sh for each eligible PR. launchd reruns this on the configured
-# interval; this script does not run its own long-lived loop.
+# poll.sh — one polling cycle. Lists open PRs across watched repos, dispatches
+# review-pr.sh for each eligible PR. daemon/run.sh drives this on the configured
+# interval (ADR 0009); this script is a single cycle and does not loop.
 
 set -euo pipefail
 
