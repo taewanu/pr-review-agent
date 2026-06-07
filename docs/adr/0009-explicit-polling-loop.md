@@ -24,7 +24,7 @@ Replace the `StartInterval` driver with an explicit long-lived loop:
 
 - `daemon/poll.sh` stays the **single polling-cycle unit** — unchanged, still the manual one-shot and test entry point.
 - New `daemon/run.sh` runs `while true; do poll.sh; sleep "$POLL_INTERVAL_SECONDS"; done` with a **pidfile singleton guard** (no double loops) and a per-cycle **heartbeat** (a timestamp the daemon writes each loop).
-- The launchd template switches from `StartInterval` to **`KeepAlive=true`** supervising `run.sh`: launchd keeps the process alive (restart on crash, logout, boot) rather than firing a discrete timer.
+- The launchd template switches from `StartInterval` to **`KeepAlive` with `SuccessfulExit=false`** supervising `run.sh`: launchd keeps the process alive (restart on a non-zero exit, logout, boot) rather than firing a discrete timer. `SuccessfulExit=false` rather than bare `KeepAlive` so that when run.sh exits 0 because another loop already holds the singleton, launchd does **not** busy-respawn it every 10s; a genuine crash (non-zero) still restarts.
 - Execution becomes **explicit and observable** in both modes: a terminal run is explicit foreground; `KeepAlive` / `nohup &` is explicit background. "Is it running and fresh?" is answerable from the pidfile plus heartbeat age.
 
 This amends the **mechanism** of ADR 0001 D1 (the "via a local launchd `StartInterval` job" implementation). The polling-over-webhooks decision and the ~5-minute interval are unchanged.
