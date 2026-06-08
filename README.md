@@ -1,12 +1,12 @@
 # pr-review-agent
 
-Automated PR review agent that posts under your own GitHub identity. A macOS `launchd` daemon polls repos you choose, drafts findings as a **Pending** review, and leaves submit/edit/cancel to you.
+Automated PR review agent that posts under your own GitHub identity. Run it in your terminal: it polls the repos you choose, drafts findings as a **Pending** review, and leaves submit/edit/cancel to you. Optionally install it as a background `launchd` job.
 
 > **Preview release (v0.x).** Works end-to-end on your own repos. Review wording, line anchoring, and re-review skipping are still being polished. Expect quirks until v1.0.
 
 ## How it works
 
-1. After install (`bin/install.sh`), a `launchd` `KeepAlive` job runs `daemon/run.sh` — a loop that drives `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300) and is restarted on crash, logout, and reboot ([ADR 0009](docs/adr/0009-explicit-polling-loop.md)).
+1. You run `bash daemon/run.sh` — a loop that drives `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300), printing progress to the terminal ([ADR 0009](docs/adr/0009-explicit-polling-loop.md), [ADR 0011](docs/adr/0011-foreground-first-operating-model.md)). Optionally install it as a `launchd` `KeepAlive` job to run in the background, restarted on crash, logout, and reboot.
 2. The daemon lists open PRs for each watched repo via `gh`.
 3. It skips drafts, PRs labeled `no-ai-review`, and PRs whose HEAD SHA was already reviewed.
 4. For the rest, it runs the review agent (`.claude/agents/review-agent-default.md`) via headless Claude Code (`claude -p`) against the diff, and anchors findings to file/line ranges.
@@ -24,7 +24,7 @@ On a colleague's PR the daemon never auto-submits: what lands under your name is
 
 ## Prerequisites
 
-- macOS (the daemon uses `launchd`).
+- macOS (Claude Code runs here; the optional background install uses `launchd`).
 - [`gh`](https://cli.github.com/) authenticated (`gh auth login`); reviews post under this identity per [ADR 0003](docs/adr/0003-identity-model.md).
 - [`claude`](https://claude.com/claude-code) on `PATH`.
 - `git`, `jq`, `python3` 3.13+.
@@ -41,11 +41,22 @@ cd pr-review-agent
 # at minimum: REPOS=<owner>/<repo>, GITHUB_USER=<your gh login>
 cp templates/.env.example .env
 
-# register the launchd job (writes the plist into ~/Library/LaunchAgents/ and bootstraps it)
-bash bin/install.sh
+# run it — progress prints to the terminal; Ctrl-C to stop
+bash daemon/run.sh
 ```
 
-The loop starts immediately and runs a cycle every `POLL_INTERVAL_SECONDS` (default 300), surviving logout and reboot. Remove the job with `bash bin/uninstall.sh`.
+Each cycle reviews your watched repos every `POLL_INTERVAL_SECONDS` (default 300). To update: Ctrl-C, `git pull`, re-run.
+
+### Run it in the background (optional)
+
+Want it always-on, surviving logout and reboot? Register a `launchd` `KeepAlive` job:
+
+```bash
+bash bin/install.sh     # writes the plist into ~/Library/LaunchAgents/ and bootstraps it
+bash bin/uninstall.sh   # stop and remove it
+```
+
+The background job is invisible and bound to this checkout's working tree, so keep the checkout on `main` — switching its branch silently breaks the running daemon ([ADR 0011](docs/adr/0011-foreground-first-operating-model.md)).
 
 ## Configure
 
@@ -65,11 +76,10 @@ Label it `no-ai-review` (or whatever you set as `OPT_OUT_LABEL`). The daemon ski
 ```bash
 bash daemon/poll.sh                # run one polling cycle by hand
 bash daemon/review-pr.sh <pr-url>  # review one PR ad-hoc
-bash daemon/run.sh                 # run the loop in the foreground (a pidfile singleton stops it racing the launchd loop)
-tail -f .daemon.log                # follow the log
 
-# is the loop alive? — seconds since its last cycle
-echo $(( $(date +%s) - $(cat ~/.local/state/pr-review-agent/daemon.heartbeat) ))s
+# inspecting the optional background (launchd) install — a foreground run shows all this in the terminal already:
+tail -f .daemon.log                # follow its log
+echo $(( $(date +%s) - $(cat ~/.local/state/pr-review-agent/daemon.heartbeat) ))s   # seconds since its last cycle
 ```
 
 ## Submitting a review
