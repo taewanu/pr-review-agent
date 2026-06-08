@@ -5,16 +5,20 @@ pipeline. #36 collapses it to one Python process so the body bytes survive end
 to end. #55 adds a per-thread Ack reaction. #79 embeds a Reply sentinel in the
 parent Finding for non-claim threads so they dedup. #74 turns the `question`
 bucket into a body-bearing answer (`stands`/`withdrawn`) that posts a text reply
-like fix_claim, leaving `acknowledgment` as the only PATCH-dedup bucket. These
-tests pin all of it: a body carrying `\n`, `\t`, `\\`, a backticked regex
-`` `\n[^\n]` `` and non-ASCII must reach `gh ... --input -` byte-for-byte, each
-bucket must POST its reaction, a body-bearing bucket carries its sentinel in the
-reply, and an acknowledgment PATCHes the parent Finding only once its reaction
-lands.
+like fix_claim, leaving `acknowledgment` as the only PATCH-dedup bucket. #38
+wraps body-bearing replies in one pending COMMENTED review per tick (GraphQL
+create -> add-per-thread -> submit) instead of N detached `/replies`, falling
+back to the detached REST path for any reply without a thread id. These tests pin
+all of it: a body carrying `\n`, `\t`, `\\`, a backticked regex `` `\n[^\n]` ``
+and non-ASCII must reach `gh` byte-for-byte over BOTH transports (REST stdin and
+the `-f body=` GraphQL arg), each bucket must POST its reaction, a body-bearing
+bucket carries its sentinel in the reply, and an acknowledgment PATCHes the
+parent Finding only once its reaction lands.
 
 `gh` is stubbed via a tmpdir on PATH (mirrors test_status_comment). The stub
-records each call's argv and stdin on its own line so a fix_claim's two POSTs
-(reply + reaction) stay separable.
+records each call's argv and stdin as a NUL-delimited record (a batched body
+carries newlines on argv, so a newline separator would desync the two logs) and
+feeds a canned id back for the CreatePendingReview mutation.
 """
 
 from __future__ import annotations
@@ -51,16 +55,24 @@ def _raw(replies: list[dict]) -> str:
     return "agent preamble\n```json\n" + json.dumps({"replies": replies}) + "\n```\ntrailing prose"
 
 
+# Canned CreatePendingReview response so post_reply.py can read the new review id
+# off the stub (#38). Returned for any `gh` call whose argv contains the mutation
+# operation name.
+_CREATE_REVIEW_STDOUT = '{"data":{"addPullRequestReview":{"pullRequestReview":{"id":"PRR_stub"}}}}'
+
+
 def _run(
     raw: str,
     *,
     dry_run: bool = False,
     gh_exit: int = 0,
-    graphql_exit: int | None = None,
+    fail_ops: list[str] | None = None,
     threads: list[dict] | None = None,
     head_sha: str | None = None,
     head_owner: str | None = None,
     head_repo: str | None = None,
+    pr_node_id: str | None = "PR_node",
+    existing_pending_review_id: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[tuple[str, str]]]:
     """Run post_reply.py with a per-call-recording `gh` stub. Returns
     (result, calls) where calls is a list of (argv, stdin) tuples in order.
@@ -68,9 +80,16 @@ def _run(
     `head_sha`, when set, is passed as --head-sha so the blob link is built.
     `head_owner`/`head_repo` override the blob link's repo (the fork on a
     cross-repo PR); --owner/--repo stay the base repo for the API calls.
-    `graphql_exit`, when set, fails only the `gh api graphql` resolve call
-    (#75) while REST calls still get `gh_exit` — so a best-effort resolve
-    failure can be tested without also failing the reply POST."""
+
+    `pr_node_id` (default present) is passed as --pr-node-id so a body reply with
+    a thread id batches under one pending COMMENTED review (#38); set it to None
+    to model a degraded reviewThreads read that forces the detached REST path. The
+    stub feeds a canned id back for the CreatePendingReview mutation so add/submit
+    have a review to attach to. `fail_ops` makes the stub exit 1 only for `gh`
+    calls whose argv contains one of the given substrings (e.g. a GraphQL
+    operation name), so a best-effort resolve failure can be tested without also
+    failing the create/add/submit."""
+    fail_ops = fail_ops or []
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
         raw_file = tmpd / "raw.txt"
@@ -78,18 +97,22 @@ def _run(
         stdin_log = tmpd / "gh_stdin.txt"
         argv_log = tmpd / "gh_argv.txt"
         stub = tmpd / "gh"
-        # One line per invocation in each log, so argv[i] pairs with stdin[i].
-        # stdin payloads are single-line JSON (json.dumps escapes newlines), so
-        # a trailing \n is a safe record separator.
-        gql_exit = gh_exit if graphql_exit is None else graphql_exit
-        stub.write_text(
-            "#!/usr/bin/env bash\n"
-            f'printf "%s\\n" "$*" >> "{argv_log}"\n'
-            f'cat >> "{stdin_log}"\n'
-            f'printf "\\n" >> "{stdin_log}"\n'
-            f'case "$*" in *graphql*) exit {gql_exit} ;; esac\n'
-            f"exit {gh_exit}\n"
-        )
+        # NUL-delimited record per invocation in each log, so argv[i] pairs with
+        # stdin[i] even when an arg carries newlines: the batch path (#38) passes
+        # the reply body via `-f body=<raw>` on argv (not stdin), and that body
+        # contains `\n`, so a newline record separator would desync the two logs.
+        lines = [
+            "#!/usr/bin/env bash",
+            f'printf "%s\\0" "$*" >> "{argv_log}"',
+            f'cat >> "{stdin_log}"',
+            f'printf "\\0" >> "{stdin_log}"',
+            f"case \"$*\" in *CreatePendingReview*) printf '%s' '{_CREATE_REVIEW_STDOUT}' ;; esac",
+        ]
+        if fail_ops:
+            clauses = " ".join(f'*"{op}"*) exit 1 ;;' for op in fail_ops)
+            lines.append(f'case "$*" in {clauses} esac')
+        lines.append(f"exit {gh_exit}")
+        stub.write_text("\n".join(lines) + "\n")
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         env = os.environ.copy()
         env["PATH"] = f"{tmpd}:{env['PATH']}"
@@ -115,12 +138,18 @@ def _run(
             args += ["--head-owner", head_owner]
         if head_repo is not None:
             args += ["--head-repo", head_repo]
+        if pr_node_id is not None:
+            args += ["--pr-node-id", pr_node_id]
+        if existing_pending_review_id is not None:
+            args += ["--existing-pending-review-id", existing_pending_review_id]
         if dry_run:
             args.append("--dry-run")
         result = subprocess.run(args, capture_output=True, text=True, env=env)
-        argv_lines = argv_log.read_text().splitlines() if argv_log.exists() else []
-        stdin_lines = stdin_log.read_text().splitlines() if stdin_log.exists() else []
-        calls = list(zip(argv_lines, stdin_lines, strict=True))
+        # Each call appends one NUL-terminated record, so split drops the trailing
+        # empty field after the final NUL.
+        argv_recs = argv_log.read_text().split("\0")[:-1] if argv_log.exists() else []
+        stdin_recs = stdin_log.read_text().split("\0")[:-1] if stdin_log.exists() else []
+        calls = list(zip(argv_recs, stdin_recs, strict=True))
         return result, calls
 
 
@@ -380,18 +409,24 @@ def _resolve_call(calls: list[tuple[str, str]]) -> tuple[str, str] | None:
     return _find(calls, "resolveReviewThread")
 
 
-def test_confirmed_resolves_thread_after_reply_lands():
+def _idx(calls: list[tuple[str, str]], needle: str) -> int:
+    return next(i for i, c in enumerate(calls) if needle in c[0])
+
+
+def test_confirmed_resolves_thread_after_review_submits():
+    # Under the review wrapper (#38) the reply is an AddReply under the pending
+    # review, not a detached /replies POST; resolution still runs, but only after
+    # the review submits (the replies and their sentinels are not live until then).
     result, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_abc"))
     assert result.returncode == 0, result.stderr
+    assert _find(calls, "AddReply") is not None, "the reply batches under the review"
+    assert _find(calls, "/replies") is None, "no detached reply when batched"
     resolve = _resolve_call(calls)
     assert resolve is not None, "confirmed must resolve the thread"
-    assert "graphql" in resolve[0]
     assert "threadId=PRRT_abc" in resolve[0]
-    # Resolve only after the reply has landed (its sentinel marks the thread
-    # processed first), so it is the later of the two calls.
-    reply_idx = next(i for i, c in enumerate(calls) if "/replies" in c[0])
-    resolve_idx = next(i for i, c in enumerate(calls) if "resolveReviewThread" in c[0])
-    assert resolve_idx > reply_idx
+    assert _idx(calls, "resolveReviewThread") > _idx(calls, "SubmitReview"), (
+        "resolve only after the review submits"
+    )
 
 
 def test_withdrawn_resolves_thread():
@@ -431,21 +466,203 @@ def test_confirmed_without_thread_id_skips_resolve_but_still_replies():
 
 
 def test_resolve_failure_is_best_effort_exit_zero():
-    # The reply POST succeeds (gh_exit 0) but the graphql resolve fails. The run
-    # still exits 0: resolution is cosmetic and never retried.
+    # The review submits (create/add/submit succeed) but only the resolve mutation
+    # fails. The run still exits 0: resolution is cosmetic and never retried.
     result, calls = _run(
-        _raw([_reply()]), graphql_exit=1, threads=_threads("111", "F", thread_id="PRRT_x")
+        _raw([_reply()]),
+        fail_ops=["resolveReviewThread"],
+        threads=_threads("111", "F", thread_id="PRRT_x"),
     )
     assert result.returncode == 0, result.stderr
-    assert _find(calls, "/replies") is not None, "reply still posts"
+    assert _find(calls, "AddReply") is not None, "reply still batches"
     assert _resolve_call(calls) is not None, "resolve was attempted"
 
 
-def test_resolve_skipped_when_reply_post_fails():
-    # If the reply POST fails, no sentinel lands and the next cycle retries; the
-    # thread must not be resolved off a reply that never posted.
+def test_resolve_skipped_when_review_create_fails():
+    # If the pending-review create fails, nothing lands and the next cycle retries;
+    # the thread must not be resolved off a reply that never posted.
     _, calls = _run(_raw([_reply()]), gh_exit=1, threads=_threads("111", "F", thread_id="PRRT_x"))
-    assert _resolve_call(calls) is None, "no resolve when the reply POST failed"
+    assert _resolve_call(calls) is None, "no resolve when the review never opened"
+
+
+# --- Review-wrapper batching (#38) ------------------------------------------
+# Body-bearing replies post under ONE pending COMMENTED review per tick so the
+# operator gets a single notification, instead of N detached /replies comments.
+# Threading is preserved: each AddReply targets its parent thread id. A reply
+# with no thread id (degraded read / no pr node id) falls back to a detached
+# /replies POST so it still lands.
+
+
+def _multi_threads(*specs: tuple[str, str, str]) -> list[dict]:
+    """A --threads payload for several findings: each spec is
+    (finding_comment_id, body, thread_id)."""
+    return [
+        {
+            "parent_finding": {"comment_id": cid, "body": body},
+            "operator_reply": {"comment_id": "999", "body": "..."},
+            "thread_id": tid,
+        }
+        for cid, body, tid in specs
+    ]
+
+
+def _addreply_body(rec: str) -> str:
+    """The reply body carried on an AddReply call's argv (`-f body=<raw>`), which
+    is the last `-f` arg so it runs to the end of the record."""
+    return rec.split("body=", 1)[1]
+
+
+def test_batch_wraps_replies_in_one_review_no_detached_posts():
+    a = _reply(in_reply_to_id="111", addressed_comment_id="11", body="**Confirmed.** a")
+    b = _reply(in_reply_to_id="222", addressed_comment_id="22", body="**Confirmed.** b")
+    result, calls = _run(
+        _raw([a, b]),
+        threads=_multi_threads(("111", "Fa", "PRRT_a"), ("222", "Fb", "PRRT_b")),
+    )
+    assert result.returncode == 0, result.stderr
+    assert len([c for c in calls if "CreatePendingReview" in c[0]]) == 1, "one review per tick"
+    assert len([c for c in calls if "SubmitReview" in c[0]]) == 1, "one submit per tick"
+    adds = [c for c in calls if "AddReply" in c[0]]
+    assert len(adds) == 2, "each reply attaches to its own thread under the review"
+    assert _find(calls, "thread=PRRT_a") is not None
+    assert _find(calls, "thread=PRRT_b") is not None
+    assert _find(calls, "/replies") is None, "nothing posts as a detached reply"
+
+
+def test_batch_submits_as_comment_with_empty_body():
+    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
+    submit = _find(calls, "SubmitReview")
+    assert submit is not None
+    assert "event: COMMENT" in submit[0], "wrapper review submits as COMMENT"
+    # #38 ships an empty wrapper body: the submit mutation sets no `body` field
+    # (the deprecation/summary lives in #11), so no body variable is passed.
+    assert "-f body=" not in submit[0] and "body=" not in submit[0].split("query=", 1)[1]
+
+
+def test_batch_reply_body_round_trips_through_graphql_arg():
+    # The body now travels via `-f body=<raw>` on argv, a new transport vs the REST
+    # stdin path. It must still reach gh byte-for-byte: `\n`, tab, backslash, a
+    # backticked regex and non-ASCII.
+    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
+    add = _find(calls, "AddReply")
+    assert add is not None
+    assert _addreply_body(add[0]) == EXPECTED_BODY
+
+
+def test_null_thread_id_falls_back_to_detached_reply():
+    batched = _reply(in_reply_to_id="111", addressed_comment_id="11", body="**Confirmed.** a")
+    stray = _reply(in_reply_to_id="222", addressed_comment_id="22", body="**Confirmed.** b")
+    result, calls = _run(
+        _raw([batched, stray]),
+        # only 111 has a thread id; 222's reviewThreads entry was not mapped
+        threads=_multi_threads(("111", "Fa", "PRRT_a")) + _threads("222", "Fb"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "thread=PRRT_a") is not None, "the mapped reply batches"
+    detached = _find(calls, "pulls/999/comments/222/replies")
+    assert detached is not None, "the unmapped reply posts detached so it still lands"
+
+
+def test_no_pr_node_id_forces_detached_even_with_thread_id():
+    # A fully degraded reviewThreads read leaves no pr node id, so batching is off
+    # and every reply posts detached (the pre-#38 path) — still threaded, just N
+    # notifications.
+    result, calls = _run(
+        _raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"), pr_node_id=None
+    )
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "CreatePendingReview") is None, "no review without a pr node id"
+    assert _find(calls, "pulls/999/comments/111/replies") is not None, "posts detached instead"
+
+
+def test_stale_pending_review_deleted_before_create():
+    result, calls = _run(
+        _raw([_reply()]),
+        threads=_threads("111", "F", thread_id="PRRT_x"),
+        existing_pending_review_id="PRR_stale",
+    )
+    assert result.returncode == 0, result.stderr
+    delete = _find(calls, "DeletePendingReview")
+    assert delete is not None, "a stale pending review is discarded first"
+    assert "review=PRR_stale" in delete[0]
+    assert _idx(calls, "DeletePendingReview") < _idx(calls, "CreatePendingReview"), (
+        "delete the stale review before opening this tick's review"
+    )
+
+
+def test_no_stale_pending_review_no_delete():
+    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
+    assert _find(calls, "DeletePendingReview") is None, "nothing to delete when none was passed"
+
+
+def test_submit_failure_defers_and_skips_resolve():
+    # The review fails to submit: the replies never go live, so the thread is not
+    # resolved and the run still exits 0 (next cycle retries the whole batch).
+    result, calls = _run(
+        _raw([_reply()]),
+        fail_ops=["SubmitReview"],
+        threads=_threads("111", "F", thread_id="PRRT_x"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "AddReply") is not None, "the add was attempted"
+    assert _resolve_call(calls) is None, "no resolve when the review did not submit"
+    assert "review submit failed" in result.stderr
+
+
+def test_all_adds_fail_discards_empty_review_without_submit():
+    # Every AddReply fails, so there is nothing to submit; the empty pending review
+    # is discarded rather than submitted (an empty COMMENTED review is rejected).
+    result, calls = _run(
+        _raw([_reply()]),
+        fail_ops=["AddReply"],
+        threads=_threads("111", "F", thread_id="PRRT_x"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "SubmitReview") is None, "never submit an empty review"
+    assert _find(calls, "DeletePendingReview") is not None, "discard the empty review"
+
+
+def test_acknowledgment_stays_out_of_the_batch():
+    # An acknowledgment carries no body, so it never joins the review wrapper: it
+    # still gets its reaction + parent-Finding sentinel PATCH, and a co-occurring
+    # fix_claim is the only thing batched.
+    ack = {"in_reply_to_id": "111", "addressed_comment_id": "11", "bucket": "acknowledgment"}
+    fix = _reply(in_reply_to_id="222", addressed_comment_id="22", body="**Confirmed.** x")
+    result, calls = _run(
+        _raw([ack, fix]),
+        threads=_multi_threads(("111", "Fa", "PRRT_a"), ("222", "Fb", "PRRT_b")),
+    )
+    assert result.returncode == 0, result.stderr
+    adds = [c for c in calls if "AddReply" in c[0]]
+    assert len(adds) == 1 and _find(calls, "thread=PRRT_b") is not None, (
+        "only the fix_claim batches"
+    )
+    assert _find(calls, "thread=PRRT_a") is None, "the acknowledgment is not added to the review"
+    assert _find(calls, "--method PATCH") is not None, (
+        "the acknowledgment still PATCHes its sentinel"
+    )
+
+
+def test_batched_reply_keeps_sentinel_and_marker():
+    # Dedup + provenance must survive the move into the review wrapper.
+    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
+    body = _addreply_body(_find(calls, "AddReply")[0])
+    assert "<!-- pr-review-agent:reply:222 -->" in body, "reply sentinel rides in the batched body"
+    assert "🤖 _pr-review-agent_" in body, "provenance marker rides in the batched body"
+
+
+def test_dry_run_marks_batched_reply_via_review():
+    result, _ = _run(
+        _raw([_reply()]), dry_run=True, threads=_threads("111", "F", thread_id="PRRT_d")
+    )
+    entry = json.loads(result.stdout)["plan"][0]
+    assert entry["via"] == "review"
+
+
+def test_dry_run_marks_unmapped_reply_via_detached():
+    result, _ = _run(_raw([_reply()]), dry_run=True, threads=_threads("111", "F"))
+    entry = json.loads(result.stdout)["plan"][0]
+    assert entry["via"] == "detached"
 
 
 def test_dry_run_confirmed_includes_resolve_thread_id():

@@ -20,16 +20,27 @@ must win before we mark the reply processed. fix_claim and answered questions
 (#74) keep their sentinel in the text reply. Parent Finding bodies come from
 --threads (the same JSON the reply agent consumed), so the PATCH needs no GET.
 
+Body-bearing replies post under ONE pending COMMENTED review per tick (#38)
+instead of N detached `/replies` comments, so the operator gets a single GitHub
+notification. The body now travels via GraphQL `-f body=<raw>` rather than REST
+`--input -`, but gh JSON-encodes the variable, so the bytes still survive intact
+(the round-trip test pins both transports). A reply with no thread id (degraded
+reviewThreads read, or a thread past the first-100 page) falls back to the
+detached REST `/replies` POST so it still lands. The wrapper review carries an
+empty body; its summary is deferred to #11.
+
 A settled verdict (`confirmed` / `withdrawn`) also resolves its GitHub review
-thread via GraphQL after the reply lands (#75), using the thread id reply-pr.sh
-joined into --threads. Best-effort: a failed resolve is logged, never retried.
+thread via GraphQL after the review submits (#75), using the thread id
+reply-pr.sh joined into --threads. Best-effort: a failed resolve is logged,
+never retried.
 
 On failure, stderr carries a `category=<x>` line (no-fence, parse-error,
 schema-invalid) so reply-pr.sh's log_failure mapping is unchanged.
 
 Usage:
   python3 post_reply.py --owner O --repo R --number N --raw RAWFILE \
-    [--threads THREADSFILE] [--dry-run]
+    [--threads THREADSFILE] [--pr-node-id NODEID] \
+    [--existing-pending-review-id ID] [--dry-run]
 """
 
 from __future__ import annotations
@@ -72,6 +83,40 @@ RESOLVE_MODES = ("confirmed", "withdrawn")
 RESOLVE_MUTATION = (
     "mutation($threadId: ID!) { resolveReviewThread(input: {threadId: $threadId}) "
     "{ thread { id isResolved } } }"
+)
+
+# Review-wrapper batching (#38). Body-bearing replies post under ONE pending
+# COMMENTED review per tick instead of N detached `/replies` comments, so the
+# operator gets one GitHub notification. Each named so the test gh-stub can match
+# the call by operation name (CreatePendingReview's response carries the new
+# review id the adds and submit need). addPullRequestReviewThreadReply attaches a
+# reply to the pending review AND to its parent thread, preserving threading; the
+# `PRRT_` thread id is the same one reply-pr.sh joins for #75 resolution.
+CREATE_REVIEW_MUTATION = (
+    "mutation CreatePendingReview($pr: ID!) { "
+    "addPullRequestReview(input: {pullRequestId: $pr}) { pullRequestReview { id } } }"
+)
+ADD_REPLY_MUTATION = (
+    "mutation AddReply($review: ID!, $thread: ID!, $body: String!) { "
+    "addPullRequestReviewThreadReply(input: {pullRequestReviewId: $review, "
+    "pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }"
+)
+# Submit as COMMENT with no `body` field — the wrapper review carries no summary
+# (#38 ships an empty body; the reply substance lives in each inner comment).
+SUBMIT_REVIEW_MUTATION = (
+    "mutation SubmitReview($review: ID!) { "
+    "submitPullRequestReview(input: {pullRequestReviewId: $review, event: COMMENT}) "
+    "{ pullRequestReview { id state } } }"
+)
+# Discards a stale pending review (a prior tick that added replies but failed to
+# submit). GitHub allows one pending review per viewer per PR, so a leftover
+# would block this tick's create; deleting it also drops its orphan comments,
+# which are invisible to the REST scan and would otherwise re-trigger duplicate
+# replies next cycle.
+DELETE_REVIEW_MUTATION = (
+    "mutation DeletePendingReview($review: ID!) { "
+    "deletePullRequestReview(input: {pullRequestReviewId: $review}) "
+    "{ pullRequestReview { id } } }"
 )
 
 # Ack reaction per bucket. GitHub's reaction set is fixed to
@@ -302,6 +347,53 @@ def resolve_thread(thread_id: str) -> tuple[int, str]:
     return proc.returncode, proc.stderr
 
 
+def _graphql(query: str, **variables: str) -> subprocess.CompletedProcess:
+    """Run one `gh api graphql` mutation. Variables go through `-f name=value`, so
+    gh JSON-encodes each value — a reply body with `\\n` / backticks / non-ASCII
+    survives byte-for-byte without any shell quoting (same guarantee as the REST
+    `--input -` path). `input=""` closes stdin since the query rides in argv."""
+    args = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for name, value in variables.items():
+        args += ["-f", f"{name}={value}"]
+    return subprocess.run(args, input="", capture_output=True, text=True, check=False)
+
+
+def create_pending_review(pr_node_id: str) -> tuple[int, str | None, str]:
+    """Open a pending COMMENTED review on the PR (#38). Returns
+    (returncode, review_node_id, stderr); review_node_id is None when the call
+    failed or the response did not carry an id, so the caller defers the batch to
+    the next cycle rather than posting replies into a review that never opened."""
+    proc = _graphql(CREATE_REVIEW_MUTATION, pr=pr_node_id)
+    if proc.returncode != 0:
+        return proc.returncode, None, proc.stderr
+    try:
+        review_id = json.loads(proc.stdout)["data"]["addPullRequestReview"]["pullRequestReview"][
+            "id"
+        ]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return proc.returncode, None, proc.stdout
+    return proc.returncode, review_id, proc.stderr
+
+
+def add_thread_reply(review_id: str, thread_id: str, body: str) -> tuple[int, str]:
+    """Attach one reply to the pending review and its parent thread (#38)."""
+    proc = _graphql(ADD_REPLY_MUTATION, review=review_id, thread=thread_id, body=body)
+    return proc.returncode, proc.stderr
+
+
+def submit_review(review_id: str) -> tuple[int, str]:
+    """Submit the pending review as COMMENT — one notification for the tick."""
+    proc = _graphql(SUBMIT_REVIEW_MUTATION, review=review_id)
+    return proc.returncode, proc.stderr
+
+
+def delete_pending_review(review_id: str) -> tuple[int, str]:
+    """Discard a pending review (a stale one before creating, or this tick's own
+    review when nothing was added so we never submit an empty COMMENTED review)."""
+    proc = _graphql(DELETE_REVIEW_MUTATION, review=review_id)
+    return proc.returncode, proc.stderr
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Post threaded reply acks for reply-pr.sh (#36).")
     parser.add_argument("--owner", required=True)
@@ -327,6 +419,21 @@ def main() -> int:
         "--threads",
         help="threads JSON the reply agent consumed; supplies parent Finding "
         "bodies for the non-claim Reply-sentinel PATCH",
+    )
+    parser.add_argument(
+        "--pr-node-id",
+        default="",
+        help="PR GraphQL node id; body-bearing replies batch under one pending "
+        "COMMENTED review against it (#38). Empty -> every reply falls back to a "
+        "detached REST reply (the pre-#38 path), so a degraded reviewThreads read "
+        "still posts.",
+    )
+    parser.add_argument(
+        "--existing-pending-review-id",
+        default="",
+        help="a viewer pending review already on the PR (a prior tick that failed "
+        "to submit); deleted before opening this tick's review so the create is not "
+        "blocked and orphan comments do not re-trigger duplicate replies (#38)",
     )
     parser.add_argument(
         "--dry-run",
@@ -384,6 +491,11 @@ def main() -> int:
             }
             if r.get("body"):
                 entry["in_reply_to_id"] = in_reply_to_id
+                # "review" -> wrapped in the one pending COMMENTED review (#38);
+                # "detached" -> a standalone REST reply (degraded read / no thread id).
+                entry["via"] = (
+                    "review" if args.pr_node_id and thread_ids.get(in_reply_to_id) else "detached"
+                )
                 entry["reply_payload"] = {
                     "body": build_body(r["body"], addressed_id, link_for(args, r))
                 }
@@ -405,55 +517,120 @@ def main() -> int:
     react_ok = 0
     patch_ok = 0
     resolve_ok = 0
-    # Running copy of each Finding body so two non-claim replies on the same
-    # Finding in one cycle accumulate both sentinels instead of clobbering: the
-    # second PATCH appends to the body the first one already extended.
-    finding_work = dict(finding_bodies)
 
+    def do_resolve(in_reply_to_id: str) -> None:
+        """Resolve the settled thread for a reply that landed (#75), best-effort.
+        Shared by the batch and fallback paths; a missing thread id (degraded
+        reviewThreads read) just skips, leaving the thread open."""
+        nonlocal resolve_ok
+        tid = thread_ids.get(in_reply_to_id)
+        if not tid:
+            print(f"no thread id for finding {in_reply_to_id}; skipping resolve", file=sys.stderr)
+            return
+        rrc, rerr = resolve_thread(tid)
+        if rrc == 0:
+            resolve_ok += 1
+        else:
+            print(f"resolveReviewThread failed for thread {tid}: {rerr.strip()}", file=sys.stderr)
+
+    # Partition body-bearing replies: batch under one pending review when we have
+    # a PR node id AND the reply's thread id (#38); otherwise fall back to a
+    # detached REST reply — a degraded reviewThreads read (no pr node id) or a
+    # thread past the first-100 page (no thread id). acknowledgments carry no body
+    # and post no text reply, so they sit out the batch entirely.
+    batched: list[dict] = []
+    fallback: list[dict] = []
+    for r in replies:
+        if not r.get("body"):
+            continue
+        if args.pr_node_id and thread_ids.get(str(r["in_reply_to_id"])):
+            batched.append(r)
+        else:
+            fallback.append(r)
+
+    # --- Batch: one COMMENTED review (empty body) wraps every batchable reply, so
+    # the operator gets a single notification for the tick (#38). A failed add or
+    # submit leaves no sentinel on the affected thread, so the next cycle retries
+    # it — same best-effort contract as the detached path.
+    if batched:
+        if args.existing_pending_review_id:
+            drc, derr = delete_pending_review(args.existing_pending_review_id)
+            if drc != 0:
+                # Non-fatal here; the create below fails loudly if the stale
+                # review really still blocks GitHub's one-pending-per-viewer rule.
+                print(
+                    f"could not delete stale pending review "
+                    f"{args.existing_pending_review_id}: {derr.strip()}",
+                    file=sys.stderr,
+                )
+        _crc, review_id, cerr = create_pending_review(args.pr_node_id)
+        if not review_id:
+            print(
+                f"pending review create failed; {len(batched)} repl(y/ies) deferred "
+                f"to next cycle: {cerr.strip()}",
+                file=sys.stderr,
+            )
+        else:
+            added: list[dict] = []
+            for r in batched:
+                tid = thread_ids[str(r["in_reply_to_id"])]
+                full_body = build_body(r["body"], str(r["addressed_comment_id"]), link_for(args, r))
+                arc, aerr = add_thread_reply(review_id, tid, full_body)
+                if arc == 0:
+                    added.append(r)
+                else:
+                    print(
+                        f"thread reply add failed for thread {tid}: {aerr.strip()}", file=sys.stderr
+                    )
+            if not added:
+                # A COMMENTED review with no comments and no body is rejected, so
+                # discard the empty pending review rather than submit it.
+                delete_pending_review(review_id)
+                print(
+                    "no thread replies added; discarded the empty pending review", file=sys.stderr
+                )
+            else:
+                src, serr = submit_review(review_id)
+                if src == 0:
+                    text_ok += len(added)
+                    # Resolve only after submit — replies (and their sentinels)
+                    # are not live until the review is submitted.
+                    for r in added:
+                        if r.get("mode") in RESOLVE_MODES:
+                            do_resolve(str(r["in_reply_to_id"]))
+                else:
+                    print(
+                        f"review submit failed; {len(added)} repl(y/ies) deferred to "
+                        f"next cycle: {serr.strip()}",
+                        file=sys.stderr,
+                    )
+
+    # --- Fallback: a detached REST reply for any non-batchable body reply. Same
+    # path the daemon used before #38; resolution stays inline since these post
+    # immediately (no pending-review barrier).
+    for r in fallback:
+        in_reply_to_id = str(r["in_reply_to_id"])
+        full_body = build_body(r["body"], str(r["addressed_comment_id"]), link_for(args, r))
+        rc, err = post_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
+        if rc == 0:
+            text_ok += 1
+            if r.get("mode") in RESOLVE_MODES:
+                do_resolve(in_reply_to_id)
+        else:
+            print(f"reply POST failed for comment {in_reply_to_id}: {err.strip()}", file=sys.stderr)
+
+    # --- Reactions + bodiless sentinel PATCH: every reply, independent of the
+    # text-reply path above. The reaction is idempotent; an acknowledgment then
+    # embeds the Reply sentinel in its parent Finding once the reaction lands (its
+    # only dedup carrier). A running copy of each Finding body lets two non-claim
+    # replies on the same Finding accumulate both sentinels instead of clobbering.
+    finding_work = dict(finding_bodies)
     for r in replies:
         bucket = r["bucket"]
         addressed_id = str(r["addressed_comment_id"])
         in_reply_to_id = str(r["in_reply_to_id"])
         has_body = bool(r.get("body"))
 
-        # Text reply: any body-bearing bucket (fix_claim + answered question,
-        # #74). A failed POST leaves no sentinel, so the next polling cycle
-        # re-detects and retries this thread (best-effort, matching the prior
-        # bash loop).
-        if has_body:
-            full_body = build_body(r["body"], addressed_id, link_for(args, r))
-            rc, err = post_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
-            if rc == 0:
-                text_ok += 1
-                # Thread resolution (#75): a settled verdict (confirmed /
-                # withdrawn) has nothing left actionable, so collapse the thread.
-                # Only after the reply landed (its sentinel marks the thread
-                # processed); best-effort, never retried. A failed POST falls
-                # through to the else and skips this — the thread stays open and
-                # the next cycle retries the reply.
-                if r.get("mode") in RESOLVE_MODES:
-                    tid = thread_ids.get(in_reply_to_id)
-                    if not tid:
-                        print(
-                            f"no thread id for finding {in_reply_to_id}; skipping resolve",
-                            file=sys.stderr,
-                        )
-                    else:
-                        rrc, rerr = resolve_thread(tid)
-                        if rrc == 0:
-                            resolve_ok += 1
-                        else:
-                            print(
-                                f"resolveReviewThread failed for thread {tid}: {rerr.strip()}",
-                                file=sys.stderr,
-                            )
-            else:
-                print(
-                    f"reply POST failed for comment {in_reply_to_id}: {err.strip()}",
-                    file=sys.stderr,
-                )
-
-        # Ack reaction: every bucket. Idempotent, so no dedup needed.
         content = BUCKET_REACTION[bucket]
         rc, err = post_reaction(args.owner, args.repo, addressed_id, content)
         if rc != 0:
@@ -466,10 +643,6 @@ def main() -> int:
             continue
         react_ok += 1
 
-        # Bodiless dedup: an acknowledgment carries no text reply and no author
-        # provenance, so embed the Reply sentinel in the parent Finding (a
-        # comment we own) once the reaction lands. Body buckets already carry
-        # their sentinel in the reply.
         if not has_body:
             base = finding_work.get(in_reply_to_id)
             if base is None:
