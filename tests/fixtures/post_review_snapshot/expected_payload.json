@@ -4,13 +4,13 @@
     {
       "path": "src/api/auth.py",
       "side": "RIGHT",
-      "body": "_🐛 bug_ | _🔴 important_\n\n**Drop `session.token` from the warning log.** It writes the token in plaintext on the warning branch; redact before emit.\n\n---\n\n🤖 _AI-drafted_",
+      "body": "_🐛 bug_ | _🔴 important_\n\n**Drop `session.token` from the warning log.** It writes the token in plaintext on the warning branch; redact before emit.\n\n---\n\n🤖 _pr-review-agent_",
       "line": 42
     },
     {
       "path": "src/api/auth.py",
       "side": "RIGHT",
-      "body": "_🔧 refactor_ | _🟡 nit_\n\n**Split `parse_and_persist` into two functions.**\n\n- Parses, validates, and persists in one call\n- Splitting makes failure modes orthogonal\n- Each function then tests in isolation\n\n---\n\n🤖 _AI-drafted_",
+      "body": "_🔧 refactor_ | _🟡 nit_\n\n**Split `parse_and_persist` into two functions.**\n\n- Parses, validates, and persists in one call\n- Splitting makes failure modes orthogonal\n- Each function then tests in isolation\n\n---\n\n🤖 _pr-review-agent_",
       "start_line": 60,
       "start_side": "RIGHT",
       "line": 75

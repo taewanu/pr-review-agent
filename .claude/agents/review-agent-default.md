@@ -76,7 +76,7 @@ The first sentence MUST NOT:
 
 The rule applies to `summary` and to the first sentence of each `comments[].body`. In `comments[].body` the first sentence is wrapped in **bold** as a shape requirement (see Body shape below); the word-opener rules still apply inside the bold.
 
-The word-opener rules are hard-enforced post-hoc by `daemon/extract-json.py` — `FORBIDDEN_PREFIXES` (body) and `FORBIDDEN_SUMMARY_PREFIXES` (summary, adds `**` since summary stays plain prose). Keep the lists in sync when editing either side.
+The word-opener rules are hard-enforced post-hoc by `daemon/voice.py` — `FORBIDDEN_PREFIXES` (body) and `FORBIDDEN_SUMMARY_PREFIXES` (summary, adds `**` since summary stays plain prose) — shared by the review path (`extract-json.py`) and the reply path (`post_reply.py`). This file is the prose source of truth for the shared voice rules (ADR 0010); `review-agent-reply` references it rather than re-listing them. Keep the lists above in sync with `voice.py`.
 
 ### Body shape (prompt-required)
 

@@ -20,6 +20,14 @@ _Avoid_: comment (use Inline comment for the rendered API form), issue, remark
 A Finding after it has been rendered into GitHub's PR Review API shape: path + line + body with severity emoji prefix and bold type label. Each Finding either becomes an Inline comment (if anchored in the diff) or is relocated into the Review body's `## Additional findings` section (if not).
 _Avoid_: comment alone (ambiguous), finding (Finding is the logical unit; Inline comment is the rendered form)
 
+**Review footer**:
+The attribution-plus-next-action line closing a Review body, of the form `🤖 <verb> by [<Operator identity>](<project url>). <action>.`. Two variants on the pending/posted axis: on others' PRs the review is genuinely pending, so it reads "Drafted by … Submit, edit, or cancel as needed"; on the Operator's own PRs it is auto-submitted (ADR 0008), so it reads "Auto-submitted by … Edit as needed". Draft-status is stated here, once per review, and nowhere else. Format pinned by ADR 0010.
+_Avoid_: AI-drafted footer (a posted Review body is not itself "drafted"; the old inline string is gone — see Provenance tag); banner (the preview-release banner is a separate, version-gated element above the body)
+
+**Provenance tag**:
+The compact `🤖 _pr-review-agent_` appended to every posted artifact that is not a Review body — each Inline comment, each daemon reply, and the Status comment — answering "who wrote this" under the shared solo identity (ADR 0003). The split is by artifact level, not draft-status: the Review body carries the Review footer; everything else carries the Provenance tag. It never encodes draft-status (that is the Review footer's job), so it is byte-identical on pending and posted artifacts. Generalizes the #82 reply fix into a rule. Format pinned by ADR 0010.
+_Avoid_: AI-drafted (a posted item is not a draft; the old inline-finding string, removed in #87), marker (reserved for the hidden Sentinel / Status markers; the Provenance tag is visible and drives no dedup)
+
 **Operator**:
 The person whose `gh` CLI token the daemon uses. Reviews are authored under this identity. One operator per daemon installation.
 _Avoid_: user (ambiguous with PR author), reviewer (GitHub's human-assigned PR reviewers; the Operator may or may not also be one)
