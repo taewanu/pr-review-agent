@@ -56,6 +56,7 @@ def _run(
     *,
     dry_run: bool = False,
     gh_exit: int = 0,
+    graphql_exit: int | None = None,
     threads: list[dict] | None = None,
     head_sha: str | None = None,
     head_owner: str | None = None,
@@ -66,7 +67,10 @@ def _run(
     `threads` writes a --threads file supplying parent Finding bodies (#79).
     `head_sha`, when set, is passed as --head-sha so the blob link is built.
     `head_owner`/`head_repo` override the blob link's repo (the fork on a
-    cross-repo PR); --owner/--repo stay the base repo for the API calls."""
+    cross-repo PR); --owner/--repo stay the base repo for the API calls.
+    `graphql_exit`, when set, fails only the `gh api graphql` resolve call
+    (#75) while REST calls still get `gh_exit` — so a best-effort resolve
+    failure can be tested without also failing the reply POST."""
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
         raw_file = tmpd / "raw.txt"
@@ -77,11 +81,13 @@ def _run(
         # One line per invocation in each log, so argv[i] pairs with stdin[i].
         # stdin payloads are single-line JSON (json.dumps escapes newlines), so
         # a trailing \n is a safe record separator.
+        gql_exit = gh_exit if graphql_exit is None else graphql_exit
         stub.write_text(
             "#!/usr/bin/env bash\n"
             f'printf "%s\\n" "$*" >> "{argv_log}"\n'
             f'cat >> "{stdin_log}"\n'
             f'printf "\\n" >> "{stdin_log}"\n'
+            f'case "$*" in *graphql*) exit {gql_exit} ;; esac\n'
             f"exit {gh_exit}\n"
         )
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
@@ -149,15 +155,19 @@ def _find(calls: list[tuple[str, str]], needle: str) -> tuple[str, str] | None:
     return next((c for c in calls if needle in c[0]), None)
 
 
-def _threads(finding_id: str, body: str) -> list[dict]:
+def _threads(finding_id: str, body: str, thread_id: str | None = None) -> list[dict]:
     """A minimal --threads payload carrying one parent Finding body, keyed by
-    the comment id a non-claim reply's `in_reply_to_id` points at."""
-    return [
-        {
-            "parent_finding": {"comment_id": finding_id, "body": body},
-            "operator_reply": {"comment_id": "222", "body": "..."},
-        }
-    ]
+    the comment id a non-claim reply's `in_reply_to_id` points at. `thread_id`
+    is the GraphQL review-thread node id reply-pr.sh joins in for resolution
+    (#75); omit it to model a thread the reviewThreads map could not resolve."""
+    pf = {"comment_id": finding_id, "body": body}
+    thread: dict = {
+        "parent_finding": pf,
+        "operator_reply": {"comment_id": "222", "body": "..."},
+    }
+    if thread_id is not None:
+        thread["thread_id"] = thread_id
+    return [thread]
 
 
 def test_fix_claim_round_trips_body_and_posts_eyes_reaction():
@@ -357,6 +367,94 @@ def test_two_non_claims_on_one_finding_accumulate_both_sentinels():
     final_body = json.loads(patches[-1][1])["body"]
     assert "<!-- pr-review-agent:reply:222 -->" in final_body
     assert "<!-- pr-review-agent:reply:333 -->" in final_body
+
+
+# --- Thread resolution (#75) ----------------------------------------------
+# A settled verdict (confirmed / withdrawn) leaves nothing actionable, so the
+# daemon resolves the GitHub review thread via GraphQL after the reply lands.
+# pushback / stands / acknowledgment keep the thread open. Best-effort: a resolve
+# failure is logged, never retried (the reply already carried the sentinel).
+
+
+def _resolve_call(calls: list[tuple[str, str]]) -> tuple[str, str] | None:
+    return _find(calls, "resolveReviewThread")
+
+
+def test_confirmed_resolves_thread_after_reply_lands():
+    result, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_abc"))
+    assert result.returncode == 0, result.stderr
+    resolve = _resolve_call(calls)
+    assert resolve is not None, "confirmed must resolve the thread"
+    assert "graphql" in resolve[0]
+    assert "threadId=PRRT_abc" in resolve[0]
+    # Resolve only after the reply has landed (its sentinel marks the thread
+    # processed first), so it is the later of the two calls.
+    reply_idx = next(i for i, c in enumerate(calls) if "/replies" in c[0])
+    resolve_idx = next(i for i, c in enumerate(calls) if "resolveReviewThread" in c[0])
+    assert resolve_idx > reply_idx
+
+
+def test_withdrawn_resolves_thread():
+    reply = _question(mode="withdrawn")
+    result, calls = _run(_raw([reply]), threads=_threads("111", "F", thread_id="PRRT_w"))
+    assert result.returncode == 0, result.stderr
+    resolve = _resolve_call(calls)
+    assert resolve is not None, "withdrawn must resolve the thread"
+    assert "threadId=PRRT_w" in resolve[0]
+
+
+def test_pushback_does_not_resolve():
+    reply = _reply(mode="pushback")
+    _, calls = _run(_raw([reply]), threads=_threads("111", "F", thread_id="PRRT_p"))
+    assert _resolve_call(calls) is None, "pushback keeps the Finding live -> open"
+
+
+def test_stands_does_not_resolve():
+    reply = _question(mode="stands")
+    _, calls = _run(_raw([reply]), threads=_threads("111", "F", thread_id="PRRT_s"))
+    assert _resolve_call(calls) is None, "stands keeps the Finding live -> open"
+
+
+def test_acknowledgment_does_not_resolve():
+    reply = {"in_reply_to_id": "111", "addressed_comment_id": "222", "bucket": "acknowledgment"}
+    _, calls = _run(_raw([reply]), threads=_threads("111", "F", thread_id="PRRT_a"))
+    assert _resolve_call(calls) is None, "acknowledgment carries no verdict -> open"
+
+
+def test_confirmed_without_thread_id_skips_resolve_but_still_replies():
+    # reply-pr.sh could not map a thread id (reviewThreads query degraded). The
+    # reply still posts; resolution is skipped, not fatal.
+    result, calls = _run(_raw([_reply()]), threads=_threads("111", "F"))
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "/replies") is not None, "reply still posts"
+    assert _resolve_call(calls) is None, "no thread id -> no resolve"
+
+
+def test_resolve_failure_is_best_effort_exit_zero():
+    # The reply POST succeeds (gh_exit 0) but the graphql resolve fails. The run
+    # still exits 0: resolution is cosmetic and never retried.
+    result, calls = _run(
+        _raw([_reply()]), graphql_exit=1, threads=_threads("111", "F", thread_id="PRRT_x")
+    )
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "/replies") is not None, "reply still posts"
+    assert _resolve_call(calls) is not None, "resolve was attempted"
+
+
+def test_resolve_skipped_when_reply_post_fails():
+    # If the reply POST fails, no sentinel lands and the next cycle retries; the
+    # thread must not be resolved off a reply that never posted.
+    _, calls = _run(_raw([_reply()]), gh_exit=1, threads=_threads("111", "F", thread_id="PRRT_x"))
+    assert _resolve_call(calls) is None, "no resolve when the reply POST failed"
+
+
+def test_dry_run_confirmed_includes_resolve_thread_id():
+    result, _ = _run(
+        _raw([_reply()]), dry_run=True, threads=_threads("111", "F", thread_id="PRRT_d")
+    )
+    assert result.returncode == 0, result.stderr
+    entry = json.loads(result.stdout)["plan"][0]
+    assert entry["resolve_thread_id"] == "PRRT_d"
 
 
 def test_dry_run_emits_plan_without_calling_gh():

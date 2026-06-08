@@ -128,6 +128,37 @@ fi
 
 log_info "$THREAD_COUNT unaddressed reply thread(s)"
 
+# Join the GraphQL review-thread node id (PRRT_) onto each thread for resolution
+# (#75). The REST comments payload carries no thread id, so query reviewThreads
+# and map each thread's comment databaseIds back to its node id; the Finding the
+# operator replied to (parent_finding.comment_id) is the thread root, so it
+# appears in that map. This is the read side — post_reply.py does the
+# resolveReviewThread write. Best-effort: a failed query (or a thread missing
+# from the first-100 page) leaves thread_id null, and post_reply.py skips
+# resolving that thread rather than failing the reply.
+gql_err="$(mktemp -t pr-review-reply-gql.XXXXXX)"
+# $owner/$repo/$pr are GraphQL variables, not shell vars — keep them literal.
+# shellcheck disable=SC2016
+if thread_map="$(gh api graphql \
+  -f query='query($owner:String!,$repo:String!,$pr:Int!){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100){
+          nodes{ id comments(first:50){ nodes{ databaseId } } }
+        }
+      }
+    }
+  }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>"$gql_err" \
+  | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+         | .id as $tid | .comments.nodes[]
+         | {key: (.databaseId | tostring), value: $tid}] | from_entries')"; then
+  THREADS_JSON="$(jq --argjson map "$thread_map" \
+    'map(.thread_id = ($map[.parent_finding.comment_id] // null))' <<<"$THREADS_JSON")"
+else
+  log_err "reviewThreads query failed; thread resolution skipped this cycle: $(<"$gql_err")"
+fi
+rm -f "$gql_err"
+
 # Scratch clone at HEAD for the agent to verify claims via file reads. Same
 # refs/pull/N/head pattern as review-pr.sh — survives deleted head branch.
 meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid)"

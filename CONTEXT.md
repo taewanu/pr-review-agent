@@ -83,7 +83,7 @@ _Avoid_: addressed sentinel (implies the finding was resolved; the marker only m
 `pr-review-agent:status`. Identifies the Status comment for edit-in-place reuse. Not a Sentinel: it drives no dedup (a lib.sh invariant).
 
 **Reply thread**:
-A Finding plus its chain of replies; the unit `reply-pr.sh` processes.
+A Finding plus its chain of replies; the unit `reply-pr.sh` processes. The same physical thread GitHub's GraphQL calls a *review thread* (the `PRRT_`-prefixed node `resolveReviewThread` acts on); the daemon names it for its own role. It carries an open/resolved state on GitHub — see Thread resolution.
 
 **Operator reply**:
 A comment the Operator writes inside a Reply thread, in reply to a Finding.
@@ -107,6 +107,10 @@ _Avoid_: pushback for an Operator's dispute of a Finding (that is the `question`
 **Ack reaction**:
 The reaction the daemon posts on an Operator reply (👀 for fix_claim/question, 👍 for acknowledgment): a user-facing acknowledgment, never a dedup signal (a reaction carries no author provenance the daemon can trust). For an `acknowledgment` it is the only ack, so its landing is guaranteed (retried until it POSTs, and the Reply sentinel is embedded only once it lands); for a `fix_claim` or `question` it is a light "seen" on top of the text reply.
 _Avoid_: pickup reaction (old code term; "pickup" collides with the early-signal idea in #48), emoji (loses the typed, per-user, removable reaction semantics), ack alone (collides with the acknowledgment Bucket)
+
+**Thread resolution**:
+Marking a Reply thread `resolved` on GitHub via the GraphQL `resolveReviewThread` mutation, so the thread collapses out of the PR conversation. A *user-facing* state change that de-clutters the PR (the same effect as a human clicking "Resolve conversation"), driven by the daemon when a verdict leaves **nothing actionable on the thread**: `confirmed` (the fix landed) and `withdrawn` (the Finding was retracted as a false positive). `pushback` and `stands` keep the Finding live, so they leave the thread open; `acknowledgment` carries no verdict and stays open. Orthogonal to the Reply sentinel: resolution changes GitHub UI state, the sentinel records that a reply was *processed* — a thread can be processed-but-open (e.g. `pushback`) or, in principle, resolved-but-unprocessed (a human resolved it).
+_Avoid_: addressed / done (the Reply sentinel already overloads "addressed"; resolution is strictly the GitHub open→resolved transition), close (GitHub "close" is a PR/issue action, distinct from resolving a thread)
 
 **review-dedup / reply-dedup**:
 Concept labels (kebab) for the two dedup rules: "do not re-review the same SHA" (review-dedup, the Sha sentinel) and "do not re-process the same Operator reply" (reply-dedup, the Reply sentinel).

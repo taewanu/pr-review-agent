@@ -20,6 +20,10 @@ must win before we mark the reply processed. fix_claim and answered questions
 (#74) keep their sentinel in the text reply. Parent Finding bodies come from
 --threads (the same JSON the reply agent consumed), so the PATCH needs no GET.
 
+A settled verdict (`confirmed` / `withdrawn`) also resolves its GitHub review
+thread via GraphQL after the reply lands (#75), using the thread id reply-pr.sh
+joined into --threads. Best-effort: a failed resolve is logged, never retried.
+
 On failure, stderr carries a `category=<x>` line (no-fence, parse-error,
 schema-invalid) so reply-pr.sh's log_failure mapping is unchanged.
 
@@ -54,6 +58,21 @@ BUCKET_MODES = {
     "fix_claim": ("confirmed", "pushback"),
     "question": ("stands", "withdrawn"),
 }
+
+# Verdicts that leave nothing actionable on the thread, so the daemon resolves
+# the GitHub review thread after the reply lands (#75): `confirmed` (the fix
+# landed) and `withdrawn` (the Finding was retracted as a false positive).
+# `pushback` and `stands` keep the Finding live; `acknowledgment` carries no
+# verdict — all three leave the thread open. Resolution is a user-facing GitHub
+# state change, orthogonal to the Reply sentinel (CONTEXT.md "Thread resolution").
+RESOLVE_MODES = ("confirmed", "withdrawn")
+
+# Single-line so the test gh-stub records the call on one argv line. GraphQL is
+# whitespace-insensitive, so this is equivalent to the pretty form.
+RESOLVE_MUTATION = (
+    "mutation($threadId: ID!) { resolveReviewThread(input: {threadId: $threadId}) "
+    "{ thread { id isResolved } } }"
+)
 
 # Ack reaction per bucket. GitHub's reaction set is fixed to
 # +1/-1/laugh/confused/heart/hooray/rocket/eyes, so the design note's 🙏 is not
@@ -266,6 +285,23 @@ def patch_finding(owner: str, repo: str, finding_id: str, body: str) -> tuple[in
     return proc.returncode, proc.stderr
 
 
+def resolve_thread(thread_id: str) -> tuple[int, str]:
+    """Resolve a GitHub review thread via the GraphQL resolveReviewThread
+    mutation (#75). Idempotent on GitHub's side — safe on an already-resolved
+    thread. Best-effort: callers log a failure and move on, never retrying. The
+    reply already carried the Reply sentinel, so the next cycle will not revisit
+    this thread; a failed resolve just leaves it open (the pre-#75 state).
+    `input=""` closes stdin: gh reads the query from argv, not stdin."""
+    proc = subprocess.run(
+        ["gh", "api", "graphql", "-f", f"query={RESOLVE_MUTATION}", "-f", f"threadId={thread_id}"],
+        input="",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, proc.stderr
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Post threaded reply acks for reply-pr.sh (#36).")
     parser.add_argument("--owner", required=True)
@@ -309,13 +345,20 @@ def main() -> int:
 
     # Parent Finding bodies keyed by comment id (== a reply's in_reply_to_id),
     # so a non-claim PATCH appends the sentinel to the captured body with no GET.
+    # thread_ids carries the GraphQL review-thread node id reply-pr.sh joined in
+    # (#75), keyed the same way, so a settled verdict resolves its thread. A
+    # thread whose id could not be mapped (degraded reviewThreads query) is
+    # absent here and skips resolution.
     finding_bodies: dict[str, str] = {}
+    thread_ids: dict[str, str] = {}
     if args.threads:
         for t in json.loads(Path(args.threads).read_text()):
             pf = t.get("parent_finding") or {}
             cid = pf.get("comment_id")
             if cid is not None:
                 finding_bodies[str(cid)] = pf.get("body") or ""
+                if t.get("thread_id"):
+                    thread_ids[str(cid)] = t["thread_id"]
 
     replies = data["replies"]
     fix = sum(1 for r in replies if r["bucket"] == "fix_claim")
@@ -344,6 +387,8 @@ def main() -> int:
                 entry["reply_payload"] = {
                     "body": build_body(r["body"], addressed_id, link_for(args, r))
                 }
+                if r.get("mode") in RESOLVE_MODES:
+                    entry["resolve_thread_id"] = thread_ids.get(in_reply_to_id)
             else:
                 entry["sentinel_patch"] = {
                     "finding_id": in_reply_to_id,
@@ -355,9 +400,11 @@ def main() -> int:
 
     text_total = fix + question  # body-bearing buckets post a text reply
     sentinel_total = ack  # only acknowledgment dedups via a parent-Finding PATCH
+    resolve_total = sum(1 for r in replies if r.get("mode") in RESOLVE_MODES)
     text_ok = 0
     react_ok = 0
     patch_ok = 0
+    resolve_ok = 0
     # Running copy of each Finding body so two non-claim replies on the same
     # Finding in one cycle accumulate both sentinels instead of clobbering: the
     # second PATCH appends to the body the first one already extended.
@@ -378,6 +425,28 @@ def main() -> int:
             rc, err = post_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
             if rc == 0:
                 text_ok += 1
+                # Thread resolution (#75): a settled verdict (confirmed /
+                # withdrawn) has nothing left actionable, so collapse the thread.
+                # Only after the reply landed (its sentinel marks the thread
+                # processed); best-effort, never retried. A failed POST falls
+                # through to the else and skips this — the thread stays open and
+                # the next cycle retries the reply.
+                if r.get("mode") in RESOLVE_MODES:
+                    tid = thread_ids.get(in_reply_to_id)
+                    if not tid:
+                        print(
+                            f"no thread id for finding {in_reply_to_id}; skipping resolve",
+                            file=sys.stderr,
+                        )
+                    else:
+                        rrc, rerr = resolve_thread(tid)
+                        if rrc == 0:
+                            resolve_ok += 1
+                        else:
+                            print(
+                                f"resolveReviewThread failed for thread {tid}: {rerr.strip()}",
+                                file=sys.stderr,
+                            )
             else:
                 print(
                     f"reply POST failed for comment {in_reply_to_id}: {err.strip()}",
@@ -424,6 +493,8 @@ def main() -> int:
     summary = f"done — {text_ok}/{text_total} replies, {react_ok}/{len(replies)} reactions"
     if sentinel_total:
         summary += f", {patch_ok}/{sentinel_total} sentinels"
+    if resolve_total:
+        summary += f", {resolve_ok}/{resolve_total} threads resolved"
     print(summary + " posted", file=sys.stderr)
     return 0
 
