@@ -128,34 +128,55 @@ fi
 
 log_info "$THREAD_COUNT unaddressed reply thread(s)"
 
-# Join the GraphQL review-thread node id (PRRT_) onto each thread for resolution
-# (#75). The REST comments payload carries no thread id, so query reviewThreads
-# and map each thread's comment databaseIds back to its node id; the Finding the
-# operator replied to (parent_finding.comment_id) is the thread root, so it
-# appears in that map. This is the read side — post_reply.py does the
-# resolveReviewThread write. Best-effort: a failed query (or a thread missing
-# from the first-100 page) leaves thread_id null, and post_reply.py skips
-# resolving that thread rather than failing the reply.
+# One GraphQL read serves three needs the REST comments payload can't:
+#   - the PRRT_ review-thread node id per thread, mapped back from each thread's
+#     comment databaseIds (the Finding the operator replied to is the thread
+#     root, so parent_finding.comment_id appears in that map) — drives both the
+#     review wrapper (#38) and resolution (#75);
+#   - the PR node id, the addPullRequestReview target for the wrapper (#38);
+#   - a stale reply-wrapper review (a prior tick that added replies but failed to
+#     submit), discarded before this tick opens its own (#38). Matched by the
+#     hidden reply-review marker in the review body, NOT just "viewer + PENDING":
+#     on others' PRs the Finding review is left PENDING as the ADR 0008 safety
+#     gate, so a state-only filter would delete the operator's in-flight draft
+#     (what post-review.sh refuses to do). Identity-scoped too, so a human
+#     reviewer's draft on a multi-user PR is never touched.
+# Best-effort read: on failure (or a thread past the first-100 page) PR_NODE_ID /
+# thread_id stay empty and post_reply.py degrades to a detached REST reply (the
+# pre-#38 path) and skips resolution, rather than failing the reply.
+PR_NODE_ID=""
+EXISTING_PENDING_REVIEW_ID=""
 gql_err="$(mktemp -t pr-review-reply-gql.XXXXXX)"
 # $owner/$repo/$pr are GraphQL variables, not shell vars — keep them literal.
 # shellcheck disable=SC2016
-if thread_map="$(gh api graphql \
+if gql_response="$(gh api graphql \
   -f query='query($owner:String!,$repo:String!,$pr:Int!){
+    viewer{ login }
     repository(owner:$owner,name:$repo){
       pullRequest(number:$pr){
+        id
         reviewThreads(first:100){
           nodes{ id comments(first:50){ nodes{ databaseId } } }
         }
+        reviews(first:50,states:[PENDING]){ nodes{ id author{ login } body } }
       }
     }
-  }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>"$gql_err" \
-  | jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+  }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>"$gql_err")"; then
+  PR_NODE_ID="$(jq -r '.data.repository.pullRequest.id // empty' <<<"$gql_response")"
+  # Only a review the daemon tagged as a reply wrapper is eligible for deletion;
+  # the marker string is post_reply.py's REPLY_REVIEW_MARKER.
+  EXISTING_PENDING_REVIEW_ID="$(jq -r '
+    .data.viewer.login as $me
+    | (.data.repository.pullRequest.reviews.nodes // [])
+    | map(select(.author.login == $me and ((.body // "") | contains("pr-review-agent:reply-review"))))
+    | .[0].id // empty' <<<"$gql_response")"
+  thread_map="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[]
          | .id as $tid | .comments.nodes[]
-         | {key: (.databaseId | tostring), value: $tid}] | from_entries')"; then
+         | {key: (.databaseId | tostring), value: $tid}] | from_entries' <<<"$gql_response")"
   THREADS_JSON="$(jq --argjson map "$thread_map" \
     'map(.thread_id = ($map[.parent_finding.comment_id] // null))' <<<"$THREADS_JSON")"
 else
-  log_err "reviewThreads query failed; thread resolution skipped this cycle: $(<"$gql_err")"
+  log_err "reviewThreads query failed; review wrapping + resolution skipped this cycle: $(<"$gql_err")"
 fi
 rm -f "$gql_err"
 
@@ -237,6 +258,7 @@ POST_ERR="$(mktemp -t pr-review-reply-post.XXXXXX)"
 if python3 "$SCRIPT_DIR/post_reply.py" \
   --owner "$OWNER" --repo "$REPO" --number "$PR_NUMBER" \
   --head-sha "$HEAD_OID" --head-owner "$HEAD_REPO_OWNER" --head-repo "$HEAD_REPO_NAME" \
+  --pr-node-id "$PR_NODE_ID" --existing-pending-review-id "$EXISTING_PENDING_REVIEW_ID" \
   --raw "$RAW_FILE" --threads "$THREADS_FILE" 2>"$POST_ERR"; then
   cat "$POST_ERR" >&2
 else
