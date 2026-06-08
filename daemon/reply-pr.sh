@@ -134,10 +134,13 @@ log_info "$THREAD_COUNT unaddressed reply thread(s)"
 #     root, so parent_finding.comment_id appears in that map) — drives both the
 #     review wrapper (#38) and resolution (#75);
 #   - the PR node id, the addPullRequestReview target for the wrapper (#38);
-#   - a stale viewer pending review (a prior tick that added replies but failed
-#     to submit), discarded before this tick opens its own (#38). Filtered to the
-#     daemon's own identity (viewer) so a human reviewer's draft on a multi-user
-#     PR is never touched.
+#   - a stale reply-wrapper review (a prior tick that added replies but failed to
+#     submit), discarded before this tick opens its own (#38). Matched by the
+#     hidden reply-review marker in the review body, NOT just "viewer + PENDING":
+#     on others' PRs the Finding review is left PENDING as the ADR 0008 safety
+#     gate, so a state-only filter would delete the operator's in-flight draft
+#     (what post-review.sh refuses to do). Identity-scoped too, so a human
+#     reviewer's draft on a multi-user PR is never touched.
 # Best-effort read: on failure (or a thread past the first-100 page) PR_NODE_ID /
 # thread_id stay empty and post_reply.py degrades to a detached REST reply (the
 # pre-#38 path) and skips resolution, rather than failing the reply.
@@ -155,15 +158,18 @@ if gql_response="$(gh api graphql \
         reviewThreads(first:100){
           nodes{ id comments(first:50){ nodes{ databaseId } } }
         }
-        reviews(first:50,states:[PENDING]){ nodes{ id author{ login } } }
+        reviews(first:50,states:[PENDING]){ nodes{ id author{ login } body } }
       }
     }
   }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>"$gql_err")"; then
   PR_NODE_ID="$(jq -r '.data.repository.pullRequest.id // empty' <<<"$gql_response")"
+  # Only a review the daemon tagged as a reply wrapper is eligible for deletion;
+  # the marker string is post_reply.py's REPLY_REVIEW_MARKER.
   EXISTING_PENDING_REVIEW_ID="$(jq -r '
     .data.viewer.login as $me
     | (.data.repository.pullRequest.reviews.nodes // [])
-    | map(select(.author.login == $me)) | .[0].id // empty' <<<"$gql_response")"
+    | map(select(.author.login == $me and ((.body // "") | contains("pr-review-agent:reply-review"))))
+    | .[0].id // empty' <<<"$gql_response")"
   thread_map="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[]
          | .id as $tid | .comments.nodes[]
          | {key: (.databaseId | tostring), value: $tid}] | from_entries' <<<"$gql_response")"

@@ -26,8 +26,9 @@ notification. The body now travels via GraphQL `-f body=<raw>` rather than REST
 `--input -`, but gh JSON-encodes the variable, so the bytes still survive intact
 (the round-trip test pins both transports). A reply with no thread id (degraded
 reviewThreads read, or a thread past the first-100 page) falls back to the
-detached REST `/replies` POST so it still lands. The wrapper review carries an
-empty body; its summary is deferred to #11.
+detached REST `/replies` POST so it still lands. The wrapper review body is a
+single hidden marker (renders empty, and lets a stale wrapper be told apart from
+a Finding-bearing draft before deletion); a visible summary is deferred to #11.
 
 A settled verdict (`confirmed` / `withdrawn`) also resolves its GitHub review
 thread via GraphQL after the review submits (#75), using the thread id
@@ -92,17 +93,26 @@ RESOLVE_MUTATION = (
 # review id the adds and submit need). addPullRequestReviewThreadReply attaches a
 # reply to the pending review AND to its parent thread, preserving threading; the
 # `PRRT_` thread id is the same one reply-pr.sh joins for #75 resolution.
+# The wrapper review body is a single hidden marker (renders empty). It is the
+# discriminator reply-pr.sh filters on when picking a stale review to discard, so
+# the daemon only ever deletes its OWN reply wrappers — never a Finding-bearing
+# Pending review left pending as the ADR 0008 safety gate on others' PRs, nor any
+# human's manual draft. post-review.sh refuses to cancel pending reviews for the
+# same reason; an unfiltered delete here would do what that path forbids.
+REPLY_REVIEW_MARKER = "<!-- pr-review-agent:reply-review -->"
 CREATE_REVIEW_MUTATION = (
-    "mutation CreatePendingReview($pr: ID!) { "
-    "addPullRequestReview(input: {pullRequestId: $pr}) { pullRequestReview { id } } }"
+    "mutation CreatePendingReview($pr: ID!, $body: String!) { "
+    "addPullRequestReview(input: {pullRequestId: $pr, body: $body}) "
+    "{ pullRequestReview { id } } }"
 )
 ADD_REPLY_MUTATION = (
     "mutation AddReply($review: ID!, $thread: ID!, $body: String!) { "
     "addPullRequestReviewThreadReply(input: {pullRequestReviewId: $review, "
     "pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }"
 )
-# Submit as COMMENT with no `body` field — the wrapper review carries no summary
-# (#38 ships an empty body; the reply substance lives in each inner comment).
+# Submit as COMMENT with no `body` field — keeps the create body (the hidden
+# REPLY_REVIEW_MARKER); the reply substance lives in each inner comment, and a
+# visible summary is deferred to #11.
 SUBMIT_REVIEW_MUTATION = (
     "mutation SubmitReview($review: ID!) { "
     "submitPullRequestReview(input: {pullRequestReviewId: $review, event: COMMENT}) "
@@ -362,8 +372,12 @@ def create_pending_review(pr_node_id: str) -> tuple[int, str | None, str]:
     """Open a pending COMMENTED review on the PR (#38). Returns
     (returncode, review_node_id, stderr); review_node_id is None when the call
     failed or the response did not carry an id, so the caller defers the batch to
-    the next cycle rather than posting replies into a review that never opened."""
-    proc = _graphql(CREATE_REVIEW_MUTATION, pr=pr_node_id)
+    the next cycle rather than posting replies into a review that never opened.
+
+    The review body is the hidden REPLY_REVIEW_MARKER (renders empty), tagging the
+    wrapper so a stale one can be told apart from a Finding-bearing draft before
+    deletion."""
+    proc = _graphql(CREATE_REVIEW_MUTATION, pr=pr_node_id, body=REPLY_REVIEW_MARKER)
     if proc.returncode != 0:
         return proc.returncode, None, proc.stderr
     try:

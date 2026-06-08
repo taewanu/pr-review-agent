@@ -595,6 +595,16 @@ def test_no_stale_pending_review_no_delete():
     assert _find(calls, "DeletePendingReview") is None, "nothing to delete when none was passed"
 
 
+def test_wrapper_review_tagged_with_reply_review_marker():
+    # The wrapper body carries the hidden marker reply-pr.sh filters on, so only a
+    # reply wrapper is ever deleted — never a Finding-bearing draft (the bug the
+    # daemon flagged on #95).
+    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
+    create = _find(calls, "CreatePendingReview")
+    assert create is not None
+    assert "pr-review-agent:reply-review" in create[0], "wrapper body carries the discriminator"
+
+
 def test_submit_failure_defers_and_skips_resolve():
     # The review fails to submit: the replies never go live, so the thread is not
     # resolved and the run still exits 0 (next cycle retries the whole batch).
