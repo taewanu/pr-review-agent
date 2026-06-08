@@ -67,6 +67,14 @@ def test_render_carries_header_scope_and_marker():
     assert "<!-- pr-review-agent:status -->" in out
 
 
+def test_render_carries_provenance_tag():
+    # The Status comment is agent-authored, so it carries the Provenance tag like
+    # every posted artifact that is not a Review body (ADR 0010).
+    out, rc, _ = _run("render_status_comment 'h' 'full PR' 1 'only.sh'")
+    assert rc == 0
+    assert "🤖 _pr-review-agent_" in out
+
+
 def test_render_is_scope_only_never_findings():
     # The status comment must never carry the review body/findings — that would
     # duplicate the Review object (#60). render takes only scope inputs, so a

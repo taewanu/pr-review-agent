@@ -1,0 +1,62 @@
+# ADR 0010: Posted-artifact format — Review footer vs Provenance tag
+
+Date: 2026-06-08
+Status: Accepted
+
+## Context
+
+The daemon posts several artifact types, and their `🤖` footers drifted into four strings in two styles:
+
+- `🤖 Auto-submitted by [name](url). Edit as needed.` — own-PR Review body (`post-review.sh`)
+- `🤖 Drafted by [name](url). Submit, edit, or cancel as needed.` — others'-PR Review body (`post-review.sh`)
+- `🤖 _AI-drafted_` — Inline comment (`post-review.sh`)
+- `🤖 _pr-review-agent_` — reply (`post_reply.py`, set by #82)
+
+Two problems compound the inconsistency. First, `_AI-drafted_` is applied unconditionally (`post-review.sh` ignores `OWN_PR`), so a finding on an auto-submitted own-PR review labels itself a draft when it is already posted — the same flaw #82 fixed for replies. Second, the Review-body footer string was only ever an implementation detail: `post-review.sh` cites "ADR 0001 D3", but D3 decides *one pending review per tick*, not the footer text. The format was never pinned.
+
+The shared voice rules (opener words, 두괄식, no em dash, no task-scoped refs) have the same shape of drift: defined in `review-agent-default.md`, partly re-copied into `review-agent-reply.md`, and enforced post-hoc only for reviews (`extract-json.py`), not for replies. The severity/type badge map is the counter-example — single-sourced in `post-review.sh` (`SEV_EMOJI`/`TYPE_EMOJI`, ADR 0002) and shared by both renders. That is the model the rest should follow.
+
+## Decision
+
+### 1. Two tiers, split by artifact level — not by draft-status
+
+- **Review body** carries a **Review footer**: attribution plus the next action, varying on the pending/posted axis. Others' PR (genuinely pending) → `🤖 Drafted by [name](url). Submit, edit, or cancel as needed.`; own PR (auto-submitted, ADR 0008) → `🤖 Auto-submitted by [name](url). Edit as needed.`
+- **Every other posted artifact** — Inline comment, reply, Status comment — carries the **Provenance tag** `🤖 _pr-review-agent_`. It answers only "who wrote this" and never encodes draft-status, so it is byte-identical on pending and posted artifacts.
+
+The governing principle: **draft-status is a review-level fact, stated once in the Review footer; provenance is an item-level fact, stated per artifact as the Provenance tag.** This generalizes #82's reply fix into a rule and removes the `_AI-drafted_` misnomer (a posted item is not a draft).
+
+### 2. Per-post-type anatomy
+
+| Post type | Anatomy (top → bottom) |
+|---|---|
+| Review body (others', pending) | `[preview banner]` · summary · `[dropped-findings note]` · `[## Additional findings]` · **Review footer** (Drafted) · Sha sentinel |
+| Review body (own, auto-submitted) | same, **Review footer** (Auto-submitted) |
+| Inline comment | `_type_ \| _severity_` badge · agent body (bold lead + optional bullets) · **Provenance tag** |
+| Reply | agent body (bold lead) · `[blob-at-HEAD link]` · **Provenance tag** · Reply sentinel |
+| Status comment | head line · scope · file list (`<details>`) · **Provenance tag** · Status marker |
+
+### 3. Single source for the Provenance tag
+
+This ADR is the documentary source of truth; each renderer hard-codes the tag with a comment referencing ADR 0010, and a test pins the three emit sites (`post-review.sh` Inline comment, `post_reply.py`, `lib.sh` Status comment) to one identical string. A runtime shared constant is rejected: the renderers straddle the bash/jq–Python boundary, and coupling them at runtime to share one short string costs more than a drift test. (The Review-footer strings live at a single site, `post-review.sh`, so they need no cross-file test.)
+
+### 4. Voice rules: one prompt source, symmetric enforcement
+
+- `review-agent-default.md` is the SSOT for the shared voice rules; `review-agent-reply.md` references it and drops its re-copied prose. Mode-specific leads (`confirmed`/`pushback`/`stands`/`withdrawn`) stay local to the reply agent.
+- The post-hoc voice checks move to a shared `daemon/voice.py` imported by both `extract-json.py` and `post_reply.py`. Reply bodies are validated at the extraction gate with the Inline-comment rules (`strip_bold=True`, `FORBIDDEN_PREFIXES`, em dash, task-ref); a violation raises `style-violation` and **fails the whole reply batch before any POST**, symmetric with `extract-json.py`'s atomic-payload model and reusing the existing "no sentinel → retry next cycle" path. Only the opener/em-dash/task-ref rules are enforced; the bold-lead *shape* is not, matching `extract-json.py`.
+
+## Out of scope (the boundary)
+
+This ADR fixes format only. It explicitly does **not** decide:
+
+- **What is posted** — content and behavior are unchanged. The one intended behavioral consequence is the new reply voice gate (a previously-posting em-dash reply now fails and retries); that is the enforcement-parity goal, not a content change.
+- **#38** — wrapping per-cycle replies in one `COMMENTED` review. The per-item Provenance-tag contract holds regardless of later batching; if #38 introduces a wrapper body, that body's footer is #38's call, but it may not reopen the per-item tag.
+- **#75** — thread auto-resolution.
+- **Moving the `post-review.sh` jq render into Python** to share the tag constant at runtime (the rejected option in §3). A reasonable follow-on refactor, tracked separately.
+
+## Consequences
+
+- The four `🤖` strings collapse to two shapes: one Review footer (two action variants) and one Provenance tag. The `_AI-drafted_` string is gone.
+- `daemon/voice.py` becomes the single home for voice validation; adding a rule updates one module and both text-post paths inherit it.
+- A reply the agent writes with an em dash, a forbidden opener, or a task-scoped ref no longer posts; it fails the batch and the next polling cycle re-runs the reply agent. This is the same failure-then-retry behavior reviews already have.
+- CONTEXT.md gains the **Review footer** and **Provenance tag** terms; the bare "marker" stays reserved for the hidden Sentinel/Status markers.
+- No `reply-pr.sh` change is needed: it already feeds any `category=` line from `post_reply.py` to `log_failure`, so `style-violation` flows through. ADR 0005's failure table is broadened to name reply bodies.

@@ -317,6 +317,14 @@ derive_project_identity() {
   PROJECT_NAME="$derived_repo"
 }
 
+# Provenance tag on every posted artifact that is not a Review body — the
+# Inline comment (post-review.sh), the Status comment (below), and the reply
+# (post_reply.py's own MARKER). Single bash source: post-review.sh sources lib.sh
+# and reads this. Answers "who wrote this", never draft-status (ADR 0010). The
+# canonical string lives here; a test pins it against post_reply.py's MARKER.
+# shellcheck disable=SC2034  # also consumed by post-review.sh after sourcing
+PROVENANCE_TAG='🤖 _pr-review-agent_'
+
 # Marker identifying the agent's edit-in-place review-status comment (#60).
 # find_status_comment keys on it to reuse the one comment across ticks rather
 # than post a second. Distinct from the sha sentinel, which lives in the Review
@@ -337,8 +345,9 @@ render_status_comment() {
   # `$` is sed's end-of-line, not a shell expansion.
   # shellcheck disable=SC2016
   bullets="$(printf '%s\n' "$files" | sed '/^[[:space:]]*$/d; s/^/- `/; s/$/`/')"
-  printf '%s\n\n_Scope: %s_\n\n<details><summary>%s %s</summary>\n\n%s\n\n</details>\n\n%s\n' \
-    "$head_line" "$scope_label" "$file_count" "$noun" "$bullets" "$STATUS_COMMENT_MARKER"
+  # Visible Provenance tag (ADR 0010), then the hidden Status marker last.
+  printf '%s\n\n_Scope: %s_\n\n<details><summary>%s %s</summary>\n\n%s\n\n</details>\n\n%s\n\n%s\n' \
+    "$head_line" "$scope_label" "$file_count" "$noun" "$bullets" "$PROVENANCE_TAG" "$STATUS_COMMENT_MARKER"
 }
 
 # diff_paths <unified-diff-file>

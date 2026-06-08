@@ -37,6 +37,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# daemon/ is not a package and this script is run by path, so add its own dir to
+# the import path before importing the shared voice rules (ADR 0010).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import voice  # noqa: E402
+
 REQUIRED = ("in_reply_to_id", "addressed_comment_id", "bucket")
 
 # Classification buckets. fix_claim and question carry a text reply (mode +
@@ -101,6 +106,11 @@ def extract_payload(raw: str) -> dict:
     if "replies" not in data or not isinstance(data["replies"], list):
         raise PayloadError("schema-invalid", "reply agent: missing or non-list 'replies' key")
 
+    # Voice violations are collected across all body-bearing replies and raised
+    # once after the loop, so the whole batch fails before any POST (ADR 0010),
+    # symmetric with extract-json.py. Schema errors above still abort eagerly and
+    # take precedence: a malformed payload never reaches the voice gate.
+    style_violations: list[str] = []
     for i, r in enumerate(data["replies"]):
         missing = [k for k in REQUIRED if k not in r]
         if missing:
@@ -127,6 +137,17 @@ def extract_payload(raw: str) -> dict:
                     "schema-invalid",
                     f"reply agent: replies[{i}] {bucket} mode {mode!r} not in {valid}",
                 )
+            # Reply bodies lead with a bold sentence like Inline comments, so
+            # peel it before the opener scan (strip_bold).
+            style_violations += voice.check_text(
+                body,
+                prefixes=voice.FORBIDDEN_PREFIXES,
+                strip_bold=True,
+                label=f"replies[{i}].body",
+            )
+
+    if style_violations:
+        raise PayloadError("style-violation", "reply agent: " + "; ".join(style_violations))
     return data
 
 

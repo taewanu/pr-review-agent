@@ -9,35 +9,13 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ValidationError, model_validator
 
+# daemon/ is not a package and this script is run by path, so add its own dir to
+# the import path before importing the shared voice rules (ADR 0010).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import voice  # noqa: E402
+
 FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 MAX_FINDINGS = 10
-EM_DASH = "—"
-# Openers the voice prompt forbids. Trailing space distinguishes "This "
-# (demonstrative opener) from words like "Think". Body and summary diverge per
-# ADR 0002: bodies now lead with a bold sentence, so `**` is permitted there
-# (and in fact required by the shape). Summary stays plain prose.
-FORBIDDEN_PREFIXES = (
-    "This ",
-    "The ",
-    "It ",
-    "Worth ",
-    "Suggest ",
-    "Please ",
-    "Consider ",
-    "Maybe ",
-)
-FORBIDDEN_SUMMARY_PREFIXES = ("**",) + FORBIDDEN_PREFIXES
-# Task-scoped identifiers rot the moment the slice ships and the PR description
-# already carries the same context. Case-sensitive on Slice/Phase so lowercase
-# code prose ("phase=5", "slice the array") doesn't trip. ADR numbers and
-# external standards (RFC, ISO) are stable references and intentionally not
-# matched here.
-TASK_REF_PATTERNS = (
-    re.compile(r"\bSlice \d+\b"),
-    re.compile(r"\bPhase \d+\b"),
-    re.compile(r"\bStory #\d+\b"),
-    re.compile(r"\bPRD #?\d+\b"),
-)
 
 
 class ExtractError(Exception):
@@ -99,52 +77,19 @@ def extract(raw: str) -> ReviewPayload:
     return payload
 
 
-def _forbidden_prefix(
-    text: str, prefixes: tuple[str, ...], *, strip_bold: bool = False
-) -> str | None:
-    stripped = text.lstrip()
-    # ADR 0002 bodies lead with `**…**`. Peel a leading `**` before the prefix
-    # scan so word-level openers caught on plain prose still trip inside the
-    # bold (`**This carries the wrong invariant.**` must fail like the plain
-    # form). Summary forbids `**` outright, so no peel there. Re-lstrip after
-    # the peel — `**` was hiding any whitespace inside it from the first
-    # lstrip, so `**  This …**` would otherwise slip past.
-    #
-    # Scope: only the exact `**…**` shape is peeled. Off-spec leads like
-    # `***bold-italic***` or `*italic*` are not stripped — they aren't part
-    # of the prompted body shape, and widening the peel is deferred until
-    # the agent actually emits them.
-    if strip_bold and stripped.startswith("**"):
-        stripped = stripped[2:].lstrip()
-    for prefix in prefixes:
-        if stripped.startswith(prefix):
-            return prefix
-    return None
-
-
-def _find_task_ref(text: str) -> str | None:
-    for pattern in TASK_REF_PATTERNS:
-        if (match := pattern.search(text)) is not None:
-            return match.group(0)
-    return None
-
-
 def _validate_style(payload: ReviewPayload) -> None:
-    """Post-hoc voice checks. Routes through ADR 0005 as a system failure."""
-    violations: list[str] = []
-    if EM_DASH in payload.summary:
-        violations.append("summary contains em dash")
-    if (prefix := _forbidden_prefix(payload.summary, FORBIDDEN_SUMMARY_PREFIXES)) is not None:
-        violations.append(f"summary opens with forbidden prefix {prefix.rstrip()!r}")
-    if (ref := _find_task_ref(payload.summary)) is not None:
-        violations.append(f"summary contains task-scoped ref {ref!r}")
+    """Post-hoc voice checks. Routes through ADR 0005 as a system failure.
+
+    Shared rules live in voice.py (ADR 0010). The summary stays plain prose, so
+    it forbids a leading bold (FORBIDDEN_SUMMARY_PREFIXES); comment bodies lead
+    with a bold sentence, so they peel it before the opener scan (strip_bold)."""
+    violations = voice.check_text(
+        payload.summary, prefixes=voice.FORBIDDEN_SUMMARY_PREFIXES, label="summary"
+    )
     for i, c in enumerate(payload.comments):
-        if EM_DASH in c.body:
-            violations.append(f"comments[{i}].body contains em dash")
-        if (prefix := _forbidden_prefix(c.body, FORBIDDEN_PREFIXES, strip_bold=True)) is not None:
-            violations.append(f"comments[{i}].body opens with forbidden prefix {prefix.rstrip()!r}")
-        if (ref := _find_task_ref(c.body)) is not None:
-            violations.append(f"comments[{i}].body contains task-scoped ref {ref!r}")
+        violations += voice.check_text(
+            c.body, prefixes=voice.FORBIDDEN_PREFIXES, strip_bold=True, label=f"comments[{i}].body"
+        )
     if violations:
         raise ExtractError("style-violation", "; ".join(violations))
 

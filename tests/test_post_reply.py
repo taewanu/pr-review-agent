@@ -479,3 +479,46 @@ def test_question_empty_body_is_schema_invalid():
     result, _ = _run(_raw([_question(body="")]))
     assert result.returncode == 1
     assert "category=schema-invalid" in result.stderr
+
+
+# --- voice enforcement parity (ADR 0010) -------------------------------------
+# Reply bodies are validated at the extraction gate with the same rules as
+# Inline comments. A violation fails the whole batch before any POST, symmetric
+# with extract-json.py; the next polling cycle re-runs the reply agent.
+
+
+def test_em_dash_in_reply_body_is_style_violation():
+    result, calls = _run(_raw([_reply(body="**Confirmed.** Fixed it now — finally.")]))
+    assert result.returncode == 1
+    assert "category=style-violation" in result.stderr
+    assert calls == [], "a voice violation fails the batch before any POST"
+
+
+def test_forbidden_opener_in_reply_body_is_style_violation():
+    # Bold lead peeled before the opener scan: `**This …**` trips like `This …`.
+    result, calls = _run(_raw([_reply(body="**This still drops the guard.**")]))
+    assert result.returncode == 1
+    assert "category=style-violation" in result.stderr
+    assert calls == []
+
+
+def test_task_ref_in_reply_body_is_style_violation():
+    result, calls = _run(_raw([_question(body="**Holds.** Same shape as the Phase 5 note.")]))
+    assert result.returncode == 1
+    assert "category=style-violation" in result.stderr
+    assert calls == []
+
+
+def test_one_bad_reply_fails_the_whole_batch():
+    good = _reply(body="**Confirmed.** The guard now matches HEAD.")
+    bad = _reply(addressed_comment_id="333", in_reply_to_id="444", body="Rename — now.")
+    result, calls = _run(_raw([good, bad]))
+    assert result.returncode == 1
+    assert "category=style-violation" in result.stderr
+    assert calls == [], "no reply posts when any reply in the batch violates voice"
+
+
+def test_clean_bold_lead_reply_passes_the_voice_gate():
+    result, calls = _run(_raw([_reply(body="**Confirmed.** The guard now matches HEAD.")]))
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "/replies") is not None, "a clean reply still posts"

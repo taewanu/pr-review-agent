@@ -124,9 +124,12 @@ if [[ "$DROPPED_COMBO" -gt 0 ]]; then
   dropped_note=$'\n\n'"_${DROPPED_COMBO} ${noun} dropped (forbidden severity×type combo)._"
 fi
 
-# Review-body footer per ADR 0001 D3. Identity from derive_project_identity
-# above. The leading `\n\n---\n\n` detaches the footer from whatever ends the
-# body (summary, dropped-note, `## Additional findings`, or nothing).
+# Review footer per ADR 0010 (the posted-format contract; ADR 0001 D3 decides
+# one pending review per tick, not this string). Identity from
+# derive_project_identity above. The leading `\n\n---\n\n` detaches the footer
+# from whatever ends the body (summary, dropped-note, `## Additional findings`,
+# or nothing). Review-level, so it carries attribution + next action, not the
+# item-level Provenance tag.
 # Own PRs auto-submit a COMMENT review (ADR 0008), so the action line is
 # post-hoc (edit) rather than pre-submit (submit/cancel on a pending one). It
 # says "edit", not "delete": GitHub rejects deleting a submitted review, so an
@@ -180,8 +183,11 @@ body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}${
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
 # Inline body format per ADR 0002: type-first header, then the agent's body
-# (bold lead + optional bullets), then the AI-drafted footer.
-comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
+# (bold lead + optional bullets), then the Provenance tag. An Inline comment is
+# item-level, so it carries the tag (who wrote it), not a draft-status footer
+# (ADR 0010); $PROVENANCE_TAG is sourced from lib.sh, shared with the Status
+# comment and matched against post_reply.py's MARKER by a test.
+comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" --arg marker "$PROVENANCE_TAG" '
   map(
     {
       path: .path,
@@ -191,7 +197,7 @@ comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
         "_ | _" +
         ($sev[.severity] // "❓") + " " + .severity + "_" +
         "\n\n" + .body +
-        "\n\n---\n\n🤖 _AI-drafted_"
+        "\n\n---\n\n" + $marker
       )
     }
     + (
