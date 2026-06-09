@@ -220,6 +220,24 @@ def test_bold_lead_body_passes_style_check():
     assert payload.comments[0].body.startswith("**Rename")
 
 
+def test_single_bullet_comment_body_raises_style_violation():
+    # 2b (#100): a lone bullet is a sentence with extra weight. Bodies carry
+    # 0 or 2–4 bullets, never one (review-agent-default §Body shape).
+    f = _minimal_finding(body="**Split it.**\n\n- only one point")
+    raw = _wrap({"summary": "x", "comments": [f]})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "style-violation"
+    assert "comments[0]" in str(exc_info.value)
+
+
+def test_two_to_four_bullet_comment_body_passes_style_check():
+    f = _minimal_finding(body="**Split it.**\n\n- first point\n- second point")
+    raw = _wrap({"summary": "x", "comments": [f]})
+    payload = extract_json.extract(raw)
+    assert payload.comments[0].body.startswith("**Split")
+
+
 @pytest.mark.parametrize(
     "opener",
     [

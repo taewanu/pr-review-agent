@@ -883,3 +883,19 @@ def test_clean_bold_lead_reply_passes_the_voice_gate():
     result, calls = _run(_raw([_reply(body="**Confirmed.** The guard now matches HEAD.")]))
     assert result.returncode == 0, result.stderr
     assert _find(calls, "/replies") is not None, "a clean reply still posts"
+
+
+def test_single_bullet_reply_body_is_style_violation():
+    # 2b (#100): reply bodies hold to the same 0-or-2–4 bullet rule as Inline
+    # comments. A lone bullet fails the batch before any POST.
+    result, calls = _run(_raw([_reply(body="**Partial fix.**\n\n- only one point left")]))
+    assert result.returncode == 1
+    assert "category=style-violation" in result.stderr
+    assert calls == []
+
+
+def test_bulleted_reply_body_passes_the_voice_gate():
+    body = "**Partial fix.**\n\n- the import is gone\n- the call site still emits"
+    result, calls = _run(_raw([_reply(body=body)]))
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "/replies") is not None

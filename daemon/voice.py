@@ -5,9 +5,13 @@ post_reply.py validates each reply body. Both enforce the same rules — no em
 dash, no forbidden sentence openers, no task-scoped refs — so the rules live
 here once and both import them.
 
-Only the opener / em-dash / task-ref rules are enforced. The bold-lead *shape*
-(ADR 0002) is a prompt convention, not validated: a body that ships plain prose
-still passes. Opener voice is the load-bearing rule; the bold wrapper is shape.
+The opener / em-dash / task-ref rules are enforced on every field; Inline
+comment and reply bodies additionally get the structural 2–4 bullet-count rule
+(check_bullets). What stays unvalidated is the *semantic* shape: a body may ship
+plain prose with no bold lead and no bullets and still pass — the validator
+never forces a body to bullet, it only checks the count when bullets are
+present. Opener voice is the load-bearing rule; reaching for the bold-lead-plus-
+bullets shape (ADR 0002) is a prompt convention.
 """
 
 from __future__ import annotations
@@ -92,14 +96,47 @@ def find_task_ref(text: str) -> str | None:
     return None
 
 
+# A top-level bullet: a column-0 `- ` marker. Indented continuations and prose
+# hyphens never start at column 0 with a trailing space, so they don't count.
+BULLET_RE = re.compile(r"^- ", re.MULTILINE)
+
+
+def bullet_count_violation(text: str) -> str | None:
+    """Return a message if `text`'s top-level bullets break the 2–4 rule, else None.
+
+    Inline comment and reply bodies carry 0 or 2–4 `- ` bullets: never exactly
+    one (a lone bullet is a sentence with extra weight) and never 5+ (past four
+    you are listing, not pointing), per review-agent-default §Body shape. This is
+    the *structural* half of the shape — it checks the count of bullets that are
+    present, not the semantic decision of whether to bullet (a multi-sentence
+    single-point body legitimately uses 0). summary keeps its own 0-or-1+ rule
+    and is exempt, so callers set check_bullets only for comment/reply bodies.
+    """
+    n = len(BULLET_RE.findall(text))
+    if n == 1:
+        return "has a single bullet (use one sentence, or 2–4 bullets)"
+    if n > 4:
+        return f"has {n} bullets (2–4 max)"
+    return None
+
+
 def check_text(
-    text: str, *, prefixes: tuple[str, ...], strip_bold: bool = False, label: str
+    text: str,
+    *,
+    prefixes: tuple[str, ...],
+    strip_bold: bool = False,
+    check_bullets: bool = False,
+    label: str,
 ) -> list[str]:
     """Return human-readable voice violations for one text field.
 
     `label` names the field in each message (e.g. "summary", "comments[2].body",
-    "replies[0].body"). Order is em dash, then opener, then task ref, so callers
-    that concatenate fields keep a stable message order.
+    "replies[0].body"). Order is em dash, then opener, then task ref, then bullet
+    count, so callers that concatenate fields keep a stable message order.
+
+    `check_bullets` adds the structural 2–4 bullet rule (bullet_count_violation);
+    set it for Inline comment and reply bodies, leave it off for the summary,
+    which has its own looser 0-or-1+ bullet rule.
     """
     violations: list[str] = []
     if EM_DASH in text:
@@ -108,4 +145,6 @@ def check_text(
         violations.append(f"{label} opens with forbidden prefix {prefix.rstrip()!r}")
     if (ref := find_task_ref(text)) is not None:
         violations.append(f"{label} contains task-scoped ref {ref!r}")
+    if check_bullets and (msg := bullet_count_violation(text)) is not None:
+        violations.append(f"{label} {msg}")
     return violations

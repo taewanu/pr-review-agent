@@ -88,7 +88,11 @@ def _validate_style(payload: ReviewPayload) -> None:
     )
     for i, c in enumerate(payload.comments):
         violations += voice.check_text(
-            c.body, prefixes=voice.FORBIDDEN_PREFIXES, strip_bold=True, label=f"comments[{i}].body"
+            c.body,
+            prefixes=voice.FORBIDDEN_PREFIXES,
+            strip_bold=True,
+            check_bullets=True,
+            label=f"comments[{i}].body",
         )
     if violations:
         raise ExtractError("style-violation", "; ".join(violations))

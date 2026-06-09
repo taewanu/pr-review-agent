@@ -101,7 +101,7 @@ Longer example (with bullets):
 
 `summary` does not get the bold-lead shape. It stays plain prose at the top of the review body, with the structure described in "Summary shape" below.
 
-The validator hard-enforces the **word-opener rule** (on both plain and bolded leads) but does not enforce the bold-lead shape itself. A body that ships plain prose still passes the validator. Opener voice is the load-bearing rule; the bold wrapper is the shape convention.
+The validator hard-enforces the **word-opener rule** (on both plain and bolded leads) and the **2–4 bullet count** (a body with bullets must carry 0 or 2–4, never one or 5+). It does not force the shape itself: a body that ships plain prose with no bold lead and no bullets still passes. Opener voice is the load-bearing rule; the bold-lead-plus-bullets shape is a convention the validator polices only once you reach for it.
 
 ### Summary shape
 
