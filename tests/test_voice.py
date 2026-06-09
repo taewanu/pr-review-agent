@@ -68,6 +68,40 @@ def test_summary_prefixes_superset_of_body_prefixes():
     assert voice.FORBIDDEN_SUMMARY_PREFIXES == ("**",) + voice.FORBIDDEN_PREFIXES
 
 
+# --- split_bold_lead ---------------------------------------------------------
+
+
+def test_split_bold_lead_peels_lead_and_lstrips_rest():
+    assert voice.split_bold_lead("**Confirmed.** The guard covers it.") == (
+        "**Confirmed.**",
+        "The guard covers it.",
+    )
+
+
+def test_split_bold_lead_no_rest_when_lead_is_whole_body():
+    assert voice.split_bold_lead("**Confirmed by deletion.**") == ("**Confirmed by deletion.**", "")
+
+
+def test_split_bold_lead_returns_body_whole_when_no_bold_opener():
+    assert voice.split_bold_lead("plain prose, no lead") == ("", "plain prose, no lead")
+
+
+def test_split_bold_lead_returns_body_whole_when_opener_has_no_closer():
+    # A stray `**` with no closing delimiter is not a lead; keep the body intact.
+    assert voice.split_bold_lead("**dangling opener and prose") == (
+        "",
+        "**dangling opener and prose",
+    )
+
+
+def test_split_bold_lead_keeps_inner_bold_in_the_rest():
+    # The first closing `**` ends the lead; later bold spans stay in the prose.
+    assert voice.split_bold_lead("**Lead.** then **inner** bold") == (
+        "**Lead.**",
+        "then **inner** bold",
+    )
+
+
 # --- find_task_ref -----------------------------------------------------------
 
 

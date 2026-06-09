@@ -66,6 +66,24 @@ def forbidden_prefix(
     return None
 
 
+def split_bold_lead(text: str) -> tuple[str, str]:
+    """Split a leading `**…**` bold sentence from the rest of `text`.
+
+    Returns (lead, rest): `lead` is the bold span with its `**` delimiters,
+    `rest` is the remaining prose lstripped. When `text` has no `**…**` lead
+    (no opener, or an opener with no closer), returns ("", text) so the caller
+    keeps the body whole. Recognizes only the exact `**` shape, like the peel in
+    forbidden_prefix(strip_bold=True) — not `***bold-italic***` or `*italic*`.
+    """
+    stripped = text.lstrip()
+    if not stripped.startswith("**"):
+        return "", text
+    close = stripped.find("**", 2)
+    if close == -1:
+        return "", text
+    return stripped[: close + 2], stripped[close + 2 :].lstrip()
+
+
 def find_task_ref(text: str) -> str | None:
     """Return the first task-scoped ref found in `text`, or None."""
     for pattern in TASK_REF_PATTERNS:
