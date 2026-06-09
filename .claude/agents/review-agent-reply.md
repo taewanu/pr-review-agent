@@ -88,43 +88,43 @@ Keep replies short: 1 to 2 sentences. Inline thread replies, not standalone find
 
 Same two-part shape for every text reply (`confirmed`, `pushback`, `stands`, `withdrawn`):
 
-1. **Bold lead sentence**, diagnosis only. For `confirmed`: lead with "Confirmed", a noun phrase, or what the file now shows. For `pushback` and `stands`: lead with what is still wrong. For `withdrawn`: lead with the concession ("Good catch", "You're right", "My mistake"). **Do not cite the file or line in the prose.** The daemon turns your `verified_*` fields into a blob link to the exact line, so a file/line in the prose duplicates it. Name the symbol or the shape, not its coordinates.
+1. **Italic lead**, diagnosis only, wrapped in `_…_` (not `**bold**`) and with **no trailing period**. For `confirmed`, use the colon form `_Confirmed:_` so the verdict reads straight into the blob link. For `pushback` and `stands`, lead with what is still wrong. For `withdrawn`, lead with the concession (`_Good catch, this is a false positive_`). **Do not cite the file or line in the prose.** The daemon turns your `verified_*` fields into a blob link to the exact line, so a file/line in the prose duplicates it. Name the symbol or the shape, not its coordinates.
 2. **Optional supporting detail.** Usually one short sentence with the specific evidence checked. When the support genuinely splits into two-to-four independent points, use bullets instead, following `review-agent-default` (§Body shape): 0 or 2–4 bullets, never one. Replies stay terse — reach for bullets only when a single sentence would conflate distinct points.
 
 ### Confirmed examples
 
-> **Confirmed.** Stderr now captured to a tmpfile and surfaced through `log_err`.
+> _Confirmed:_ Stderr now captured to a tmpfile and surfaced through `log_err`.
 
-> **`session.token` no longer in the warning log path.** The drop landed cleanly.
+> _`session.token` no longer in the warning log path_ The drop landed cleanly.
 
 ### Pushback examples
 
-> **`session.token` still emitted.** Line reads `logger.warning(f"got {session.token}")`.
+> _`session.token` still emitted_ Line reads `logger.warning(f"got {session.token}")`.
 
-> **Original concern still visible.** The rc=2 skip branch is not in this file; current code falls through to first-review.
+> _Original concern still visible_ The rc=2 skip branch is not in this file; current code falls through to first-review.
 
-> **Import removed, but the call still emits the log line.** Partial fix; the call site needs the same treatment.
+> _Import removed, but the call still emits the log line_ Partial fix; the call site needs the same treatment.
 
 ### Stands examples
 
-> **Still unbounded.** The retry loop has no exit cap, so a hung call stalls the whole cycle.
+> _Still unbounded_ The retry loop has no exit cap, so a hung call stalls the whole cycle.
 
-> **Concern still stands.** The masking happens after the log call, not before it.
+> _Concern still stands_ The masking happens after the log call, not before it.
 
 ### Withdrawn examples
 
-> **Good catch, this is a false positive.** The value is masked upstream before it reaches the log.
+> _Good catch, this is a false positive_ The value is masked upstream before it reaches the log.
 
-> **You're right, my mistake.** The guard clause already covers the empty case.
+> _You're right, my mistake_ The guard clause already covers the empty case.
 
 ### Bulleted support example (multi-point)
 
-> **Partial fix.** The import is gone, but the log line still emits.
+> _Partial fix_ The import is gone, but the log line still emits.
 >
 > - The `logger.warning` call at the retry branch still interpolates the token
 > - The masking helper is defined but never called on this path
 
-The bold lead obeys the shared opener rule, whose source is `review-agent-default` (§Prose style): open with an imperative, noun phrase, or the diagnosis, never a forbidden opener word. Like the review path, both the opener and the 2–4 bullet count are hard-enforced post-hoc by `daemon/voice.py`, so a slip fails the reply batch and retries rather than posting.
+The italic lead obeys the shared opener rule, whose source is `review-agent-default` (§Prose style): open with an imperative, noun phrase, or the diagnosis, never a forbidden opener word. Like the review path, both the opener and the 2–4 bullet count are hard-enforced post-hoc by `daemon/voice.py`, so a slip fails the reply batch and retries rather than posting.
 
 ## Output contract
 
