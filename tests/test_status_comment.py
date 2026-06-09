@@ -82,10 +82,54 @@ def test_render_is_scope_only_never_findings():
     # come; assert the structure stays scope-shaped (no severity/type emoji that
     # only the review body carries).
     out, _, _ = _run(
-        "render_status_comment '✅ Reviewed `abc123` — 3 findings' 'full PR' 1 'daemon/poll.sh'"
+        "render_status_comment '✅ Reviewed `abc123`: 3 findings' 'full PR' 1 'daemon/poll.sh'"
     )
     assert "🔴" not in out and "🐛" not in out
     assert "AI-drafted" not in out
+
+
+# --- status_sha_link / status_scope_link (head-line + scope builders) -----
+# These pure helpers (lib.sh) build the linked head SHA and linked scope range
+# that review-pr.sh passes into render_status_comment (#102). The head line uses
+# ": N findings", never " — N findings", and SHAs link to the HEAD repo.
+
+_REPO = "https://github.com/example/example"
+_HEAD = "abcdef0123456789abcdef0123456789abcdef01"
+_LAST = "0123456789abcdef0123456789abcdef01234567"
+
+
+def test_status_sha_link_is_commit_markdown_link():
+    out, rc, _ = _run(f"status_sha_link '{_REPO}' '{_HEAD}'")
+    assert rc == 0
+    # Display = 12-char short SHA, backtick-wrapped; href = full SHA on /commit/.
+    assert out.strip() == f"[`{_HEAD[:12]}`]({_REPO}/commit/{_HEAD})"
+
+
+def test_status_scope_link_real_range_is_compare_link():
+    out, rc, _ = _run(f"status_scope_link '{_REPO}' '{_LAST}' '{_HEAD}'")
+    assert rc == 0
+    # Display = short..short; href = /compare/<full>...<full> (THREE dots).
+    assert out.strip() == f"[`{_LAST[:12]}..{_HEAD[:12]}`]({_REPO}/compare/{_LAST}...{_HEAD})"
+    assert "..." in out  # three-dot compare ref, not the two-dot display range
+
+
+def test_status_scope_link_full_pr_is_unlinked():
+    out, rc, _ = _run(f"status_scope_link '{_REPO}' '' '{_HEAD}'")
+    assert rc == 0
+    assert out.strip() == "full PR"
+    assert "](" not in out  # no markdown link
+
+
+def test_reviewed_head_line_uses_colon_not_em_dash():
+    # The reviewed head line review-pr.sh builds: linked SHA, then ": N findings"
+    # (the em dash is the one required visible-prose fix, #102).
+    out, rc, _ = _run(
+        f"printf \"✅ Reviewed %s: 3 findings\" \"$(status_sha_link '{_REPO}' '{_HEAD}')\""
+    )
+    assert rc == 0
+    assert "—" not in out
+    assert ": 3 findings" in out
+    assert f"[`{_HEAD[:12]}`]({_REPO}/commit/{_HEAD})" in out
 
 
 def test_render_singular_file_noun():

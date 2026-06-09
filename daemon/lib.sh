@@ -334,6 +334,35 @@ PROVENANCE_TAG='🤖 _pr-review-agent_'
 # body and drives dedup; this marker never does.
 STATUS_COMMENT_MARKER='<!-- pr-review-agent:status -->'
 
+# status_sha_link <repo-url> <head-oid>
+# Renders the head SHA as a short, backtick-wrapped markdown link to its commit
+# page on the HEAD repo (the same repo the finding blob links target, so fork
+# PRs resolve correctly). Display is the 12-char short SHA; the href uses the
+# full SHA so GitHub resolves it unambiguously.
+status_sha_link() {
+  local repo_url="$1" head_oid="$2"
+  # printf format is literal markdown; the values fill the %s (not shell expansion).
+  # shellcheck disable=SC2016
+  printf '[`%s`](%s/commit/%s)' "${head_oid:0:12}" "$repo_url" "$head_oid"
+}
+
+# status_scope_link <repo-url> <last-sha> <head-oid>
+# Renders the diff scope: a backtick-wrapped, linked compare range when a prior
+# review SHA is known (`<last>..<head>` display, /compare/<last>...<head> href —
+# GitHub compare takes THREE dots between full SHAs), or the literal, unlinked
+# `full PR` on a first review. Targets the HEAD repo for fork correctness.
+status_scope_link() {
+  local repo_url="$1" last_sha="$2" head_oid="$3"
+  if [[ -z "$last_sha" ]]; then
+    printf 'full PR'
+  else
+    # printf format is literal markdown; the values fill the %s (not shell expansion).
+    # shellcheck disable=SC2016
+    printf '[`%s..%s`](%s/compare/%s...%s)' \
+      "${last_sha:0:12}" "${head_oid:0:12}" "$repo_url" "$last_sha" "$head_oid"
+  fi
+}
+
 # render_status_comment <head-line> <scope-label> <file-count> <files>
 # Assembles the status-comment body (#60): header, diff scope (commit range +
 # file list, folded in <details> so a wide PR stays compact), and the marker
