@@ -1,16 +1,16 @@
 {
-  "body": "___PROJECT_NAME__ v__VERSION__ (preview release). Expect rough edges; see open issues._\n\n---\n\nSolid PR. The auth refactor reads cleanly and the new tests cover the happy path. One token-logging issue to fix before merge.\n\n_2 findings dropped (forbidden severity×type combo)._\n\n## Additional findings\n\n- `src/api/auth.py:5` _✨ polish_ | _🟣 pre_existing_\n\n  **One-line description of what `auth` owns vs `session`.**\n\n  - The module docstring stops at the function name list\n  - A reader hits the names without knowing the boundary\n  - One line under the docstring lays out the seam\n\n---\n\n🤖 Drafted by [__PROJECT_NAME__](__PROJECT_URL__). Submit, edit, or cancel as needed.\n<!-- pr-review-agent:sha:0123456789abcdef0123456789abcdef01234567 -->",
+  "body": "___PROJECT_NAME__ v__VERSION__ (preview release). Expect rough edges; see open issues._\n\n---\n\nSolid PR. The auth refactor reads cleanly and the new tests cover the happy path. One token-logging issue to fix before merge.\n\n_2 findings dropped (forbidden severity×type combo)._\n\n## Additional findings\n\n- `src/api/auth.py:5` _✨ polish_ | _🟣 pre_existing_\n\n  **One-line description of what `auth` owns vs `session`.**\n\n  - The module docstring stops at the function name list\n  - A reader hits the names without knowing the boundary\n  - One line under the docstring lays out the seam\n\n---\n\n_🤖 Drafted by [__PROJECT_NAME__](__PROJECT_URL__). Submit, edit, or cancel as needed._\n<!-- pr-review-agent:sha:0123456789abcdef0123456789abcdef01234567 -->",
   "comments": [
     {
       "path": "src/api/auth.py",
       "side": "RIGHT",
-      "body": "_🐛 bug_ | _🔴 important_\n\n**Drop `session.token` from the warning log.** It writes the token in plaintext on the warning branch; redact before emit.\n\n---\n\n🤖 _pr-review-agent_",
+      "body": "_🐛 bug_ | _🔴 important_\n\n**Drop `session.token` from the warning log.** It writes the token in plaintext on the warning branch; redact before emit.\n\n🤖 _pr-review-agent_",
       "line": 42
     },
     {
       "path": "src/api/auth.py",
       "side": "RIGHT",
-      "body": "_🔧 refactor_ | _🟡 nit_\n\n**Split `parse_and_persist` into two functions.**\n\n- Parses, validates, and persists in one call\n- Splitting makes failure modes orthogonal\n- Each function then tests in isolation\n\n---\n\n🤖 _pr-review-agent_",
+      "body": "_🔧 refactor_ | _🟡 nit_\n\n**Split `parse_and_persist` into two functions.**\n\n- Parses, validates, and persists in one call\n- Splitting makes failure modes orthogonal\n- Each function then tests in isolation\n\n🤖 _pr-review-agent_",
       "start_line": 60,
       "start_side": "RIGHT",
       "line": 75
