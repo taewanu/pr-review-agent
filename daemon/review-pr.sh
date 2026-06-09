@@ -113,6 +113,10 @@ if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HE
   exit 1
 fi
 HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
+# Base URL for status-comment SHA/scope links (#102). Target the HEAD repo where
+# HEAD_OID lives so links resolve on fork PRs, the same rule the finding blob
+# links follow. Same-repo PRs have HEAD_REPO == BASE, so this still points home.
+HEAD_REPO_URL="https://github.com/${HEAD_REPO}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
 # Own-vs-others gates the submit path (ADR 0008): own PRs auto-submit a COMMENT
@@ -206,13 +210,17 @@ fi
 # <last-sha>..HEAD on re-review). One comment per PR, reused across ticks.
 STATUS_FILES="$(diff_paths "$DIFF_FILE")"
 STATUS_FILE_COUNT="$(printf '%s' "$STATUS_FILES" | grep -c . || true)"
+# Scope links to the HEAD-repo compare range on a re-review, or stays the
+# literal `full PR` on a first review (#102). Pass LAST_SHA only when the diff
+# was actually scoped to it (a fetch failure falls back to the full diff).
 if [[ $diff_scoped -eq 1 ]]; then
-  STATUS_SCOPE="\`${LAST_SHA:0:12}..${HEAD_OID:0:12}\`"
+  STATUS_SCOPE="$(status_scope_link "$HEAD_REPO_URL" "$LAST_SHA" "$HEAD_OID")"
 else
-  STATUS_SCOPE="full PR"
+  STATUS_SCOPE="$(status_scope_link "$HEAD_REPO_URL" "" "$HEAD_OID")"
 fi
 reviewing_body="$(render_status_comment \
-  "👀 Reviewing \`${HEAD_OID:0:12}\`…" "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
+  "👀 Reviewing $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")…" \
+  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
 STATUS_COMMENT_ID="$(find_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
 if [[ -n "$STATUS_COMMENT_ID" ]]; then
   edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewing_body"
@@ -300,7 +308,7 @@ findings_total=$(($(jq 'length' "$ANCHORED_FILE") + $(jq 'length' "$UNANCHORED_F
 finding_noun="findings"
 [[ "$findings_total" -eq 1 ]] && finding_noun="finding"
 reviewed_body="$(render_status_comment \
-  "✅ Reviewed \`${HEAD_OID:0:12}\` — ${findings_total} ${finding_noun}" \
+  "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID"): ${findings_total} ${finding_noun}" \
   "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
 edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
 
