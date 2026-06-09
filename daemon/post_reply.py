@@ -214,8 +214,9 @@ def extract_payload(raw: str) -> dict:
                     "schema-invalid",
                     f"reply agent: replies[{i}] {bucket} mode {mode!r} not in {valid}",
                 )
-            # Reply bodies lead with a bold sentence like Inline comments, so
-            # peel it before the opener scan (strip_bold) and hold them to the
+            # Reply bodies lead with an italic sentence (diverging from the
+            # inline comment's bold lead, ADR 0010 §4), peeled before the opener
+            # scan (strip_bold handles `_…_` too since #104) and held to the
             # same 2–4 bullet rule (check_bullets).
             style_violations += voice.check_text(
                 body,
@@ -282,11 +283,11 @@ def link_for(args: argparse.Namespace, reply: dict) -> str | None:
 
 
 def build_body(body: str, addressed_id: str, link: str | None = None) -> str:
-    """Verdict-leading reply body: the bold lead sentence, the optional
+    """Verdict-leading reply body: the italic lead sentence, the optional
     blob-at-HEAD link on the same line, the explanation prose below it, then the
     provenance marker and Reply sentinel footer. Location lives in the link, not
     the prose, so the agent body never repeats the file and line (#96). When the
-    body has no bold lead (degenerate — replies are validated to lead with one),
+    body has no italic lead (degenerate — replies are validated to lead with one),
     it stays whole with the link as a trailing paragraph, the pre-#96 layout."""
     lead, rest = voice.split_lead(body)
     if lead:
