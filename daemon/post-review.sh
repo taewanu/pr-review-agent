@@ -135,9 +135,9 @@ fi
 # says "edit", not "delete": GitHub rejects deleting a submitted review, so an
 # unwanted auto-submitted review can only be edited or have its comments hidden.
 if [[ $OWN_PR -eq 1 ]]; then
-  footer=$'\n\n---\n\n🤖 Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit as needed.'
+  footer=$'\n\n---\n\n_🤖 Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit as needed._'
 else
-  footer=$'\n\n---\n\n🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed.'
+  footer=$'\n\n---\n\n_🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed._'
 fi
 
 # Dedup sentinel per ADR 0006. Encodes the reviewed SHA so the next tick can
@@ -197,7 +197,7 @@ comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" --arg
         "_ | _" +
         ($sev[.severity] // "❓") + " " + .severity + "_" +
         "\n\n" + .body +
-        "\n\n---\n\n" + $marker
+        "\n\n" + $marker
       )
     }
     + (
