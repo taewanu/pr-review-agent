@@ -50,42 +50,65 @@ TASK_REF_PATTERNS = (
 )
 
 
+# A leading emphasis lead: `**bold**` or `_italic_`, anchored at start with a
+# lazy body. The close must not be immediately followed by a word char, matching
+# how GitHub's CommonMark renderer treats a right-flanking delimiter run: this
+# skips the intra-word `_` in snake_case identifiers (`some_helper`) and hardens
+# `**` against a stray non-emphasis run (e.g. a `**/` glob). Off-spec shapes like
+# `***bold-italic***` or `*italic*` are intentionally not matched.
+_LEAD_RE = re.compile(r"\A(\*\*.+?\*\*|_.+?_)(?!\w)", re.DOTALL)
+
+
+def _peel_lead_delims(stripped: str) -> str:
+    """Strip the leading `**` or `_` emphasis opener from `stripped`, or return
+    it unchanged. Mirrors the openers split_lead recognizes; only the exact `**`
+    or `_` shape is peeled (not `***` or `*italic*`)."""
+    if stripped.startswith("**"):
+        return stripped[2:].lstrip()
+    if stripped.startswith("_"):
+        return stripped[1:].lstrip()
+    return stripped
+
+
 def forbidden_prefix(
     text: str, prefixes: tuple[str, ...], *, strip_bold: bool = False
 ) -> str | None:
     """Return the forbidden opener `text` starts with, or None.
 
-    With strip_bold, peel a leading `**…` before the scan so a word-level opener
-    hidden inside a bold lead still trips (`**This …**` must fail like `This …`).
-    Re-lstrip after the peel: `**` hid any inner whitespace from the first lstrip,
-    so `**  This …**` would otherwise slip past. Only the exact `**` shape is
-    peeled; off-spec leads like `***bold-italic***` or `*italic*` are not.
+    With strip_bold, peel a leading `**` or `_` emphasis opener before the scan so
+    a word-level opener hidden inside an emphasis lead still trips (`**This …**`
+    and `_This …_` must fail like `This …`). Re-lstrip after the peel: the opener
+    hid any inner whitespace from the first lstrip, so `**  This …**` would
+    otherwise slip past. Only the exact `**` or `_` shape is peeled; off-spec
+    leads like `***bold-italic***` or `*italic*` are not.
     """
     stripped = text.lstrip()
-    if strip_bold and stripped.startswith("**"):
-        stripped = stripped[2:].lstrip()
+    if strip_bold:
+        stripped = _peel_lead_delims(stripped)
     for prefix in prefixes:
         if stripped.startswith(prefix):
             return prefix
     return None
 
 
-def split_bold_lead(text: str) -> tuple[str, str]:
-    """Split a leading `**…**` bold sentence from the rest of `text`.
+def split_lead(text: str) -> tuple[str, str]:
+    """Split a leading emphasis sentence (`**bold**` or `_italic_`) from `text`.
 
-    Returns (lead, rest): `lead` is the bold span with its `**` delimiters,
-    `rest` is the remaining prose lstripped. When `text` has no `**…**` lead
+    Returns (lead, rest): `lead` is the emphasis span with its delimiters, `rest`
+    is the remaining prose lstripped. When `text` has no recognizable closed lead
     (no opener, or an opener with no closer), returns ("", text) so the caller
-    keeps the body whole. Recognizes only the exact `**` shape, like the peel in
-    forbidden_prefix(strip_bold=True) — not `***bold-italic***` or `*italic*`.
+    keeps the body whole. The closing delimiter is matched the way GitHub's
+    CommonMark renderer matches emphasis (right-flanking: not followed by a word
+    char), so an intra-word `_` in a snake_case identifier inside an italic lead
+    is not mistaken for the closer. Recognizes only the exact `**` / `_` shapes,
+    like the peel in forbidden_prefix(strip_bold=True).
     """
     stripped = text.lstrip()
-    if not stripped.startswith("**"):
+    match = _LEAD_RE.match(stripped)
+    if match is None:
         return "", text
-    close = stripped.find("**", 2)
-    if close == -1:
-        return "", text
-    return stripped[: close + 2], stripped[close + 2 :].lstrip()
+    lead = match.group(1)
+    return lead, stripped[match.end() :].lstrip()
 
 
 def find_task_ref(text: str) -> str | None:
