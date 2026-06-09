@@ -44,6 +44,8 @@ This ADR is the documentary source of truth; each renderer hard-codes the tag wi
 - `review-agent-default.md` is the SSOT for the shared voice rules; `review-agent-reply.md` references it and drops its re-copied prose. Mode-specific leads (`confirmed`/`pushback`/`stands`/`withdrawn`) stay local to the reply agent.
 - The post-hoc voice checks move to a shared `daemon/voice.py` imported by both `extract-json.py` and `post_reply.py`. Reply bodies are validated at the extraction gate with the Inline-comment rules (`strip_bold=True`, `FORBIDDEN_PREFIXES`, em dash, task-ref); a violation raises `style-violation` and **fails the whole reply batch before any POST**, symmetric with `extract-json.py`'s atomic-payload model and reusing the existing "no sentinel → retry next cycle" path. Only the opener/em-dash/task-ref rules are enforced; the bold-lead *shape* is not, matching `extract-json.py`.
 
+> **Amended 2026-06-09 (#100).** Inline comment and reply bodies now additionally enforce the **structural 2–4 bullet count** (`check_bullets`): a body carrying bullets must have 0 or 2–4, never one or 5+. This is the structural half of the shape and is losslessly checkable. The *semantic* shape is still not enforced — the validator never forces a body to lead with bold or to use bullets, since "this reasoning is multi-point, so it should be bulleted" is a judgment a post-hoc check can only false-positive on. So the §4 line above narrows to: opener/em-dash/task-ref on every field, plus bullet *count* on bodies; the decision to bullet stays a prompt convention.
+
 ## Out of scope (the boundary)
 
 This ADR fixes format only. It explicitly does **not** decide:

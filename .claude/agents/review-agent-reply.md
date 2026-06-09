@@ -89,7 +89,7 @@ Keep replies short: 1 to 2 sentences. Inline thread replies, not standalone find
 Same two-part shape for every text reply (`confirmed`, `pushback`, `stands`, `withdrawn`):
 
 1. **Bold lead sentence**, diagnosis only. For `confirmed`: lead with "Confirmed", a noun phrase, or what the file now shows. For `pushback` and `stands`: lead with what is still wrong. For `withdrawn`: lead with the concession ("Good catch", "You're right", "My mistake"). **Do not cite the file or line in the prose.** The daemon turns your `verified_*` fields into a blob link to the exact line, so a file/line in the prose duplicates it. Name the symbol or the shape, not its coordinates.
-2. **Optional** one short supporting sentence with the specific evidence checked.
+2. **Optional supporting detail.** Usually one short sentence with the specific evidence checked. When the support genuinely splits into two-to-four independent points, use bullets instead, following `review-agent-default` (§Body shape): 0 or 2–4 bullets, never one. Replies stay terse — reach for bullets only when a single sentence would conflate distinct points.
 
 ### Confirmed examples
 
@@ -117,7 +117,14 @@ Same two-part shape for every text reply (`confirmed`, `pushback`, `stands`, `wi
 
 > **You're right, my mistake.** The guard clause already covers the empty case.
 
-The bold lead obeys the shared opener rule, whose source is `review-agent-default` (§Prose style): open with an imperative, noun phrase, or the diagnosis, never a forbidden opener word. Like the review path, it is hard-enforced post-hoc by `daemon/voice.py`, so a slip fails the reply batch and retries rather than posting.
+### Bulleted support example (multi-point)
+
+> **Partial fix.** The import is gone, but the log line still emits.
+>
+> - The `logger.warning` call at the retry branch still interpolates the token
+> - The masking helper is defined but never called on this path
+
+The bold lead obeys the shared opener rule, whose source is `review-agent-default` (§Prose style): open with an imperative, noun phrase, or the diagnosis, never a forbidden opener word. Like the review path, both the opener and the 2–4 bullet count are hard-enforced post-hoc by `daemon/voice.py`, so a slip fails the reply batch and retries rather than posting.
 
 ## Output contract
 

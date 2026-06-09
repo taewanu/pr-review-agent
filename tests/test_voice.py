@@ -148,3 +148,67 @@ def test_check_text_reports_all_three_violations_together():
     assert any("em dash" in v for v in out)
     assert any("forbidden prefix" in v for v in out)
     assert any("task-scoped ref" in v for v in out)
+
+
+# --- bullet_count_violation (2b structural shape, #100) ----------------------
+
+_LEAD = "**Drop it.**"
+_BODY = lambda *bullets: "\n\n".join([_LEAD, *(f"- {b}" for b in bullets)])  # noqa: E731
+
+
+def test_bullet_count_none_when_no_bullets():
+    # A plain or short body (0 bullets) is the prescribed single-sentence form.
+    assert voice.bullet_count_violation(_LEAD) is None
+
+
+def test_bullet_count_violation_on_exactly_one():
+    msg = voice.bullet_count_violation(_BODY("only one point"))
+    assert msg is not None and "single bullet" in msg
+
+
+def test_bullet_count_none_for_two_to_four():
+    for n in (2, 3, 4):
+        assert voice.bullet_count_violation(_BODY(*[f"p{i}" for i in range(n)])) is None
+
+
+def test_bullet_count_violation_on_five_or_more():
+    msg = voice.bullet_count_violation(_BODY(*[f"p{i}" for i in range(5)]))
+    assert msg is not None and "5" in msg
+
+
+def test_bullet_count_ignores_indented_and_inline_hyphens():
+    # Only a column-0 `- ` marker counts: an indented continuation and a prose
+    # hyphen are not bullets, so this single-point body stays clean.
+    body = "**Drop it.** It is a no-op;\n  - not a bullet, a wrapped clause."
+    assert voice.bullet_count_violation(body) is None
+
+
+# --- check_text bullet wiring (#100) -----------------------------------------
+
+
+def test_check_text_bullets_flag_off_by_default_ignores_lone_bullet():
+    # summary path passes check_bullets=False, so a single `- ` line never trips.
+    assert voice.check_text(_BODY("lone"), prefixes=voice.FORBIDDEN_PREFIXES, label="summary") == []
+
+
+def test_check_text_bullets_flag_on_flags_lone_bullet_with_label():
+    out = voice.check_text(
+        _BODY("lone"),
+        prefixes=voice.FORBIDDEN_PREFIXES,
+        strip_bold=True,
+        check_bullets=True,
+        label="comments[1].body",
+    )
+    assert len(out) == 1 and out[0].startswith("comments[1].body ")
+    assert "single bullet" in out[0]
+
+
+def test_check_text_bullets_flag_on_passes_two_to_four():
+    out = voice.check_text(
+        _BODY("a", "b"),
+        prefixes=voice.FORBIDDEN_PREFIXES,
+        strip_bold=True,
+        check_bullets=True,
+        label="replies[0].body",
+    )
+    assert out == []

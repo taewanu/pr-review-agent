@@ -215,11 +215,13 @@ def extract_payload(raw: str) -> dict:
                     f"reply agent: replies[{i}] {bucket} mode {mode!r} not in {valid}",
                 )
             # Reply bodies lead with a bold sentence like Inline comments, so
-            # peel it before the opener scan (strip_bold).
+            # peel it before the opener scan (strip_bold) and hold them to the
+            # same 2–4 bullet rule (check_bullets).
             style_violations += voice.check_text(
                 body,
                 prefixes=voice.FORBIDDEN_PREFIXES,
                 strip_bold=True,
+                check_bullets=True,
                 label=f"replies[{i}].body",
             )
 
