@@ -144,10 +144,13 @@ BUCKET_REACTION = {
 # Finding's comment body (#79).
 SENTINEL = "<!-- pr-review-agent:reply:{id} -->"
 
-# Provenance marker appended to every daemon text reply (#11). Answers "who
-# wrote this" under the shared solo identity (ADR 0003). Not "drafted": a posted
-# reply is never a draft. The trailing `_` closes the markdown italic; it carries
-# no colon, so the sentinel scan in reply-pr.sh never false-matches it.
+# Provenance marker appended to every daemon text reply. Answers "who wrote
+# this" under the shared solo identity (ADR 0003); never draft-status, since a
+# posted reply is no draft (ADR 0010 §1). Hard-coded per ADR 0010 §3 (a runtime
+# shared constant across the bash/Python boundary was rejected there); mirrors
+# lib.sh's PROVENANCE_TAG, with test_provenance_tag.py pinning the two identical.
+# The trailing `_` closes the markdown italic; it carries no colon, so the
+# sentinel scan in reply-pr.sh never false-matches it.
 MARKER = "🤖 _pr-review-agent_"
 
 
