@@ -288,7 +288,7 @@ def build_body(body: str, addressed_id: str, link: str | None = None) -> str:
     the prose, so the agent body never repeats the file and line (#96). When the
     body has no bold lead (degenerate — replies are validated to lead with one),
     it stays whole with the link as a trailing paragraph, the pre-#96 layout."""
-    lead, rest = voice.split_bold_lead(body)
+    lead, rest = voice.split_lead(body)
     if lead:
         parts = [f"{lead} {link}" if link else lead]
         if rest:

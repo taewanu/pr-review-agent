@@ -44,6 +44,14 @@ def test_forbidden_prefix_strip_bold_peels_then_matches():
     )
 
 
+def test_forbidden_prefix_strip_bold_peels_italic_lead():
+    # A forbidden opener hidden in an italic lead trips just like a bold one.
+    assert (
+        voice.forbidden_prefix("_This is wrong_", voice.FORBIDDEN_PREFIXES, strip_bold=True)
+        == "This "
+    )
+
+
 def test_forbidden_prefix_strip_bold_handles_internal_leading_whitespace():
     assert (
         voice.forbidden_prefix("**  This is wrong.**", voice.FORBIDDEN_PREFIXES, strip_bold=True)
@@ -68,35 +76,64 @@ def test_summary_prefixes_superset_of_body_prefixes():
     assert voice.FORBIDDEN_SUMMARY_PREFIXES == ("**",) + voice.FORBIDDEN_PREFIXES
 
 
-# --- split_bold_lead ---------------------------------------------------------
+# --- split_lead --------------------------------------------------------------
 
 
-def test_split_bold_lead_peels_lead_and_lstrips_rest():
-    assert voice.split_bold_lead("**Confirmed.** The guard covers it.") == (
+def test_split_lead_peels_bold_lead_and_lstrips_rest():
+    assert voice.split_lead("**Confirmed.** The guard covers it.") == (
         "**Confirmed.**",
         "The guard covers it.",
     )
 
 
-def test_split_bold_lead_no_rest_when_lead_is_whole_body():
-    assert voice.split_bold_lead("**Confirmed by deletion.**") == ("**Confirmed by deletion.**", "")
-
-
-def test_split_bold_lead_returns_body_whole_when_no_bold_opener():
-    assert voice.split_bold_lead("plain prose, no lead") == ("", "plain prose, no lead")
-
-
-def test_split_bold_lead_returns_body_whole_when_opener_has_no_closer():
-    # A stray `**` with no closing delimiter is not a lead; keep the body intact.
-    assert voice.split_bold_lead("**dangling opener and prose") == (
+def test_split_lead_underscores_in_bold_lead_unaffected():
+    # snake_case `_` inside a bold lead must not close the bold span early.
+    assert voice.split_lead("**Split `parse_and_persist` here.**") == (
+        "**Split `parse_and_persist` here.**",
         "",
-        "**dangling opener and prose",
     )
 
 
-def test_split_bold_lead_keeps_inner_bold_in_the_rest():
+def test_split_lead_no_rest_when_lead_is_whole_body():
+    assert voice.split_lead("**Confirmed by deletion.**") == ("**Confirmed by deletion.**", "")
+
+
+def test_split_lead_peels_italic_lead_and_lstrips_rest():
+    assert voice.split_lead("_Confirmed:_ trailing") == ("_Confirmed:_", "trailing")
+
+
+def test_split_lead_skips_snake_case_underscore_in_italic_lead():
+    # An intra-word `_` is not a closer (CommonMark right-flanking); the lead
+    # closes at the final `_` at end of body, not the one inside some_helper.
+    assert voice.split_lead("_drop the unused some_helper import_") == (
+        "_drop the unused some_helper import_",
+        "",
+    )
+
+
+def test_split_lead_italic_lead_with_inline_code_and_rest():
+    assert voice.split_lead("_`session.token` still emitted_ extra") == (
+        "_`session.token` still emitted_",
+        "extra",
+    )
+
+
+def test_split_lead_returns_body_whole_when_no_opener():
+    assert voice.split_lead("plain prose, no lead") == ("", "plain prose, no lead")
+
+
+def test_split_lead_returns_body_whole_when_bold_opener_has_no_closer():
+    # A stray `**` with no closing delimiter is not a lead; keep the body intact.
+    assert voice.split_lead("**dangling bold") == ("", "**dangling bold")
+
+
+def test_split_lead_returns_body_whole_when_italic_opener_has_no_closer():
+    assert voice.split_lead("_dangling italic") == ("", "_dangling italic")
+
+
+def test_split_lead_keeps_inner_bold_in_the_rest():
     # The first closing `**` ends the lead; later bold spans stay in the prose.
-    assert voice.split_bold_lead("**Lead.** then **inner** bold") == (
+    assert voice.split_lead("**Lead.** then **inner** bold") == (
         "**Lead.**",
         "then **inner** bold",
     )
