@@ -320,8 +320,11 @@ derive_project_identity() {
 # Provenance tag on every posted artifact that is not a Review body — the
 # Inline comment (post-review.sh), the Status comment (below), and the reply
 # (post_reply.py's own MARKER). Single bash source: post-review.sh sources lib.sh
-# and reads this. Answers "who wrote this", never draft-status (ADR 0010). The
-# canonical string lives here; a test pins it against post_reply.py's MARKER.
+# and reads this. Answers "who wrote this", never draft-status (ADR 0010 §1).
+# ADR 0010 §3 is the documentary source of truth: this constant and
+# post_reply.py's MARKER each hard-code the string — a runtime shared constant
+# across the bash/Python boundary was rejected there as costlier than a drift
+# test — and test_provenance_tag.py pins the two definitions identical.
 # shellcheck disable=SC2034  # also consumed by post-review.sh after sourcing
 PROVENANCE_TAG='🤖 _pr-review-agent_'
 
