@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # uninstall.sh — boot out the launchd job and remove the plist. Leaves state
-# files at ~/.local/state/pr-review-agent/ untouched so reinstall picks up
+# files at ~/.pr-review-agent/ untouched so reinstall picks up
 # where it left off.
 
 set -euo pipefail

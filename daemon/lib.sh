@@ -50,7 +50,7 @@ run_with_timeout() {
 #
 # Override $PR_REVIEW_STATE_DIR for tests.
 _state_dir() {
-  printf '%s' "${PR_REVIEW_STATE_DIR:-$HOME/.local/state/pr-review-agent}"
+  printf '%s' "${PR_REVIEW_STATE_DIR:-$HOME/.pr-review-agent}"
 }
 
 _state_path() {

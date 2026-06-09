@@ -79,7 +79,7 @@ bash daemon/review-pr.sh <pr-url>  # review one PR ad-hoc
 
 # inspecting the optional background (launchd) install — a foreground run shows all this in the terminal already:
 tail -f .daemon.log                # follow its log
-echo $(( $(date +%s) - $(cat ~/.local/state/pr-review-agent/daemon.heartbeat) ))s   # seconds since its last cycle
+echo $(( $(date +%s) - $(cat ~/.pr-review-agent/daemon.heartbeat) ))s   # seconds since its last cycle
 ```
 
 ## Submitting a review
