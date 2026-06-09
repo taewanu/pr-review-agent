@@ -282,6 +282,42 @@ def test_fix_claim_without_head_sha_has_no_link():
     assert "🤖 _pr-review-agent_" in body
 
 
+# A voice-compliant reply body: a bold verdict lead, then explanation prose. The
+# real agent always leads with bold (validated via strip_bold); NASTY_BODY above
+# drops it to stress byte-safety, so the verdict-lead layout (#96) is pinned here.
+LEAD_BODY = "**Confirmed.** The guard now covers the null case."
+
+
+def test_reply_leads_with_verdict_and_link_then_prose_below():
+    # #96: the bold lead and the blob link share the first line; the explanation
+    # drops to its own paragraph below, never repeating the coordinates.
+    reply = _reply(body=LEAD_BODY, verified_path="daemon/lib.sh", verified_line=88)
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    link = f"[`a1b2c3d:L88`](https://github.com/example/example/blob/{HEAD_SHA}/daemon/lib.sh#L88)"
+    assert body.startswith(f"**Confirmed.** {link}\n\n"), body
+    assert "\n\nThe guard now covers the null case.\n\n" in body, body
+
+
+def test_reply_without_link_keeps_lead_then_prose():
+    # No verified line to anchor: the lead sits alone on the first line and the
+    # explanation drops below, with no link jammed in.
+    reply = _reply(body=LEAD_BODY)
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    assert body.startswith("**Confirmed.**\n\nThe guard now covers the null case.\n\n"), body
+    assert "/blob/" not in body, body
+
+
+def test_reply_lead_only_no_prose_degrades_to_lead_plus_footer():
+    # Confirmed-by-deletion style: a bold lead with nothing after it and no link
+    # degrades to just the lead and the footer.
+    reply = _reply(body="**Confirmed by deletion.**")
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    assert body.startswith("**Confirmed by deletion.**\n\n🤖 _pr-review-agent_"), body
+
+
 def test_acknowledgment_posts_plus_one_reaction_only():
     reply = {"in_reply_to_id": "1", "addressed_comment_id": "222", "bucket": "acknowledgment"}
     result, calls = _run(_raw([reply]), threads=_threads("1", "FINDING"))

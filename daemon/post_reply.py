@@ -277,12 +277,21 @@ def link_for(args: argparse.Namespace, reply: dict) -> str | None:
 
 
 def build_body(body: str, addressed_id: str, link: str | None = None) -> str:
-    """Agent body, the optional blob-at-HEAD link, the provenance marker, and the
-    Reply sentinel footer, joined byte-for-byte. Location lives in the link, not
-    the prose, so the agent body never repeats the file and line."""
-    parts = [body]
-    if link:
-        parts.append(link)
+    """Verdict-leading reply body: the bold lead sentence, the optional
+    blob-at-HEAD link on the same line, the explanation prose below it, then the
+    provenance marker and Reply sentinel footer. Location lives in the link, not
+    the prose, so the agent body never repeats the file and line (#96). When the
+    body has no bold lead (degenerate — replies are validated to lead with one),
+    it stays whole with the link as a trailing paragraph, the pre-#96 layout."""
+    lead, rest = voice.split_bold_lead(body)
+    if lead:
+        parts = [f"{lead} {link}" if link else lead]
+        if rest:
+            parts.append(rest)
+    else:
+        parts = [body]
+        if link:
+            parts.append(link)
     parts.append(MARKER)
     parts.append(SENTINEL.format(id=addressed_id))
     return "\n\n".join(parts)
