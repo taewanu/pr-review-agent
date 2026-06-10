@@ -35,7 +35,7 @@ The same namespace covers `<!-- pr-review-agent:addressed -->`, the reply-thread
 
 Review body footer, immediately after the operator identity line from [ADR 0003](./0003-identity-model.md):
 
-    [banner / summary / additional findings]
+    [banner / summary / findings outside the diff]
 
     ---
 

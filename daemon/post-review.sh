@@ -158,7 +158,7 @@ if [[ -n "$HEAD_SHA" ]]; then
 fi
 
 # Severity and type emoji maps per ADR 0002. Single-sourced here so the
-# Additional-findings render and the inline-comments render stay in lockstep.
+# outside-the-diff render and the inline-comments render stay in lockstep.
 SEV_EMOJI='{"important":"🔴","nit":"🟡","pre_existing":"🟣"}'
 TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨"}'
 
