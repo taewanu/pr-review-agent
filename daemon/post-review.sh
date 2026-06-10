@@ -9,6 +9,7 @@ source "$(dirname "$0")/lib.sh"
 DRY_RUN=0
 OWN_PR=0
 HEAD_SHA=""
+HEAD_REPO_URL=""
 OWNER=""
 REPO=""
 NUMBER=""
@@ -45,6 +46,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --head-sha)
       HEAD_SHA="$2"
+      shift 2
+      ;;
+    --head-repo-url)
+      HEAD_REPO_URL="$2"
       shift 2
       ;;
     --dropped-combo)
@@ -162,13 +167,30 @@ TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨"}'
 # Header shape per ADR 0002: `_<type-emoji> <type>_ | _<severity-emoji> <severity>_`.
 # Bodies sit inside the outer `- ` list item, so every line is 2-space indented
 # (gsub on internal newlines) to keep bullets and follow-up paragraphs nested.
-additional="$(jq -r --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
-  if length == 0 then ""
+# Relocated findings are unanchored to the diff, so the location code span is
+# their only pointer back to the source. Link it to the file at the head commit
+# (fork-correct via --head-repo-url, targeting the repo where head_sha lives) so
+# it matches the reply blob link and the status-comment SHA links. The visible
+# label stays the `path:line[-end]` code span; only the wrapping `[ ]( )` is
+# added. Degrades to the bare code span when either head arg is empty (dry-run /
+# no --head-sha), mirroring the sentinel's omit-when-unset rule above.
+additional="$(jq -r \
+  --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" \
+  --arg head_repo_url "$HEAD_REPO_URL" --arg head_sha "$HEAD_SHA" '
+  ($head_repo_url != "" and $head_sha != "") as $linkable
+  | if length == 0 then ""
   else "\n\n## Additional findings\n\n" + (
     map(
-      "- `" + .path + ":" + (.line | tostring) +
-      (if .end_line and .end_line != .line then "-" + (.end_line | tostring) else "" end) +
-      "` _" +
+      "- " +
+      (("`" + .path + ":" + (.line | tostring) +
+        (if .end_line and .end_line != .line then "-" + (.end_line | tostring) else "" end) +
+        "`") as $label
+      | ("#L" + (.line | tostring) +
+        (if .end_line and .end_line != .line then "-L" + (.end_line | tostring) else "" end)) as $frag
+      | if $linkable then
+          "[" + $label + "](" + $head_repo_url + "/blob/" + $head_sha + "/" + .path + $frag + ")"
+        else $label end) +
+      " _" +
       ($typ[.type] // "❓") + " " + .type +
       "_ | _" +
       ($sev[.severity] // "❓") + " " + .severity +

@@ -278,6 +278,7 @@ post_args=(
   --repo "$BASE_REPO"
   --number "$PR_NUMBER"
   --head-sha "$HEAD_OID"
+  --head-repo-url "$HEAD_REPO_URL"
   --summary-file "$SUMMARY_FILE"
   --anchored "$ANCHORED_FILE"
   --unanchored "$UNANCHORED_FILE"
