@@ -263,6 +263,17 @@ def test_blob_link_targets_head_repo_not_base():
     assert _find(calls, "repos/example/example/pulls/999/comments") is not None
 
 
+def test_italic_confirmed_lead_renders_with_link_on_one_line():
+    # #106: reply verdict leads are italic, peeled by voice.split_lead (#104), so
+    # the verdict reads straight into the blob link on line one — `_Confirmed:_ [link]`.
+    reply = _reply(body="_Confirmed:_", verified_path="daemon/lib.sh", verified_line=88)
+    _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
+    body = _reply_body(calls)
+    link = f"[`a1b2c3d:L88`](https://github.com/example/example/blob/{HEAD_SHA}/daemon/lib.sh#L88)"
+    assert body.startswith(f"_Confirmed:_ {link}"), body
+    assert "🤖 _pr-review-agent_" in body
+
+
 def test_fix_claim_without_verified_fields_has_marker_but_no_link():
     # head sha present, but the agent emitted nothing to anchor (e.g. a fix
     # confirmed by deletion): marker still appended, no blob link.
