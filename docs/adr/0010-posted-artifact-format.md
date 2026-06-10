@@ -29,7 +29,7 @@ The governing principle: **draft-status is a review-level fact, stated once in t
 
 | Post type | Anatomy (top → bottom) |
 |---|---|
-| Review body (others', pending) | `[preview banner]` · summary · `[dropped-findings note]` · `[## Additional findings]` · **Review footer** (Drafted) · Sha sentinel |
+| Review body (others', pending) | `[preview banner]` · summary · `[dropped-findings note]` · `[## Findings outside the diff]` · **Review footer** (Drafted) · Sha sentinel |
 | Review body (own, auto-submitted) | same, **Review footer** (Auto-submitted) |
 | Inline comment | `_type_ \| _severity_` badge · agent body (bold lead + optional bullets) · **Provenance tag** |
 | Reply | agent body (italic lead, see §4 amendment) · `[blob-at-HEAD link]` · **Provenance tag** · Reply sentinel |

@@ -9,7 +9,7 @@ A GitHub PR Review object in the `PENDING` state. On **others' PRs** (author ≠
 _Avoid_: dry-run, draft review (the platform term is "pending"), preview
 
 **Review body**:
-The top-level summary text of a Pending review. 2–3 sentences, English. When some findings cannot be anchored to specific diff lines, the daemon appends an `## Additional findings` section to the Review body (see ADR 0005).
+The top-level summary text of a Pending review. 2–3 sentences, English. When some findings cannot be anchored to specific diff lines, the daemon appends an `## Findings outside the diff` section to the Review body (see ADR 0005).
 _Avoid_: summary (use Review body for the formal term; "summary" is fine in casual prose)
 
 **Finding**:
@@ -17,7 +17,7 @@ One logical review item the Review agent emits. Has a `path`, `line`, `severity`
 _Avoid_: comment (use Inline comment for the rendered API form), issue, remark
 
 **Inline comment**:
-A Finding after it has been rendered into GitHub's PR Review API shape: path + line + body with severity emoji prefix and bold type label. Each Finding either becomes an Inline comment (if anchored in the diff) or is relocated into the Review body's `## Additional findings` section (if not).
+A Finding after it has been rendered into GitHub's PR Review API shape: path + line + body with severity emoji prefix and bold type label. Each Finding either becomes an Inline comment (if anchored in the diff) or is relocated into the Review body's `## Findings outside the diff` section (if not).
 _Avoid_: comment alone (ambiguous), finding (Finding is the logical unit; Inline comment is the rendered form)
 
 **Review footer**:

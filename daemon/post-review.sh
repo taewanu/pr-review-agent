@@ -132,7 +132,7 @@ fi
 # Review footer per ADR 0010 (the posted-format contract; ADR 0001 D3 decides
 # one pending review per tick, not this string). Identity from
 # derive_project_identity above. The leading `\n\n---\n\n` detaches the footer
-# from whatever ends the body (summary, dropped-note, `## Additional findings`,
+# from whatever ends the body (summary, dropped-note, `## Findings outside the diff`,
 # or nothing). Review-level, so it carries attribution + next action, not the
 # item-level Provenance tag.
 # Own PRs auto-submit a COMMENT review (ADR 0008), so the action line is
@@ -163,7 +163,7 @@ SEV_EMOJI='{"important":"🔴","nit":"🟡","pre_existing":"🟣"}'
 TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨"}'
 
 # Render unanchored findings into a Markdown section appended to the review body.
-# `## Additional findings` is the canonical relocation surface per ADR 0005.
+# `## Findings outside the diff` is the canonical relocation surface per ADR 0005.
 # Header shape per ADR 0002: `_<type-emoji> <type>_ | _<severity-emoji> <severity>_`.
 # Bodies sit inside the outer `- ` list item, so every line is 2-space indented
 # (gsub on internal newlines) to keep bullets and follow-up paragraphs nested.
@@ -179,7 +179,7 @@ additional="$(jq -r \
   --arg head_repo_url "$HEAD_REPO_URL" --arg head_sha "$HEAD_SHA" '
   ($head_repo_url != "" and $head_sha != "") as $linkable
   | if length == 0 then ""
-  else "\n\n## Additional findings\n\n" + (
+  else "\n\n## Findings outside the diff\n\n" + (
     map(
       "- " +
       (("`" + .path + ":" + (.line | tostring) +
