@@ -121,10 +121,10 @@ Concept labels (kebab) for the two dedup rules: "do not re-review the same SHA" 
 
 ## Roadmap
 
-**Version (V1, V2, V2.1, …)**:
-A sequential release scope: what's in scope when the project declares itself done for that release. V1 = the original PRD (issue #1). V2 = iterative review mode (dedup, threading, confirmation; PRD #21). Point releases (V2.1, …) carry follow-on refinements. Architecturally divergent paths (Agent SDK headless mode in ADR 0001 D2, GitHub App identity in ADR 0003) are not a Version by themselves; they are decided in ADRs and land in whichever Version adopts them.
-_Avoid_: generation; milestone (a GitHub milestone tracks a Phase, not a Version); reserving V2 as "the architecture-divergence bucket" (an earlier, abandoned framing)
+**Version (`v0.2.2`, …)**:
+A sequential release scope named by its semver: what's in scope when the project declares itself done for that release. The version lives in `pyproject.toml`, renders in the preview banner, and is cut as an annotated git tag `v0.A.B` whose planning milestone carries the same name; the bump lands in the tagged commit (ADR 0012). Early releases were displayed as V1, V2, V2.1 and cut as phase tags; the roadmap issue's release table maps them to semver. Architecturally divergent paths (Agent SDK headless mode in ADR 0001 D2, GitHub App identity in ADR 0003) are not a Version by themselves; they are decided in ADRs and land in whichever Version adopts them.
+_Avoid_: V`A`.`B` display names like V2.2 (retired in ADR 0012; the semver is the one name); generation; phase (historical, see below)
 
-**Phase (`phase-0`, `phase-1`, …)**:
-A themed band of work on the path to a Version, tracked as a GitHub milestone and closed with an annotated git tag `phase-N`. A Phase bundles the several PRs that share one theme (e.g. `phase-6` = operator-identity UX consequences). It is not a single PR and not a time window. Multiple Phases compose into a Version.
-_Avoid_: stage, iteration, sprint; equating a Phase with a single PR (an earlier, abandoned definition)
+**Phase (`phase-0`, …, `phase-6`)**:
+Historical term: a themed band of work cut as an annotated git tag `phase-N`, the release markers before version-first naming (ADR 0012). Since `phase-4` each phase mapped 1:1 to a release; the roadmap issue's release table is the bridge from phase tags to semver. The tags stay; no new tag or milestone uses the name. Themed grouping inside a release is an "arc" (roadmap usage).
+_Avoid_: naming new work phase-N; stage, iteration, sprint
