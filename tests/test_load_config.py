@@ -174,3 +174,23 @@ def test_json_output_is_serialisable(tmp_path: Path):
     parsed = json.loads(cfg.model_dump_json())
     assert parsed["repos"] == ["alice/foo"]
     assert parsed["review"]["language"] == "en"
+    # poll.sh reads max_parallel from this JSON to size its dispatch semaphore.
+    assert parsed["max_parallel"] == 1
+
+
+def test_max_parallel_defaults_to_serial(tmp_path: Path):
+    # Default 1 keeps dispatch serial, so enabling parallelism is opt-in.
+    _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\n")
+    assert load_config.load(tmp_path).max_parallel == 1
+
+
+def test_max_parallel_env_override(tmp_path: Path):
+    _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\nMAX_PARALLEL=3\n")
+    assert load_config.load(tmp_path).max_parallel == 3
+
+
+def test_max_parallel_rejects_below_one(tmp_path: Path):
+    _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\nMAX_PARALLEL=0\n")
+    with pytest.raises(ConfigError) as exc:
+        load_config.load(tmp_path)
+    assert exc.value.category == "config-invalid"

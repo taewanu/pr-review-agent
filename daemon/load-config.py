@@ -67,6 +67,7 @@ class DaemonConfig(BaseModel):
     repos: list[str]
     github_user: str
     poll_interval_seconds: int = 300
+    max_parallel: int = 1
     review_own_prs: bool = True
     opt_out_label: str = "no-ai-review"
     slack_webhook_url: str = ""
@@ -94,6 +95,13 @@ class DaemonConfig(BaseModel):
     def _check_interval(cls, v: int) -> int:
         if v < 1:
             raise ValueError(f"POLL_INTERVAL_SECONDS must be >= 1 (got {v})")
+        return v
+
+    @field_validator("max_parallel")
+    @classmethod
+    def _check_max_parallel(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"MAX_PARALLEL must be >= 1 (got {v})")
         return v
 
 
@@ -148,6 +156,7 @@ def load(checkout_root: Path) -> DaemonConfig:
         "poll_interval_seconds": _parse_int(
             env.get("POLL_INTERVAL_SECONDS", ""), key="POLL_INTERVAL_SECONDS", default=300
         ),
+        "max_parallel": _parse_int(env.get("MAX_PARALLEL", ""), key="MAX_PARALLEL", default=1),
         "review_own_prs": _parse_bool(env.get("REVIEW_OWN_PRS", "true"), key="REVIEW_OWN_PRS"),
         "opt_out_label": env.get("OPT_OUT_LABEL", "").strip() or "no-ai-review",
         "slack_webhook_url": env.get("SLACK_WEBHOOK_URL", "").strip(),

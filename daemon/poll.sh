@@ -37,8 +37,9 @@ while IFS= read -r r; do REPOS+=("$r"); done < <(jq -r '.repos[]' <<<"$CONFIG")
 GITHUB_USER="$(jq -r '.github_user' <<<"$CONFIG")"
 REVIEW_OWN_PRS="$(jq -r '.review_own_prs' <<<"$CONFIG")"
 OPT_OUT_LABEL="$(jq -r '.opt_out_label' <<<"$CONFIG")"
+MAX_PARALLEL="$(jq -r '.max_parallel' <<<"$CONFIG")"
 
-log_info "watched: ${REPOS[*]} (own-PRs: $REVIEW_OWN_PRS, user: $GITHUB_USER, opt-out: ${OPT_OUT_LABEL:-disabled})"
+log_info "watched: ${REPOS[*]} (own-PRs: $REVIEW_OWN_PRS, user: $GITHUB_USER, opt-out: ${OPT_OUT_LABEL:-disabled}, parallel: $MAX_PARALLEL)"
 
 # Verify access to every watched repo before doing work. Catches typos and
 # missing collaborator access early instead of mid-tick.
@@ -50,6 +51,31 @@ for repo in "${REPOS[@]}"; do
     exit 1
   fi
 done
+
+# Review one PR and record its outcome. Run in the background under the dispatch
+# semaphore, so it owns its own state write: the per-PR state file advances only
+# on review success (atomic, ADR 0006); a failure leaves it for the next tick.
+# Always returns 0 so a failed review never aborts the tick under `set -e` when
+# the parent waits on this PID.
+dispatch_review() {
+  local owner="$1" repo_name="$2" pr_number="$3" head_sha="$4" pr_url="$5"
+  shift 5
+  if run_with_pr_timeout "review-dispatch" "$pr_url" "$head_sha" \
+    bash "$SCRIPT_DIR/review-pr.sh" "$@"; then
+    state_write "$owner" "$repo_name" "$pr_number" "$head_sha" 0
+  else
+    log_err "review failed for $pr_url: state untouched, will retry next tick"
+  fi
+  return 0
+}
+
+# Bounded-parallel dispatch (#92). Reviews fan out up to MAX_PARALLEL at a time;
+# review_head indexes the oldest in-flight PID so a full pool blocks on it to
+# free a slot (FIFO). macOS ships bash 3.2 with no `wait -n`, so the bound is a
+# head-index over a PID array rather than wait-any. The cap is global across
+# repos: the binding constraint is concurrent `claude -p` load, not per-repo.
+review_pids=()
+review_head=0
 
 for repo in "${REPOS[@]}"; do
   log_step "polling $repo"
@@ -135,13 +161,19 @@ for repo in "${REPOS[@]}"; do
       review_args+=(--last-sha "$last_sha")
     fi
     review_args+=("$pr_url")
-    if run_with_pr_timeout "review-dispatch" "$pr_url" "$head_sha" \
-      bash "$SCRIPT_DIR/review-pr.sh" "${review_args[@]}"; then
-      state_write "$owner" "$repo_name" "$pr_number" "$head_sha" 0
-    else
-      log_err "review failed for $pr_url — state untouched, will retry next tick"
+    dispatch_review "$owner" "$repo_name" "$pr_number" "$head_sha" \
+      "$pr_url" "${review_args[@]}" &
+    review_pids+=($!)
+    # Pool full: block on the oldest in-flight review before launching the next.
+    if (( ${#review_pids[@]} - review_head >= MAX_PARALLEL )); then
+      wait "${review_pids[review_head]}" || true
+      review_head=$((review_head + 1))
     fi
   done < <(jq -c '.[]' <<<"$prs_json")
 done
+
+# Drain reviews still running at the end of the tick before reporting done, so
+# their state writes land and a slow review can't bleed into the next cycle.
+wait
 
 log_step "tick done"
