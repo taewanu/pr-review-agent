@@ -84,6 +84,16 @@ arm_git_stall_timeout() {
   export GIT_HTTP_LOW_SPEED_TIME="${GIT_HTTP_LOW_SPEED_TIME:-30}"
 }
 
+# True when $2 (the prior-reviewed SHA) is an ancestor of HEAD in the repo at
+# $1, i.e. the branch advanced by a fast-forward so an incremental `$2..HEAD`
+# diff still reflects the whole PR. False after a force-push or rebase: the tips
+# have diverged, so `$2..HEAD` surfaces unrelated base commits and cancels the
+# PR's own change (#123). Also false when ancestry can't be resolved locally (a
+# shallow clone lacking $2's history), so callers fall back to the full PR diff.
+is_fast_forward() {
+  git -C "$1" merge-base --is-ancestor "$2" HEAD 2>/dev/null
+}
+
 # State tracking for same-SHA dedup. One file per PR. Layered behind the
 # sentinel-based dedup (ADR 0006) as a fallback when GitHub's reviews API is
 # unavailable.
