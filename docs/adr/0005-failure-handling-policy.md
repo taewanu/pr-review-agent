@@ -23,7 +23,7 @@ rather than abort. The two pulls need to be reconciled.
 A PR-tick stops on system failures and degrades on per-finding failures.
 
 - **System failures:** log an actionable error to stderr, exit non-zero, post
-  nothing. Same-SHA dedup (later slice) makes the next tick retry naturally.
+  nothing. Same-SHA dedup makes the next tick retry naturally.
 - **Per-finding failures:** drop or relocate the affected finding and
   continue. Always surface the action in the posted summary so degradation is
   visible, not silent.
