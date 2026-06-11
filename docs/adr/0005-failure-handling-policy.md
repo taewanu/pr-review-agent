@@ -14,9 +14,9 @@ validate → post). Failures arrive in two flavors:
   schema constraint (forbidden severity×type combo) or a positioning
   constraint (`line` outside diff).
 
-User story #27 demands "fail loud on errors". The PRD also names a specific
-case (`line` outside diff) where the daemon must convert the inline into a
-summary fallback rather than abort. The two pulls need to be reconciled.
+The PRD demands "fail loud on errors" but also names a specific case (`line`
+outside diff) where the daemon must convert the inline into a summary fallback
+rather than abort. The two pulls need to be reconciled.
 
 ## Decision
 

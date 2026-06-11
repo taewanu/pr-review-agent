@@ -87,7 +87,7 @@ for repo in "${REPOS[@]}"; do
       continue
     fi
 
-    # Story #26: per-PR opt-out via label. Empty OPT_OUT_LABEL disables the filter.
+    # Per-PR opt-out via label. Empty OPT_OUT_LABEL disables the filter.
     if [[ -n "$OPT_OUT_LABEL" ]]; then
       has_optout="$(jq --arg label "$OPT_OUT_LABEL" \
         '[.labels[]?.name] | any(. == $label)' <<<"$pr_obj")"
