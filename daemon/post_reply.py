@@ -110,12 +110,13 @@ ADD_REPLY_MUTATION = (
     "addPullRequestReviewThreadReply(input: {pullRequestReviewId: $review, "
     "pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }"
 )
-# Submit as COMMENT with no `body` field — keeps the create body (the hidden
-# REPLY_REVIEW_MARKER); the reply substance lives in each inner comment, and a
-# visible summary is deferred to #11.
+# Submit as COMMENT, setting the review body to the disposition summary plus the
+# hidden REPLY_REVIEW_MARKER (#11). submitPullRequestReview accepts a `body` that
+# overrides the create-time body, so the summary counts the replies that actually
+# landed with no extra round-trip.
 SUBMIT_REVIEW_MUTATION = (
-    "mutation SubmitReview($review: ID!) { "
-    "submitPullRequestReview(input: {pullRequestReviewId: $review, event: COMMENT}) "
+    "mutation SubmitReview($review: ID!, $body: String!) { "
+    "submitPullRequestReview(input: {pullRequestReviewId: $review, event: COMMENT, body: $body}) "
     "{ pullRequestReview { id state } } }"
 )
 # Discards a stale pending review (a prior tick that added replies but failed to
@@ -410,9 +411,33 @@ def add_thread_reply(review_id: str, thread_id: str, body: str) -> tuple[int, st
     return proc.returncode, proc.stderr
 
 
-def submit_review(review_id: str) -> tuple[int, str]:
-    """Submit the pending review as COMMENT — one notification for the tick."""
-    proc = _graphql(SUBMIT_REVIEW_MUTATION, review=review_id)
+def disposition_summary(open_count: int, resolved: int) -> str:
+    """One-line disposition rollup for the Reply review body (#11).
+
+    Leads with the conversations still needing the author (open: pushback +
+    stands), then the resolved ones (confirmed + withdrawn). "conversation" is
+    GitHub's user-facing name for a review thread (the "Resolve conversation"
+    control); the API-layer "thread" stays in the code. Built deterministically
+    so the count never drifts and the line clears the voice summary rules by
+    construction. Called only with at least one landed reply, so open + resolved
+    is never zero."""
+
+    def conversations(n: int) -> str:
+        return "1 conversation" if n == 1 else f"{n} conversations"
+
+    if open_count and resolved:
+        return f"{conversations(open_count)} still open, {resolved} resolved."
+    if open_count:
+        return f"{conversations(open_count)} still open."
+    if resolved == 1:
+        return "1 conversation resolved."
+    return f"All {conversations(resolved)} resolved."
+
+
+def submit_review(review_id: str, body: str) -> tuple[int, str]:
+    """Submit the pending review as COMMENT, the tick's single notification. The
+    body carries the disposition summary plus the hidden marker (#11)."""
+    proc = _graphql(SUBMIT_REVIEW_MUTATION, review=review_id, body=body)
     return proc.returncode, proc.stderr
 
 
@@ -619,7 +644,9 @@ def main() -> int:
                     "no thread replies added; discarded the empty pending review", file=sys.stderr
                 )
             else:
-                src, serr = submit_review(review_id)
+                resolved = sum(1 for r in added if r.get("mode") in RESOLVE_MODES)
+                summary = disposition_summary(len(added) - resolved, resolved)
+                src, serr = submit_review(review_id, f"{summary}\n\n{REPLY_REVIEW_MARKER}")
                 if src == 0:
                     text_ok += len(added)
                     # Resolve only after submit — replies (and their sentinels)
