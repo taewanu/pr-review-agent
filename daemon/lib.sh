@@ -44,6 +44,46 @@ run_with_timeout() {
   perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
 }
 
+# Outer per-PR watchdog cap (#121). run_with_timeout bounds only the inner
+# `claude -p` call (300s default); the network steps around it — `gh repo clone`,
+# the per-PR `git fetch`, `gh pr diff`, the `gh api` posts — were unbounded, so a
+# stalled fetch after a laptop sleep once froze the whole serial loop for ~10h.
+# This caps a per-PR step end-to-end. It must stay above the inner agent cap plus
+# clone/fetch/post overhead, or a legitimately slow review is killed: 600 ≈ 2×
+# the inner cap. Override for tests.
+readonly PER_PR_TIMEOUT="${PER_PR_TIMEOUT:-600}"
+
+# run_with_pr_timeout <failure-category> <pr-url> <head-sha> <command...>
+# Wraps one per-PR step (review-pr.sh / reply-pr.sh dispatch) in PER_PR_TIMEOUT
+# so a hang in any network step fails over to the next tick instead of wedging
+# the loop (#121). On timeout, emits the ADR 0005 structured failure line and
+# returns $TIMEOUT_EXIT; otherwise passes the command's own exit status through,
+# so a genuine non-zero is never misread as a timeout. The broad backstop:
+# whatever stalls — git, gh, claude, DNS — is bounded here.
+run_with_pr_timeout() {
+  local category="$1" url="$2" sha="$3"
+  shift 3
+  local rc=0
+  run_with_timeout "$PER_PR_TIMEOUT" "$@" || rc=$?
+  if [[ "$rc" -eq "$TIMEOUT_EXIT" ]]; then
+    log_failure "${category}-timeout" "$url" "$sha" "per-PR step exceeded ${PER_PR_TIMEOUT}s"
+  fi
+  return "$rc"
+}
+
+# arm_git_stall_timeout
+# Exports git's low-speed abort thresholds so an https clone/fetch over a stalled
+# connection (laptop sleep, network drop) aborts with an error in ~30s instead of
+# hanging forever (#121, the exact failure seen). Layered under the poll.sh
+# per-PR watchdog: this kills the common https stall cleanly so the script's own
+# cleanup runs (scratch removed, lock released), while the watchdog backstops
+# everything the env can't reach (ssh transport, gh api, DNS). Exported, not just
+# set, so the git child processes inherit it. Override either threshold for tests.
+arm_git_stall_timeout() {
+  export GIT_HTTP_LOW_SPEED_LIMIT="${GIT_HTTP_LOW_SPEED_LIMIT:-1000}"
+  export GIT_HTTP_LOW_SPEED_TIME="${GIT_HTTP_LOW_SPEED_TIME:-30}"
+}
+
 # State tracking for same-SHA dedup. One file per PR. Layered behind the
 # sentinel-based dedup (ADR 0006) as a fallback when GitHub's reviews API is
 # unavailable.
