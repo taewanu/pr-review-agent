@@ -1,6 +1,6 @@
 # pr-review-agent
 
-Automated PR review tool running under the operator's own GitHub identity. Daemon written in bash + Python, scheduled by macOS `launchd`. Posts pending reviews via the `gh` CLI. Built on Claude Code subagents, skills, and slash commands.
+Automated PR review tool running under the operator's own GitHub identity. Daemon written in bash + Python, run as a foreground polling loop and optionally installed as a background `launchd` job (ADR 0011). Posts pending reviews via the `gh` CLI. Built on Claude Code subagents, skills, and slash commands.
 
 ## Run commands
 
