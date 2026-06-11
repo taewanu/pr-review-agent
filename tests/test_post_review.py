@@ -2,7 +2,7 @@
 
 Fixture is `tests/fixtures/post_review_snapshot/` and holds:
 - anchored.json: 2 findings (single-line `important+bug`, range `nit+refactor`)
-- unanchored.json: 1 finding (`pre_existing+polish`) routed to ## Additional findings
+- unanchored.json: 1 finding (`pre_existing+polish`) routed to ## Findings outside the diff
 - summary.txt: review summary
 - expected_payload.json: payload when no findings were dropped (default path)
 - expected_payload_dropped_2.json: payload when 2 forbidden-combo findings were dropped
@@ -130,7 +130,7 @@ def test_dry_run_payload_matches_snapshot():
 
 def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     # Locks in the ADR 0005 per-finding-failure rendering: an italic note sits
-    # between the summary and `## Additional findings` so the operator sees the
+    # between the summary and `## Findings outside the diff` so the operator sees the
     # redaction in the body itself, not just in stderr.
     actual = _run_post_review("--dropped-combo", "2")
     actual["body"] = _strip_derived(actual["body"])
