@@ -38,9 +38,14 @@ DAEMON = REPO_ROOT / "daemon"
 
 
 FIXTURE_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
+FIXTURE_HEAD_REPO_URL = "https://github.com/example/example"
 
 
-def _run_post_review(*extra_args: str, head_sha: str | None = FIXTURE_HEAD_SHA) -> dict:
+def _run_post_review(
+    *extra_args: str,
+    head_sha: str | None = FIXTURE_HEAD_SHA,
+    head_repo_url: str | None = FIXTURE_HEAD_REPO_URL,
+) -> dict:
     """Returns the --dry-run review payload (the object POSTed to the reviews
     API: body + comments, plus commit_id/event when set)."""
     args = [
@@ -61,6 +66,8 @@ def _run_post_review(*extra_args: str, head_sha: str | None = FIXTURE_HEAD_SHA) 
     ]
     if head_sha is not None:
         args += ["--head-sha", head_sha]
+    if head_repo_url is not None:
+        args += ["--head-repo-url", head_repo_url]
     args += ["--dry-run", *extra_args]
     result = subprocess.run(args, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
@@ -148,6 +155,29 @@ def test_sentinel_omitted_when_head_sha_unset():
     # value the parser would never accept.
     body = _run_post_review(head_sha=None)["body"]
     assert "pr-review-agent:sha:" not in body
+
+
+def test_additional_finding_location_links_to_head_blob():
+    # A relocated finding is unanchored to the diff, so its location code span is
+    # the only pointer back to the source. It links to the file at the head
+    # commit (fork-correct via --head-repo-url), matching the reply blob link.
+    # The visible label stays the `path:line` code span; only the wrap is added.
+    body = _run_post_review()["body"]
+    expected = (
+        f"- [`src/api/auth.py:5`]"
+        f"({FIXTURE_HEAD_REPO_URL}/blob/{FIXTURE_HEAD_SHA}/src/api/auth.py#L5)"
+    )
+    assert expected in body
+
+
+def test_additional_finding_location_bare_when_head_unset():
+    # Dry-run / debug invocations may omit --head-sha or --head-repo-url. The
+    # location degrades to the bare code span rather than emitting a link with a
+    # missing sha or repo, mirroring the sentinel's omit-when-unset rule.
+    for kwargs in ({"head_sha": None}, {"head_repo_url": None}):
+        body = _run_post_review(**kwargs)["body"]
+        assert "- `src/api/auth.py:5`" in body
+        assert "/blob/" not in body
 
 
 def test_own_pr_submits_comment_review():
