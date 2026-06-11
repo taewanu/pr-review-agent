@@ -100,7 +100,8 @@ for repo in "${REPOS[@]}"; do
     # Reply handling runs every tick regardless of dedup — operators reply
     # independent of HEAD changes. reply-pr.sh exits 0 cheaply when nothing
     # to ack (one gh api call, no scratch clone).
-    if ! bash "$SCRIPT_DIR/reply-pr.sh" "$pr_url"; then
+    if ! run_with_pr_timeout "reply-dispatch" "$pr_url" "$head_sha" \
+      bash "$SCRIPT_DIR/reply-pr.sh" "$pr_url"; then
       log_err "reply check failed for $pr_url — continuing to review step"
     fi
 
@@ -134,7 +135,8 @@ for repo in "${REPOS[@]}"; do
       review_args+=(--last-sha "$last_sha")
     fi
     review_args+=("$pr_url")
-    if bash "$SCRIPT_DIR/review-pr.sh" "${review_args[@]}"; then
+    if run_with_pr_timeout "review-dispatch" "$pr_url" "$head_sha" \
+      bash "$SCRIPT_DIR/review-pr.sh" "${review_args[@]}"; then
       state_write "$owner" "$repo_name" "$pr_number" "$head_sha" 0
     else
       log_err "review failed for $pr_url — state untouched, will retry next tick"

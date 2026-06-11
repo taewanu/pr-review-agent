@@ -157,6 +157,9 @@ else
   log_info "scratch: $SCRATCH"
 fi
 
+# Bound the https clone/fetch so a stalled connection aborts cleanly instead of
+# hanging the loop (#121). Backstopped by poll.sh's per-PR watchdog.
+arm_git_stall_timeout
 gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
 (
   cd "$SCRATCH"
