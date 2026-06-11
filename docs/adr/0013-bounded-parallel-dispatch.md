@@ -38,6 +38,7 @@ No hard upper bound is enforced. The recommended ceiling is small (2 to 3): the 
 - The within-cycle serialization that ADR 0009 inherited (and [ADR 0008](./0008-own-pr-auto-submit.md) leaned on after dropping the pending-review lock) is now relaxed for **distinct** PRs. Same-PR serialization still holds via the per-PR lock (#67), so the own-PR auto-submit double-post window ADR 0008 describes does not reopen.
 - Logs from concurrent reviews interleave in `.daemon.log`; each line stays prefixed, but a single review's lines are no longer contiguous.
 - At a high `MAX_PARALLEL` on a busy cycle, concurrent `claude -p` processes can hit rate limits. Default `1` and the documented conservative ceiling keep this opt-in and visible.
+- `MAX_PARALLEL` is re-read every cycle, since `poll.sh` reloads config at the top of each cycle, so a change applies on the next cycle with no daemon restart. This differs from `POLL_INTERVAL_SECONDS`, which `run.sh` reads once before its loop and so needs a restart to change. The new cap takes effect at the next cycle boundary; an in-flight cycle finishes under the cap it started with.
 - Out of scope: cross-cycle scheduling, per-PR priority, and any global rate-limit backoff. This ADR bounds within-cycle fan-out only.
 
 Tracked in #92.
