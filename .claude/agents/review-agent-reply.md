@@ -95,7 +95,7 @@ Same two-part shape for every text reply (`confirmed`, `pushback`, `stands`, `wi
 
 > _Confirmed:_ Stderr now captured to a tmpfile and surfaced through `log_err`.
 
-> _`session.token` no longer in the warning log path_ The drop landed cleanly.
+> _`session.token` no longer in the warning log path_ The warning now logs `event_id` only.
 
 ### Pushback examples
 
