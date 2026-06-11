@@ -69,6 +69,7 @@ class PollResult:
     reply_calls: list[str]
     state: dict[int, dict]
     stderr: str
+    peak_concurrency: int = 0
 
     def reviewed(self, pr: int) -> bool:
         return any(f"/pull/{pr}" in call for call in self.review_calls)
@@ -116,6 +117,21 @@ url="${{@: -1}}"
 exit 0
 """
 
+# Review stub: like _STUB_CHILD, but also brackets its run with start/end events
+# and an optional sleep. Replaying the append-ordered events gives the true peak
+# concurrency without relying on wall-clock timestamps; the sleep keeps a review
+# alive long enough for the next dispatch to overlap it when the cap allows.
+_STUB_REVIEW = """#!/usr/bin/env bash
+echo "$*" >> "{log}"
+url="${{@: -1}}"
+[[ "$url" =~ /pull/([0-9]+) ]] && n="${{BASH_REMATCH[1]}}"
+echo "start $n" >> "{events}"
+sleep {sleep}
+echo "end $n" >> "{events}"
+[[ -f "{faildir}/fail_${{n}}" ]] && exit 1
+exit 0
+"""
+
 
 def _executable(path: Path, body: str) -> None:
     path.write_text(body)
@@ -133,6 +149,8 @@ def _run_poll(
     review_own_prs: bool = True,
     opt_out_label: str = "no-ai-review",
     github_user: str = OPERATOR,
+    max_parallel: int = 1,
+    review_sleep: float = 0,
 ) -> PollResult:
     root = tmp_path / "root"
     daemon = root / "daemon"
@@ -151,6 +169,7 @@ def _run_poll(
         f"GITHUB_USER={github_user}\n"
         f"REVIEW_OWN_PRS={'true' if review_own_prs else 'false'}\n"
         f"OPT_OUT_LABEL={opt_out_label}\n"
+        f"MAX_PARALLEL={max_parallel}\n"
     )
 
     (data / "pr_list.json").write_text(json.dumps(prs))
@@ -166,13 +185,17 @@ def _run_poll(
 
     review_log = tmp_path / "review.log"
     reply_log = tmp_path / "reply.log"
+    events = tmp_path / "review_events.log"
     faildir = tmp_path / "faildir"
     faildir.mkdir()
     for number in review_fail or set():
         (faildir / f"fail_{number}").write_text("")
 
     _executable(bindir / "gh", _STUB_GH.format(data=data))
-    _executable(daemon / "review-pr.sh", _STUB_CHILD.format(log=review_log, faildir=faildir))
+    _executable(
+        daemon / "review-pr.sh",
+        _STUB_REVIEW.format(log=review_log, events=events, sleep=review_sleep, faildir=faildir),
+    )
     _executable(daemon / "reply-pr.sh", _STUB_CHILD.format(log=reply_log, faildir=faildir))
 
     env = os.environ.copy()
@@ -193,11 +216,24 @@ def _run_poll(
         if path.exists():
             state[number] = json.loads(path.read_text())
 
+    # Peak concurrency by replaying start/end in append order: a start that
+    # lands before a prior end means those reviews overlapped. Order-based, so
+    # no dependence on wall-clock granularity.
+    peak = current = 0
+    if events.exists():
+        for line in events.read_text().splitlines():
+            if line.startswith("start"):
+                current += 1
+                peak = max(peak, current)
+            elif line.startswith("end"):
+                current -= 1
+
     return PollResult(
         review_calls=review_log.read_text().splitlines() if review_log.exists() else [],
         reply_calls=reply_log.read_text().splitlines() if reply_log.exists() else [],
         state=state,
         stderr=proc.stderr,
+        peak_concurrency=peak,
     )
 
 
@@ -319,3 +355,50 @@ def test_each_pr_dispatched_independently(tmp_path):
     assert res.last_sha_for(1) == ""
     assert not res.reviewed(2)
     assert res.last_sha_for(3) == SHA_PRIOR
+
+
+# --- bounded-parallel dispatch (#92) -----------------------------------------
+
+
+def test_default_dispatch_is_serial(tmp_path):
+    # MAX_PARALLEL=1 (the default) reviews one PR at a time: no two overlap.
+    res = _run_poll(
+        tmp_path,
+        [_pr(n) for n in (1, 2, 3)],
+        reviews={1: [], 2: [], 3: []},
+        review_sleep=0.4,
+        max_parallel=1,
+    )
+    assert res.peak_concurrency == 1
+    assert all(res.reviewed(n) for n in (1, 2, 3))
+
+
+def test_parallel_dispatch_runs_up_to_the_cap(tmp_path):
+    # MAX_PARALLEL=2 with four PRs: reviews overlap, but never more than two at
+    # once. peak == 2 proves both that it parallelises and that it stays bounded.
+    res = _run_poll(
+        tmp_path,
+        [_pr(n) for n in (1, 2, 3, 4)],
+        reviews={n: [] for n in (1, 2, 3, 4)},
+        review_sleep=0.4,
+        max_parallel=2,
+    )
+    assert res.peak_concurrency == 2
+    assert all(res.reviewed(n) for n in (1, 2, 3, 4))
+    # Every PR's review still lands and advances its own state.
+    assert all(res.state[n]["last_reviewed_sha"] == SHA_HEAD for n in (1, 2, 3, 4))
+
+
+def test_parallel_dispatch_preserves_per_pr_scoping(tmp_path):
+    # The contract #33 pinned must survive parallelism: each PR keeps its own
+    # --last-sha (first-review vs advanced-sentinel re-review) when dispatched
+    # concurrently.
+    res = _run_poll(
+        tmp_path,
+        [_pr(1, head=SHA_HEAD), _pr(2, head=SHA_HEAD)],
+        reviews={1: [], 2: [_sentinel_review(SHA_PRIOR)]},
+        review_sleep=0.3,
+        max_parallel=2,
+    )
+    assert res.last_sha_for(1) == ""
+    assert res.last_sha_for(2) == SHA_PRIOR
