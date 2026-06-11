@@ -33,6 +33,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POST_REPLY = REPO_ROOT / "daemon" / "post_reply.py"
 
+# Import post_reply as a module so its pure helpers (disposition_summary) can be
+# unit-tested directly, alongside the subprocess _run integration tests below.
+import importlib.util as _ilu  # noqa: E402
+
+_spec = _ilu.spec_from_file_location("post_reply", POST_REPLY)
+post_reply = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(post_reply)
+
 # The chars the old bash pipeline could mangle: newline, tab, backslash, a
 # backticked regex with a literal `\n`, and non-ASCII.
 NASTY_BODY = (
@@ -576,14 +584,17 @@ def test_batch_wraps_replies_in_one_review_no_detached_posts():
     assert _find(calls, "/replies") is None, "nothing posts as a detached reply"
 
 
-def test_batch_submits_as_comment_with_empty_body():
+def test_batch_submits_as_comment_with_disposition_body():
+    # #38 wraps the tick's replies in one COMMENT review; #11 fills its body with
+    # the disposition summary plus the hidden marker (the body was empty under #38
+    # alone). A single confirmed reply rolls up to "1 conversation resolved."
     _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
     submit = _find(calls, "SubmitReview")
     assert submit is not None
     assert "event: COMMENT" in submit[0], "wrapper review submits as COMMENT"
-    # #38 ships an empty wrapper body: the submit mutation sets no `body` field
-    # (the deprecation/summary lives in #11), so no body variable is passed.
-    assert "-f body=" not in submit[0] and "body=" not in submit[0].split("query=", 1)[1]
+    body = submit[0].split("query=", 1)[1]
+    assert "1 conversation resolved." in body, "the submit body carries the disposition summary"
+    assert "pr-review-agent:reply-review" in body, "the hidden marker stays in the body"
 
 
 def test_batch_reply_body_round_trips_through_graphql_arg():
@@ -910,3 +921,83 @@ def test_bulleted_reply_body_passes_the_voice_gate():
     result, calls = _run(_raw([_reply(body=body)]))
     assert result.returncode == 0, result.stderr
     assert _find(calls, "/replies") is not None
+
+
+# --- Disposition summary (#11): the one-line rollup that fills the Reply review
+# body. Leads with conversations still open (pushback/stands), then resolved
+# (confirmed/withdrawn). Deterministic, so it never miscounts and passes voice.
+
+
+def test_disposition_summary_open_and_resolved():
+    assert post_reply.disposition_summary(1, 2) == "1 conversation still open, 2 resolved."
+    assert post_reply.disposition_summary(2, 1) == "2 conversations still open, 1 resolved."
+
+
+def test_disposition_summary_open_only():
+    assert post_reply.disposition_summary(2, 0) == "2 conversations still open."
+    assert post_reply.disposition_summary(1, 0) == "1 conversation still open."
+
+
+def test_disposition_summary_all_resolved():
+    assert post_reply.disposition_summary(0, 3) == "All 3 conversations resolved."
+    assert post_reply.disposition_summary(0, 1) == "1 conversation resolved."
+
+
+def test_disposition_summary_passes_the_voice_gate():
+    # The summary is a summary-class field: plain prose, no leading bold, no
+    # forbidden opener, no em dash. Lock every branch against the voice rules.
+    for open_count, resolved in [(1, 2), (2, 1), (2, 0), (1, 0), (0, 3), (0, 1)]:
+        line = post_reply.disposition_summary(open_count, resolved)
+        violations = post_reply.voice.check_text(
+            line,
+            prefixes=post_reply.voice.FORBIDDEN_SUMMARY_PREFIXES,
+            label="reply-review summary",
+        )
+        assert violations == [], (line, violations)
+
+
+def _submit_call(calls: list[tuple[str, str]]) -> tuple[str, str] | None:
+    return _find(calls, "SubmitReview")
+
+
+def test_reply_review_body_leads_with_open_then_resolved():
+    # One confirmed (resolves) and one pushback (stays open), both batched under
+    # the wrapper review. The submit body leads with the open count, then the
+    # resolved count, and keeps the hidden marker.
+    replies = [
+        _reply(in_reply_to_id="111", addressed_comment_id="222", mode="confirmed"),
+        _reply(in_reply_to_id="333", addressed_comment_id="444", mode="pushback"),
+    ]
+    threads = _threads("111", "F", thread_id="PRRT_a") + _threads("333", "G", thread_id="PRRT_b")
+    result, calls = _run(_raw(replies), threads=threads)
+    assert result.returncode == 0, result.stderr
+    submit = _submit_call(calls)
+    assert submit is not None, "the wrapper review submits"
+    assert "1 conversation still open, 1 resolved." in submit[0]
+    assert "pr-review-agent:reply-review" in submit[0], "the hidden marker stays in the body"
+
+
+def test_reply_review_body_all_resolved():
+    replies = [
+        _reply(in_reply_to_id="111", addressed_comment_id="222", mode="confirmed"),
+        _question(in_reply_to_id="333", addressed_comment_id="444", mode="withdrawn"),
+    ]
+    threads = _threads("111", "F", thread_id="PRRT_a") + _threads("333", "G", thread_id="PRRT_b")
+    _, calls = _run(_raw(replies), threads=threads)
+    submit = _submit_call(calls)
+    assert submit is not None
+    assert "All 2 conversations resolved." in submit[0]
+
+
+def test_disposition_excludes_reaction_only_acknowledgment():
+    # An acknowledgment is reaction-only, not wrapped in the review, so it never
+    # enters the count: only the one confirmed reply is summarized.
+    replies = [
+        _reply(in_reply_to_id="111", addressed_comment_id="222", mode="confirmed"),
+        {"in_reply_to_id": "333", "addressed_comment_id": "444", "bucket": "acknowledgment"},
+    ]
+    threads = _threads("111", "F", thread_id="PRRT_a") + _threads("333", "G", thread_id="PRRT_b")
+    _, calls = _run(_raw(replies), threads=threads)
+    submit = _submit_call(calls)
+    assert submit is not None
+    assert "1 conversation resolved." in submit[0]
