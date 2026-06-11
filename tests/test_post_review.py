@@ -102,12 +102,19 @@ def _strip_derived(body: str) -> str:
     emitted by post-review.sh."""
     owner, repo = _git_remote_identity()
     version = _pyproject_version()
-    return body.replace(
-        f"[{repo}](https://github.com/{owner}/{repo})",
-        "[__PROJECT_NAME__](__PROJECT_URL__)",
-    ).replace(
-        f"{repo} v{version} (preview release)",
-        "__PROJECT_NAME__ v__VERSION__ (preview release)",
+    return (
+        body.replace(
+            f"[{repo}](https://github.com/{owner}/{repo})",
+            "[__PROJECT_NAME__](__PROJECT_URL__)",
+        )
+        .replace(
+            f"[Report a problem](https://github.com/{owner}/{repo}/issues)",
+            "[Report a problem](__PROJECT_URL__/issues)",
+        )
+        .replace(
+            f"{repo} v{version} (preview release)",
+            "__PROJECT_NAME__ v__VERSION__ (preview release)",
+        )
     )
 
 

@@ -116,7 +116,7 @@ pyproject="$(dirname "$0")/../pyproject.toml"
 if [[ -r "$pyproject" ]]; then
   version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$pyproject" | head -1)"
   if [[ "$version" =~ ^0\. ]]; then
-    banner="_${project_name} v${version} (preview release). Expect rough edges; see open issues._"$'\n\n---\n\n'
+    banner="_${project_name} v${version} (preview release). [Report a problem](${project_url}/issues)._"$'\n\n---\n\n'
   fi
 fi
 
