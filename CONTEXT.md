@@ -45,7 +45,7 @@ A review agent's fixed identity, "who it is." Constant across all findings in a 
 _Avoid_: tone (voice is invariant; tone varies)
 
 **Tone**:
-How a review agent's voice shifts across review contexts (e.g., emphatic for `important` findings, light for `nit`, matter-of-fact for `pre_existing`). The voice stays constant; the tone adapts. Part of Persona. Tone variation rules are not codified in V1; they emerge from voice naturally and may be pinned in Phase 3+.
+How a review agent's voice shifts across review contexts (e.g., emphatic for `important` findings, light for `nit`, matter-of-fact for `pre_existing`). The voice stays constant; the tone adapts. Part of Persona. Tone variation rules are not codified in V1; they emerge from voice naturally and may be pinned in a future release.
 _Avoid_: voice (tone varies; voice is invariant), nuance (tone is the category-level shift; nuance is finer)
 
 **Nuance**:

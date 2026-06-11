@@ -13,7 +13,7 @@ Three deployments break under this constraint:
 - CodeRabbit / Anthropic CR parity: install daemon-side only, register target, review. No target-repo modification.
 - V2 reply path: same constraint for `review-agent-reply` + `reply-pr`.
 
-PRD #21 deferred this as issue #40 ("V3 cross-repo"). Wrong framing: it's the missing V1/V2 deployment piece, not a separate version.
+The V2 PRD (issue #21) deferred this as issue #40 ("V3 cross-repo"). Wrong framing: it's the missing V1/V2 deployment piece, not a separate version.
 
 ## Decision
 

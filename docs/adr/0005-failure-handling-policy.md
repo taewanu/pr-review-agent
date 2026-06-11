@@ -14,16 +14,16 @@ validate → post). Failures arrive in two flavors:
   schema constraint (forbidden severity×type combo) or a positioning
   constraint (`line` outside diff).
 
-User story #27 demands "fail loud on errors". The PRD also names a specific
-case (`line` outside diff) where the daemon must convert the inline into a
-summary fallback rather than abort. The two pulls need to be reconciled.
+The PRD demands "fail loud on errors" but also names a specific case (`line`
+outside diff) where the daemon must convert the inline into a summary fallback
+rather than abort. The two pulls need to be reconciled.
 
 ## Decision
 
 A PR-tick stops on system failures and degrades on per-finding failures.
 
 - **System failures:** log an actionable error to stderr, exit non-zero, post
-  nothing. Same-SHA dedup (later slice) makes the next tick retry naturally.
+  nothing. Same-SHA dedup makes the next tick retry naturally.
 - **Per-finding failures:** drop or relocate the affected finding and
   continue. Always surface the action in the posted summary so degradation is
   visible, not silent.
