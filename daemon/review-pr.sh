@@ -144,8 +144,8 @@ trap cleanup EXIT
 # exact HEAD (the lock above covers the concurrent case). poll.sh dedups before
 # dispatch, but the manual one-shot bypasses that. A discovery failure falls
 # through to reviewing rather than skipping on uncertainty.
-if existing_sha="$(discover_sentinel_sha "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")" \
-  && [[ "$existing_sha" == "$HEAD_OID" ]]; then
+if existing_sha="$(discover_sentinel_sha "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")" &&
+  [[ "$existing_sha" == "$HEAD_OID" ]]; then
   log_info "already reviewed ${HEAD_OID:0:12}, skipping"
   exit 0
 fi

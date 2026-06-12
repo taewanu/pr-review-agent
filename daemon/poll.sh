@@ -165,7 +165,7 @@ for repo in "${REPOS[@]}"; do
       "$pr_url" "${review_args[@]}" &
     review_pids+=($!)
     # Pool full: block on the oldest in-flight review before launching the next.
-    if (( ${#review_pids[@]} - review_head >= MAX_PARALLEL )); then
+    if ((${#review_pids[@]} - review_head >= MAX_PARALLEL)); then
       wait "${review_pids[review_head]}" || true
       review_head=$((review_head + 1))
     fi
