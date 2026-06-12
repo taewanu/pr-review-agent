@@ -216,7 +216,10 @@ acquire_pr_lock() {
   mkdir -p "$dir"
   lockfile="$(_lock_path "$owner" "$repo" "$pr")"
   stale="${PR_REVIEW_LOCK_STALE_SECONDS:-1800}"
-  if (set -o noclobber; printf '%s %s\n' "$$" "$(date +%s)" >"$lockfile") 2>/dev/null; then
+  if (
+    set -o noclobber
+    printf '%s %s\n' "$$" "$(date +%s)" >"$lockfile"
+  ) 2>/dev/null; then
     printf '%s\n' "$lockfile"
     return 0
   fi
@@ -226,10 +229,13 @@ acquire_pr_lock() {
   # acceptable since that only follows a prior holder's crash.
   read -r holder created <"$lockfile" 2>/dev/null || true
   now="$(date +%s)"
-  if { [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; } \
-    || { [[ -n "$created" ]] && ((now - created > stale)); }; then
+  if { [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; } ||
+    { [[ -n "$created" ]] && ((now - created > stale)); }; then
     rm -f "$lockfile"
-    if (set -o noclobber; printf '%s %s\n' "$$" "$(date +%s)" >"$lockfile") 2>/dev/null; then
+    if (
+      set -o noclobber
+      printf '%s %s\n' "$$" "$(date +%s)" >"$lockfile"
+    ) 2>/dev/null; then
       printf '%s\n' "$lockfile"
       return 0
     fi

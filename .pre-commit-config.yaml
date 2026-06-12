@@ -1,17 +1,31 @@
-default_language_version:
-  python: python3.13
+# Hooks call the mise-pinned binaries on PATH (repo: local / language: system),
+# not self-pinning hook repos. mise.toml is the single source of tool versions;
+# this removes the double-install, the version drift, and the per-hook network
+# fetch. Run under `mise exec -- pre-commit` so the binaries resolve (ADR 0014).
 
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.13
+  - repo: local
     hooks:
       - id: ruff-check
-      - id: ruff-format
+        name: ruff check
+        entry: ruff check --force-exclude
+        language: system
+        types_or: [python, pyi, jupyter]
+        require_serial: true
 
-  - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.11.0.1
-    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --force-exclude
+        language: system
+        types_or: [python, pyi, jupyter]
+        require_serial: true
+
       - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        types: [shell]
+        require_serial: true # shellcheck detects cross-file sourcing this way
         # -x follows `source=` directives across files. Without it, the
         # commit-stage hook (staged files only) misses cross-file definitions
         # while --all-files passes them in the same invocation.
@@ -19,24 +33,32 @@ repos:
         # -r silently eats backslashes and corrupts multi-line JSON payloads.
         args: [-x, --enable=SC2162]
 
-  - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.13.1-1
-    hooks:
       - id: shfmt
-        args: [-i, "2", -ci]
+        name: shfmt
+        entry: shfmt
+        language: system
+        types: [shell]
+        exclude_types: [csh, tcsh]
+        # -d makes shfmt exit non-zero on a formatting diff instead of printing
+        # to stdout and passing. Without it the hook never fails (it is a no-op).
+        args: [-i, "2", -ci, -d]
 
-  - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.12
-    hooks:
       - id: actionlint
+        name: actionlint
+        entry: actionlint
+        language: system
+        types: [yaml]
+        files: ^\.github/workflows/
 
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
-    hooks:
       - id: gitleaks
+        name: gitleaks
+        entry: gitleaks git --pre-commit --redact --staged --verbose
+        language: system
+        pass_filenames: false # --staged scans the index, not passed paths
 
-  - repo: https://github.com/adrienverge/yamllint
-    rev: v1.38.0
-    hooks:
       - id: yamllint
+        name: yamllint
+        entry: yamllint
+        language: system
+        types: [file, yaml]
         args: [-d, "{extends: default, rules: {line-length: {max: 120}, document-start: disable}}"]
