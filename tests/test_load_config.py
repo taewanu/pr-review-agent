@@ -1,4 +1,4 @@
-"""Tests for daemon/load-config.py."""
+"""Tests for daemon/load_config.py."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-LOAD_PATH = Path(__file__).resolve().parent.parent / "daemon" / "load-config.py"
+LOAD_PATH = Path(__file__).resolve().parent.parent / "daemon" / "load_config.py"
 _spec = importlib.util.spec_from_file_location("load_config", LOAD_PATH)
 assert _spec is not None and _spec.loader is not None
 load_config = importlib.util.module_from_spec(_spec)

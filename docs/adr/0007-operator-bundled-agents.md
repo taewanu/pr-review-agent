@@ -26,7 +26,7 @@ After clone + checkout of the per-PR scratch, the daemon copies its own bundled 
 
 ### Target-repo precedence
 
-If a target-repo file already exists at the same path in the scratch (the repo ships its own `.claude/agents/review-agent-default.md`, for example), the bundle leaves it alone via `[[ -e dst ]] || cp src dst`. V2 does not support deliberate customization; the `extract-json.py` schema contract (ADR 0005) catches off-spec overrides as `category=schema-invalid`. Per-repo customization is deferred to a later ADR.
+If a target-repo file already exists at the same path in the scratch (the repo ships its own `.claude/agents/review-agent-default.md`, for example), the bundle leaves it alone via `[[ -e dst ]] || cp src dst`. V2 does not support deliberate customization; the `extract_json.py` schema contract (ADR 0005) catches off-spec overrides as `category=schema-invalid`. Per-repo customization is deferred to a later ADR.
 
 ### Source location
 

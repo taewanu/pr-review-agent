@@ -44,7 +44,7 @@ A PR-tick stops on system failures and degrades on per-finding failures.
   surface for findings the daemon could not anchor inline. Pattern mirrors
   Anthropic Code Review's relocation of out-of-diff findings.
 
-> **Amended 2026-06-10 (#115).** The relocation heading is renamed `## Additional findings` → `## Findings outside the diff`. "Additional" named sequence ("more findings"); the defining property is the cause: the finding's line is not in the diff's changed hunks (`anchor-findings.py` could not anchor it), so it is relocated to the body. The new name states that cause, echoing the established term (CodeRabbit's "Outside diff range", GitHub's "outside the diff").
+> **Amended 2026-06-10 (#115).** The relocation heading is renamed `## Additional findings` → `## Findings outside the diff`. "Additional" named sequence ("more findings"); the defining property is the cause: the finding's line is not in the diff's changed hunks (`anchor_findings.py` could not anchor it), so it is relocated to the body. The new name states that cause, echoing the established term (CodeRabbit's "Outside diff range", GitHub's "outside the diff").
 - The set of "per-finding failures" is closed at two entries. Any future
   category discovered defaults to **system / loud** unless this ADR is revisited.
 - Until state tracking lands, system-failed ticks retry by hand. After it

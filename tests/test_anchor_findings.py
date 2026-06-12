@@ -1,4 +1,4 @@
-"""Tests for daemon/anchor-findings.py."""
+"""Tests for daemon/anchor_findings.py."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import importlib.util
 import textwrap
 from pathlib import Path
 
-ANCHOR_PATH = Path(__file__).resolve().parent.parent / "daemon" / "anchor-findings.py"
+ANCHOR_PATH = Path(__file__).resolve().parent.parent / "daemon" / "anchor_findings.py"
 _spec = importlib.util.spec_from_file_location("anchor_findings", ANCHOR_PATH)
 assert _spec is not None and _spec.loader is not None
 anchor_findings = importlib.util.module_from_spec(_spec)
@@ -278,7 +278,7 @@ def test_drop_forbidden_combos_counts_multiple():
 
 def test_drop_forbidden_combos_missing_fields_treated_as_non_match():
     # A malformed finding with missing severity/type isn't in FORBIDDEN_COMBOS
-    # so it passes through. Schema validation is extract-json's job, not this
+    # so it passes through. Schema validation is extract_json's job, not this
     # step's.
     findings = [{"body": "no severity or type"}]
     kept, dropped = anchor_findings.drop_forbidden_combos(findings)

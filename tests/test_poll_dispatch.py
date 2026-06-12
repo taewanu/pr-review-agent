@@ -8,7 +8,7 @@ and the config loader in isolation, but the branch logic gluing them together
 same-SHA short-circuit, state written only on success) ran only in production.
 
 This harness runs the real poll.sh over a faithful fake daemon dir: real
-poll.sh, lib.sh, and load-config.py, with stub `gh`, `review-pr.sh`, and
+poll.sh, lib.sh, and load_config.py, with stub `gh`, `review-pr.sh`, and
 `reply-pr.sh`. The stubs record their invocations so each test asserts on what
 poll.sh dispatched and with which arguments, plus the state files it wrote.
 
@@ -161,7 +161,7 @@ def _run_poll(
         d.mkdir(parents=True)
 
     # Real scripts under test; everything else around them is a stub.
-    for name in ("poll.sh", "lib.sh", "load-config.py"):
+    for name in ("poll.sh", "lib.sh", "load_config.py"):
         shutil.copy(DAEMON / name, daemon / name)
 
     (root / ".env").write_text(

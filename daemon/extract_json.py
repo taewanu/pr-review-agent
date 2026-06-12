@@ -106,7 +106,7 @@ def main() -> int:
         # First stderr line is parseable by review-pr.sh; remaining lines are
         # human-readable detail.
         print(f"category={exc.category}", file=sys.stderr)
-        print(f"extract-json: {exc}", file=sys.stderr)
+        print(f"extract_json: {exc}", file=sys.stderr)
         return 1
     print(payload.model_dump_json())
     return 0

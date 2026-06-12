@@ -25,7 +25,7 @@ CONFIG_ERR="$(mktemp -t pr-review-poll-config.XXXXXX)"
 trap 'rm -f "$CONFIG_ERR"' EXIT
 
 log_step "loading config"
-if ! CONFIG="$(python3 "$SCRIPT_DIR/load-config.py" "$REPO_ROOT" 2>"$CONFIG_ERR")"; then
+if ! CONFIG="$(python3 "$SCRIPT_DIR/load_config.py" "$REPO_ROOT" 2>"$CONFIG_ERR")"; then
   cat "$CONFIG_ERR" >&2
   category="$(grep -m1 '^category=' "$CONFIG_ERR" | cut -d= -f2 || true)"
   log_failure "${category:-unknown}" "" "" "config load failed"

@@ -1,4 +1,4 @@
-"""Tests for daemon/extract-json.py."""
+"""Tests for daemon/extract_json.py."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-# Script filename is hyphenated, which blocks `import daemon.extract_json`.
-EXTRACT_PATH = Path(__file__).resolve().parent.parent / "daemon" / "extract-json.py"
+# daemon scripts aren't an importable package; load the module by path.
+EXTRACT_PATH = Path(__file__).resolve().parent.parent / "daemon" / "extract_json.py"
 _spec = importlib.util.spec_from_file_location("extract_json", EXTRACT_PATH)
 assert _spec is not None and _spec.loader is not None
 extract_json = importlib.util.module_from_spec(_spec)

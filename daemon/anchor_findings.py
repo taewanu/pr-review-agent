@@ -94,7 +94,7 @@ def split_findings(findings: list[dict], diff: Diff) -> tuple[list[dict], list[d
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("payload", type=Path, help="path to extract-json.py output")
+    parser.add_argument("payload", type=Path, help="path to extract_json.py output")
     parser.add_argument("diff", type=Path, help="path to gh pr diff output")
     parser.add_argument("--anchored", type=Path, required=True)
     parser.add_argument("--unanchored", type=Path, required=True)

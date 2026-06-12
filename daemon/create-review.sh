@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# post-review.sh — submit the assembled pending review to GitHub via gh api.
+# create-review.sh — create the review via gh api POST /reviews. Pending on
+# others' PRs (submit-review.sh finalizes it later); auto-submitted on own PRs
+# (ADR 0008).
 
 set -euo pipefail
 
@@ -65,7 +67,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     *)
-      log_err "post-review.sh: unknown arg: $1"
+      log_err "create-review.sh: unknown arg: $1"
       exit 1
       ;;
   esac
@@ -208,7 +210,7 @@ body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}${
 # (bold lead + optional bullets), then the Provenance tag. An Inline comment is
 # item-level, so it carries the tag (who wrote it), not a draft-status footer
 # (ADR 0010); $PROVENANCE_TAG is sourced from lib.sh, shared with the Status
-# comment and matched against post_reply.py's MARKER by a test.
+# comment and matched against create_reply.py's MARKER by a test.
 comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" --arg marker "$PROVENANCE_TAG" '
   map(
     {

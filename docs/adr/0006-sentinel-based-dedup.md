@@ -64,7 +64,7 @@ Multi-operator: each operator's daemon only sees its own login at step 2, so cro
 
 Phase-5 writes both sources and reads sentinel-first:
 
-- `daemon/post-review.sh` appends the sentinel line to the review body before the `gh api` call. The existing `state_write` on success stays.
+- `daemon/create-review.sh` appends the sentinel line to the review body before the `gh api` call. The existing `state_write` on success stays.
 - `daemon/poll.sh` runs the sentinel discovery flow first. On hit, uses the sentinel SHA. On miss (API failure or no prior review with sentinel), falls back to `state_read`.
 - After a phase of clean sentinel-reads in production, phase-6 (or later) removes the `state_write` call and the state-file fallback. The state-file write was already a placeholder for the `review_id` slot per `daemon/poll.sh:109`; the migration leaves the slot empty and tears out the rest at cutover.
 
