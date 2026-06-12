@@ -1,6 +1,6 @@
 """Snapshot tests for daemon/create-review.sh's --dry-run payload.
 
-Fixture is `tests/fixtures/post_review_snapshot/` and holds:
+Fixture is `tests/fixtures/create_review_snapshot/` and holds:
 - anchored.json: 2 findings (single-line `important+bug`, range `nit+refactor`)
 - unanchored.json: 1 finding (`pre_existing+polish`) routed to ## Findings outside the diff
 - summary.txt: review summary
@@ -17,8 +17,8 @@ itself is covered by `test_footer_reflects_git_remote_identity`.
 Regenerate snapshots (derived values are normalized automatically — no
 manual find/replace step):
 
-    python tests/test_post_review.py
-    python tests/test_post_review.py --dropped-combo 2
+    python tests/test_create_review.py
+    python tests/test_create_review.py --dropped-combo 2
 
 The `__main__` block at the bottom runs the daemon, applies `_strip_derived`
 to the body, and writes the result to the matching `expected_payload*.json`.
@@ -33,7 +33,7 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-FIXTURE = REPO_ROOT / "tests" / "fixtures" / "post_review_snapshot"
+FIXTURE = REPO_ROOT / "tests" / "fixtures" / "create_review_snapshot"
 DAEMON = REPO_ROOT / "daemon"
 
 
@@ -41,7 +41,7 @@ FIXTURE_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 FIXTURE_HEAD_REPO_URL = "https://github.com/example/example"
 
 
-def _run_post_review(
+def _run_create_review(
     *extra_args: str,
     head_sha: str | None = FIXTURE_HEAD_SHA,
     head_repo_url: str | None = FIXTURE_HEAD_REPO_URL,
@@ -119,7 +119,7 @@ def _strip_derived(body: str) -> str:
 
 
 def test_dry_run_payload_matches_snapshot():
-    actual = _run_post_review()
+    actual = _run_create_review()
     actual["body"] = _strip_derived(actual["body"])
     expected = json.loads((FIXTURE / "expected_payload.json").read_text())
     assert actual == expected, (
@@ -132,7 +132,7 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     # Locks in the ADR 0005 per-finding-failure rendering: an italic note sits
     # between the summary and `## Findings outside the diff` so the operator sees the
     # redaction in the body itself, not just in stderr.
-    actual = _run_post_review("--dropped-combo", "2")
+    actual = _run_create_review("--dropped-combo", "2")
     actual["body"] = _strip_derived(actual["body"])
     expected = json.loads((FIXTURE / "expected_payload_dropped_2.json").read_text())
     assert actual == expected, (
@@ -146,7 +146,7 @@ def test_sentinel_present_and_matches_adr_0006_format():
     # `daemon/poll.sh` can grep it byte-exactly. Locks the regex separately
     # from the full-payload snapshot so a format regression points at this
     # test, not at a scrolling JSON diff.
-    body = _run_post_review()["body"]
+    body = _run_create_review()["body"]
     match = re.search(r"<!-- pr-review-agent:sha:([0-9a-f]{40}) -->", body)
     assert match, "ADR 0006 sentinel missing from review body"
     assert match.group(1) == FIXTURE_HEAD_SHA
@@ -160,7 +160,7 @@ def test_sentinel_omitted_when_head_sha_unset():
     # Dry-run / debug invocations may omit --head-sha. The script should emit
     # no sentinel rather than a malformed `pr-review-agent:sha:` with an empty
     # value the parser would never accept.
-    body = _run_post_review(head_sha=None)["body"]
+    body = _run_create_review(head_sha=None)["body"]
     assert "pr-review-agent:sha:" not in body
 
 
@@ -169,7 +169,7 @@ def test_additional_finding_location_links_to_head_blob():
     # the only pointer back to the source. It links to the file at the head
     # commit (fork-correct via --head-repo-url), matching the reply blob link.
     # The visible label stays the `path:line` code span; only the wrap is added.
-    body = _run_post_review()["body"]
+    body = _run_create_review()["body"]
     expected = (
         f"- [`src/api/auth.py:5`]"
         f"({FIXTURE_HEAD_REPO_URL}/blob/{FIXTURE_HEAD_SHA}/src/api/auth.py#L5)"
@@ -182,7 +182,7 @@ def test_additional_finding_location_bare_when_head_unset():
     # location degrades to the bare code span rather than emitting a link with a
     # missing sha or repo, mirroring the sentinel's omit-when-unset rule.
     for kwargs in ({"head_sha": None}, {"head_repo_url": None}):
-        body = _run_post_review(**kwargs)["body"]
+        body = _run_create_review(**kwargs)["body"]
         assert "- `src/api/auth.py:5`" in body
         assert "/blob/" not in body
 
@@ -190,10 +190,10 @@ def test_additional_finding_location_bare_when_head_unset():
 def test_own_pr_submits_comment_review():
     # ADR 0008: own PRs auto-submit a COMMENT review in the create POST itself,
     # via an `event` field. Others' PRs omit it and stay pending.
-    review = _run_post_review("--own-pr")
+    review = _run_create_review("--own-pr")
     assert review.get("event") == "COMMENT"
     # Others' path (default) carries no event key — the review stays pending.
-    assert "event" not in _run_post_review()
+    assert "event" not in _run_create_review()
 
 
 def test_own_pr_footer_says_edit_not_submit_or_delete():
@@ -202,7 +202,7 @@ def test_own_pr_footer_says_edit_not_submit_or_delete():
     # "delete" because GitHub rejects deleting a submitted review (REST and
     # GraphQL both 422); an unwanted one can only be edited or have its comments
     # hidden.
-    body = _run_post_review("--own-pr")["body"]
+    body = _run_create_review("--own-pr")["body"]
     assert "Edit as needed." in body
     assert "delete" not in body.lower()
     assert "Submit, edit, or cancel as needed." not in body
@@ -214,7 +214,7 @@ def test_footer_reflects_git_remote_identity():
     # footer/banner. Body must surface that derived identity. Test stays
     # correct on canonical and fork checkouts alike by querying git directly.
     owner, repo = _git_remote_identity()
-    body = _run_post_review()["body"]
+    body = _run_create_review()["body"]
     assert f"[{repo}](https://github.com/{owner}/{repo})" in body
 
 
@@ -222,7 +222,7 @@ if __name__ == "__main__":
     import sys
 
     extra = sys.argv[1:]
-    payload = _run_post_review(*extra)
+    payload = _run_create_review(*extra)
     payload["body"] = _strip_derived(payload["body"])
     suffix = "_dropped_2" if "--dropped-combo" in extra else ""
     out = FIXTURE / f"expected_payload{suffix}.json"
