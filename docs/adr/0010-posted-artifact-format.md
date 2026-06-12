@@ -7,14 +7,14 @@ Status: Accepted
 
 The daemon posts several artifact types, and their `🤖` footers drifted into four strings in two styles:
 
-- `🤖 Auto-submitted by [name](url). Edit as needed.` — own-PR Review body (`post-review.sh`)
-- `🤖 Drafted by [name](url). Submit, edit, or cancel as needed.` — others'-PR Review body (`post-review.sh`)
-- `🤖 _AI-drafted_` — Inline comment (`post-review.sh`)
-- `🤖 _pr-review-agent_` — reply (`post_reply.py`, set by #82)
+- `🤖 Auto-submitted by [name](url). Edit as needed.` — own-PR Review body (`create-review.sh`)
+- `🤖 Drafted by [name](url). Submit, edit, or cancel as needed.` — others'-PR Review body (`create-review.sh`)
+- `🤖 _AI-drafted_` — Inline comment (`create-review.sh`)
+- `🤖 _pr-review-agent_` — reply (`create_reply.py`, set by #82)
 
-Two problems compound the inconsistency. First, `_AI-drafted_` is applied unconditionally (`post-review.sh` ignores `OWN_PR`), so a finding on an auto-submitted own-PR review labels itself a draft when it is already posted — the same flaw #82 fixed for replies. Second, the Review-body footer string was only ever an implementation detail: `post-review.sh` cites "ADR 0001 D3", but D3 decides *one pending review per tick*, not the footer text. The format was never pinned.
+Two problems compound the inconsistency. First, `_AI-drafted_` is applied unconditionally (`create-review.sh` ignores `OWN_PR`), so a finding on an auto-submitted own-PR review labels itself a draft when it is already posted — the same flaw #82 fixed for replies. Second, the Review-body footer string was only ever an implementation detail: `create-review.sh` cites "ADR 0001 D3", but D3 decides *one pending review per tick*, not the footer text. The format was never pinned.
 
-The shared voice rules (opener words, 두괄식, no em dash, no task-scoped refs) have the same shape of drift: defined in `review-agent-default.md`, partly re-copied into `review-agent-reply.md`, and enforced post-hoc only for reviews (`extract-json.py`), not for replies. The severity/type badge map is the counter-example — single-sourced in `post-review.sh` (`SEV_EMOJI`/`TYPE_EMOJI`, ADR 0002) and shared by both renders. That is the model the rest should follow.
+The shared voice rules (opener words, 두괄식, no em dash, no task-scoped refs) have the same shape of drift: defined in `review-agent-default.md`, partly re-copied into `review-agent-reply.md`, and enforced post-hoc only for reviews (`extract_json.py`), not for replies. The severity/type badge map is the counter-example — single-sourced in `create-review.sh` (`SEV_EMOJI`/`TYPE_EMOJI`, ADR 0002) and shared by both renders. That is the model the rest should follow.
 
 ## Decision
 
@@ -37,12 +37,12 @@ The governing principle: **draft-status is a review-level fact, stated once in t
 
 ### 3. Single source for the Provenance tag
 
-This ADR is the documentary source of truth; each renderer hard-codes the tag with a comment referencing ADR 0010, and a test pins the three emit sites (`post-review.sh` Inline comment, `post_reply.py`, `lib.sh` Status comment) to one identical string. A runtime shared constant is rejected: the renderers straddle the bash/jq–Python boundary, and coupling them at runtime to share one short string costs more than a drift test. (The Review-footer strings live at a single site, `post-review.sh`, so they need no cross-file test.)
+This ADR is the documentary source of truth; each renderer hard-codes the tag with a comment referencing ADR 0010, and a test pins the three emit sites (`create-review.sh` Inline comment, `create_reply.py`, `lib.sh` Status comment) to one identical string. A runtime shared constant is rejected: the renderers straddle the bash/jq–Python boundary, and coupling them at runtime to share one short string costs more than a drift test. (The Review-footer strings live at a single site, `create-review.sh`, so they need no cross-file test.)
 
 ### 4. Voice rules: one prompt source, symmetric enforcement
 
 - `review-agent-default.md` is the SSOT for the shared voice rules; `review-agent-reply.md` references it and drops its re-copied prose. Mode-specific leads (`confirmed`/`pushback`/`stands`/`withdrawn`) stay local to the reply agent.
-- The post-hoc voice checks move to a shared `daemon/voice.py` imported by both `extract-json.py` and `post_reply.py`. Reply bodies are validated at the extraction gate with the Inline-comment rules (`strip_bold=True`, `FORBIDDEN_PREFIXES`, em dash, task-ref); a violation raises `style-violation` and **fails the whole reply batch before any POST**, symmetric with `extract-json.py`'s atomic-payload model and reusing the existing "no sentinel → retry next cycle" path. Only the opener/em-dash/task-ref rules are enforced; the bold-lead *shape* is not, matching `extract-json.py`.
+- The post-hoc voice checks move to a shared `daemon/voice.py` imported by both `extract_json.py` and `create_reply.py`. Reply bodies are validated at the extraction gate with the Inline-comment rules (`strip_bold=True`, `FORBIDDEN_PREFIXES`, em dash, task-ref); a violation raises `style-violation` and **fails the whole reply batch before any POST**, symmetric with `extract_json.py`'s atomic-payload model and reusing the existing "no sentinel → retry next cycle" path. Only the opener/em-dash/task-ref rules are enforced; the bold-lead *shape* is not, matching `extract_json.py`.
 
 > **Amended 2026-06-09 (#100).** Inline comment and reply bodies now additionally enforce the **structural 2–4 bullet count** (`check_bullets`): a body carrying bullets must have 0 or 2–4, never one or 5+. This is the structural half of the shape and is losslessly checkable. The *semantic* shape is still not enforced — the validator never forces a body to lead with bold or to use bullets, since "this reasoning is multi-point, so it should be bulleted" is a judgment a post-hoc check can only false-positive on. So the §4 line above narrows to: opener/em-dash/task-ref on every field, plus bullet *count* on bodies; the decision to bullet stays a prompt convention.
 
@@ -55,7 +55,7 @@ This ADR fixes format only. It explicitly does **not** decide:
 - **What is posted** — content and behavior are unchanged. The one intended behavioral consequence is the new reply voice gate (a previously-posting em-dash reply now fails and retries); that is the enforcement-parity goal, not a content change.
 - **#38** — wrapping per-cycle replies in one `COMMENTED` review. The per-item Provenance-tag contract holds regardless of later batching; if #38 introduces a wrapper body, that body's footer is #38's call, but it may not reopen the per-item tag.
 - **#75** — thread auto-resolution.
-- **Moving the `post-review.sh` jq render into Python** to share the tag constant at runtime (the rejected option in §3). A reasonable follow-on refactor, tracked separately.
+- **Moving the `create-review.sh` jq render into Python** to share the tag constant at runtime (the rejected option in §3). A reasonable follow-on refactor, tracked separately.
 
 ## Consequences
 
@@ -63,4 +63,4 @@ This ADR fixes format only. It explicitly does **not** decide:
 - `daemon/voice.py` becomes the single home for voice validation; adding a rule updates one module and both text-post paths inherit it.
 - A reply the agent writes with an em dash, a forbidden opener, or a task-scoped ref no longer posts; it fails the batch and the next polling cycle re-runs the reply agent. This is the same failure-then-retry behavior reviews already have.
 - CONTEXT.md gains the **Review footer** and **Provenance tag** terms; the bare "marker" stays reserved for the hidden Sentinel/Status markers.
-- No `reply-pr.sh` change is needed: it already feeds any `category=` line from `post_reply.py` to `log_failure`, so `style-violation` flows through. ADR 0005's failure table is broadened to name reply bodies.
+- No `reply-pr.sh` change is needed: it already feeds any `category=` line from `create_reply.py` to `log_failure`, so `style-violation` flows through. ADR 0005's failure table is broadened to name reply bodies.

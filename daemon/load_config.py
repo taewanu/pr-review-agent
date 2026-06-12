@@ -6,8 +6,8 @@ Output goes to stdout (consumed by poll.sh via jq). Errors emit a parseable
 through log_failure.
 
 Usage:
-    python3 daemon/load-config.py                # infer checkout root from script location
-    python3 daemon/load-config.py /path/to/root  # override (for tests)
+    python3 daemon/load_config.py                # infer checkout root from script location
+    python3 daemon/load_config.py /path/to/root  # override (for tests)
 """
 
 import re
@@ -177,7 +177,7 @@ def main() -> int:
         config = load(checkout_root)
     except ConfigError as exc:
         print(f"category={exc.category}", file=sys.stderr)
-        print(f"load-config: {exc}", file=sys.stderr)
+        print(f"load_config: {exc}", file=sys.stderr)
         return 1
     print(config.model_dump_json())
     return 0

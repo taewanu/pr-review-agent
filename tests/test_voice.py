@@ -1,7 +1,7 @@
 """Tests for daemon/voice.py — shared post-hoc voice checks (ADR 0010).
 
-The opener / em-dash / task-ref rules used to live only in extract-json.py.
-ADR 0010 moves them here so post_reply.py can enforce the same rules on reply
+The opener / em-dash / task-ref rules used to live only in extract_json.py.
+ADR 0010 moves them here so create_reply.py can enforce the same rules on reply
 bodies. These tests pin the shared API directly; the review path keeps its own
 behavior tests in test_extract_json.py.
 """

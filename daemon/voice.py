@@ -1,7 +1,7 @@
 """Shared post-hoc voice checks for daemon text posts (ADR 0010).
 
-extract-json.py validates the Review body's summary and each Inline comment;
-post_reply.py validates each reply body. Both enforce the same rules — no em
+extract_json.py validates the Review body's summary and each Inline comment;
+create_reply.py validates each reply body. Both enforce the same rules — no em
 dash, no forbidden sentence openers, no task-scoped refs — so the rules live
 here once and both import them.
 

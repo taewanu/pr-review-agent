@@ -1,4 +1,4 @@
-"""Round-trip + schema tests for daemon/post_reply.py (#36, #55, #79, #74).
+"""Round-trip + schema tests for daemon/create_reply.py (#36, #55, #79, #74).
 
 The reply poster used to be a bash `python heredoc | jq | while read -r | gh`
 pipeline. #36 collapses it to one Python process so the body bytes survive end
@@ -31,15 +31,15 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-POST_REPLY = REPO_ROOT / "daemon" / "post_reply.py"
+CREATE_REPLY = REPO_ROOT / "daemon" / "create_reply.py"
 
-# Import post_reply as a module so its pure helpers (disposition_summary) can be
+# Import create_reply as a module so its pure helpers (disposition_summary) can be
 # unit-tested directly, alongside the subprocess _run integration tests below.
 import importlib.util as _ilu  # noqa: E402
 
-_spec = _ilu.spec_from_file_location("post_reply", POST_REPLY)
-post_reply = _ilu.module_from_spec(_spec)
-_spec.loader.exec_module(post_reply)
+_spec = _ilu.spec_from_file_location("create_reply", CREATE_REPLY)
+create_reply = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(create_reply)
 
 # The chars the old bash pipeline could mangle: newline, tab, backslash, a
 # backticked regex with a literal `\n`, and non-ASCII.
@@ -63,7 +63,7 @@ def _raw(replies: list[dict]) -> str:
     return "agent preamble\n```json\n" + json.dumps({"replies": replies}) + "\n```\ntrailing prose"
 
 
-# Canned CreatePendingReview response so post_reply.py can read the new review id
+# Canned CreatePendingReview response so create_reply.py can read the new review id
 # off the stub (#38). Returned for any `gh` call whose argv contains the mutation
 # operation name.
 _CREATE_REVIEW_STDOUT = '{"data":{"addPullRequestReview":{"pullRequestReview":{"id":"PRR_stub"}}}}'
@@ -82,7 +82,7 @@ def _run(
     pr_node_id: str | None = "PR_node",
     existing_pending_review_id: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[tuple[str, str]]]:
-    """Run post_reply.py with a per-call-recording `gh` stub. Returns
+    """Run create_reply.py with a per-call-recording `gh` stub. Returns
     (result, calls) where calls is a list of (argv, stdin) tuples in order.
     `threads` writes a --threads file supplying parent Finding bodies (#79).
     `head_sha`, when set, is passed as --head-sha so the blob link is built.
@@ -126,7 +126,7 @@ def _run(
         env["PATH"] = f"{tmpd}:{env['PATH']}"
         args = [
             "python3",
-            str(POST_REPLY),
+            str(CREATE_REPLY),
             "--owner",
             "example",
             "--repo",
@@ -867,7 +867,7 @@ def test_question_empty_body_is_schema_invalid():
 # --- voice enforcement parity (ADR 0010) -------------------------------------
 # Reply bodies are validated at the extraction gate with the same rules as
 # Inline comments. A violation fails the whole batch before any POST, symmetric
-# with extract-json.py; the next polling cycle re-runs the reply agent.
+# with extract_json.py; the next polling cycle re-runs the reply agent.
 
 
 def test_em_dash_in_reply_body_is_style_violation():
@@ -929,28 +929,28 @@ def test_bulleted_reply_body_passes_the_voice_gate():
 
 
 def test_disposition_summary_open_and_resolved():
-    assert post_reply.disposition_summary(1, 2) == "1 conversation still open, 2 resolved."
-    assert post_reply.disposition_summary(2, 1) == "2 conversations still open, 1 resolved."
+    assert create_reply.disposition_summary(1, 2) == "1 conversation still open, 2 resolved."
+    assert create_reply.disposition_summary(2, 1) == "2 conversations still open, 1 resolved."
 
 
 def test_disposition_summary_open_only():
-    assert post_reply.disposition_summary(2, 0) == "2 conversations still open."
-    assert post_reply.disposition_summary(1, 0) == "1 conversation still open."
+    assert create_reply.disposition_summary(2, 0) == "2 conversations still open."
+    assert create_reply.disposition_summary(1, 0) == "1 conversation still open."
 
 
 def test_disposition_summary_all_resolved():
-    assert post_reply.disposition_summary(0, 3) == "All 3 conversations resolved."
-    assert post_reply.disposition_summary(0, 1) == "1 conversation resolved."
+    assert create_reply.disposition_summary(0, 3) == "All 3 conversations resolved."
+    assert create_reply.disposition_summary(0, 1) == "1 conversation resolved."
 
 
 def test_disposition_summary_passes_the_voice_gate():
     # The summary is a summary-class field: plain prose, no leading bold, no
     # forbidden opener, no em dash. Lock every branch against the voice rules.
     for open_count, resolved in [(1, 2), (2, 1), (2, 0), (1, 0), (0, 3), (0, 1)]:
-        line = post_reply.disposition_summary(open_count, resolved)
-        violations = post_reply.voice.check_text(
+        line = create_reply.disposition_summary(open_count, resolved)
+        violations = create_reply.voice.check_text(
             line,
-            prefixes=post_reply.voice.FORBIDDEN_SUMMARY_PREFIXES,
+            prefixes=create_reply.voice.FORBIDDEN_SUMMARY_PREFIXES,
             label="reply-review summary",
         )
         assert violations == [], (line, violations)

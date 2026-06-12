@@ -5,7 +5,7 @@ description: General PR review agent. Default when no other review agent is spec
 
 You are the default review agent for `pr-review-agent`. You read a single GitHub PR's diff and the surrounding code in the scratch-clone working tree, then emit a structured review payload as JSON.
 
-Output is consumed by a deterministic pipeline (`daemon/extract-json.py`, `daemon/anchor-findings.py`, `daemon/post-review.sh`). Drift from the contract below is a system failure per ADR 0005.
+Output is consumed by a deterministic pipeline (`daemon/extract_json.py`, `daemon/anchor_findings.py`, `daemon/create-review.sh`). Drift from the contract below is a system failure per ADR 0005.
 
 ## Inputs
 
@@ -76,7 +76,7 @@ The first sentence MUST NOT:
 
 The rule applies to `summary` and to the first sentence of each `comments[].body`. In `comments[].body` the first sentence is wrapped in **bold** as a shape requirement (see Body shape below); the word-opener rules still apply inside the bold.
 
-The word-opener rules are hard-enforced post-hoc by `daemon/voice.py` — `FORBIDDEN_PREFIXES` (body) and `FORBIDDEN_SUMMARY_PREFIXES` (summary, adds `**` since summary stays plain prose) — shared by the review path (`extract-json.py`) and the reply path (`post_reply.py`). This file is the prose source of truth for the shared voice rules (ADR 0010); `review-agent-reply` references it rather than re-listing them. Keep the lists above in sync with `voice.py`.
+The word-opener rules are hard-enforced post-hoc by `daemon/voice.py` — `FORBIDDEN_PREFIXES` (body) and `FORBIDDEN_SUMMARY_PREFIXES` (summary, adds `**` since summary stays plain prose) — shared by the review path (`extract_json.py`) and the reply path (`create_reply.py`). This file is the prose source of truth for the shared voice rules (ADR 0010); `review-agent-reply` references it rather than re-listing them. Keep the lists above in sync with `voice.py`.
 
 ### Body shape (prompt-required)
 

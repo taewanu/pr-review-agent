@@ -88,4 +88,4 @@ _🐛 bug_ | _🔴 important_
 
 Bullets are 0 or 2–4, never one. A single bullet is just a sentence with extra weight. The bold first line enforces 두괄식 (lead with the point) structurally: the visible shape carries the rule, not only the prompt examples.
 
-Post-hoc validation in `daemon/extract-json.py` catches forbidden openers (`This`, `The`, `Consider`, …) on both plain and bolded leads. The validator peels a leading `**` before the prefix scan, so word-level rules apply inside the bold too. The bold-lead shape itself is not enforced: a body that ships plain prose still passes the validator. Opener voice is the load-bearing rule.
+Post-hoc validation in `daemon/extract_json.py` catches forbidden openers (`This`, `The`, `Consider`, …) on both plain and bolded leads. The validator peels a leading `**` before the prefix scan, so word-level rules apply inside the bold too. The bold-lead shape itself is not enforced: a body that ships plain prose still passes the validator. Opener voice is the load-bearing rule.

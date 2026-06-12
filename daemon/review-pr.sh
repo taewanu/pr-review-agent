@@ -22,9 +22,9 @@ if ! gh auth status >/dev/null 2>&1; then
   exit 1
 fi
 # Fail before the expensive claude call if project identity can't be derived.
-# post-review.sh re-derives at post time, but catching it here saves 2-3 min
+# create-review.sh re-derives at post time, but catching it here saves 2-3 min
 # of wasted work per tick. The PROJECT_URL/NAME globals set here are unused;
-# post-review.sh's later call is the authoritative one.
+# create-review.sh's later call is the authoritative one.
 derive_project_identity "$SCRIPT_DIR/.."
 
 KEEP_SCRATCH=0
@@ -90,8 +90,8 @@ cleanup() {
   fi
 }
 
-# Parse the `category=<slug>` first stderr line emitted by extract-json.py and
-# post-review.sh on failure. Falls back to `unknown` so the structured failure
+# Parse the `category=<slug>` first stderr line emitted by extract_json.py and
+# create-review.sh on failure. Falls back to `unknown` so the structured failure
 # line is always populated.
 extract_category() {
   local stderr_path="$1"
@@ -264,14 +264,14 @@ if [[ ! -s "$RAW_FILE" ]]; then
 fi
 
 log_step "extracting payload"
-if ! python3 "$SCRIPT_DIR/extract-json.py" "$RAW_FILE" >"$PAYLOAD_FILE" 2>"$EXTRACT_ERR"; then
+if ! python3 "$SCRIPT_DIR/extract_json.py" "$RAW_FILE" >"$PAYLOAD_FILE" 2>"$EXTRACT_ERR"; then
   cat "$EXTRACT_ERR" >&2
-  log_failure "$(extract_category "$EXTRACT_ERR")" "$PR_URL" "$HEAD_OID" "extract-json.py exited non-zero"
+  log_failure "$(extract_category "$EXTRACT_ERR")" "$PR_URL" "$HEAD_OID" "extract_json.py exited non-zero"
   exit 1
 fi
 
 log_step "anchoring findings"
-python3 "$SCRIPT_DIR/anchor-findings.py" \
+python3 "$SCRIPT_DIR/anchor_findings.py" \
   "$PAYLOAD_FILE" "$DIFF_FILE" \
   --anchored "$ANCHORED_FILE" \
   --unanchored "$UNANCHORED_FILE" \
@@ -298,7 +298,7 @@ if [[ $OWN_PR -eq 1 ]]; then
 else
   log_step "posting Pending review"
 fi
-if ! bash "$SCRIPT_DIR/post-review.sh" "${post_args[@]}" 2>"$POST_ERR"; then
+if ! bash "$SCRIPT_DIR/create-review.sh" "${post_args[@]}" 2>"$POST_ERR"; then
   cat "$POST_ERR" >&2
   category="$(extract_category "$POST_ERR")"
   reason="gh api POST failed"

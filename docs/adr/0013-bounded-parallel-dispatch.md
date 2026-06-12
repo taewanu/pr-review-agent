@@ -24,7 +24,7 @@ The runtime is stock macOS `bash` 3.2 (mise does not pin bash), which has no `wa
 
 Add a `MAX_PARALLEL` config knob (default `1`) and bound the review fan-out to it.
 
-- `load-config.py` gains `max_parallel: int = 1`, parsed from the `MAX_PARALLEL` env and validated `>= 1`; it flows to `poll.sh` through the existing config JSON.
+- `load_config.py` gains `max_parallel: int = 1`, parsed from the `MAX_PARALLEL` env and validated `>= 1`; it flows to `poll.sh` through the existing config JSON.
 - `poll.sh` keeps eligibility skips, reply dispatch, and dedup serial and foreground. Only the review tail (`review-pr.sh` plus its own state write) is backgrounded, capped by a head-index FIFO semaphore. The cap is **global across repos**, since the constraint is total concurrent `claude -p` load, not per-repo.
 - Each backgrounded review owns its outcome: it writes per-PR state only on success and logs a failure otherwise, so a failed review never advances state and never aborts the cycle. The cycle drains all in-flight reviews before reporting done.
 - `MAX_PARALLEL=1` reproduces ADR 0009's serial behavior exactly (dispatch one, wait, dispatch the next), so parallelism is strictly opt-in.

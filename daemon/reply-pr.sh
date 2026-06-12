@@ -139,10 +139,10 @@ log_info "$THREAD_COUNT unaddressed reply thread(s)"
 #     hidden reply-review marker in the review body, NOT just "viewer + PENDING":
 #     on others' PRs the Finding review is left PENDING as the ADR 0008 safety
 #     gate, so a state-only filter would delete the operator's in-flight draft
-#     (what post-review.sh refuses to do). Identity-scoped too, so a human
+#     (what create-review.sh refuses to do). Identity-scoped too, so a human
 #     reviewer's draft on a multi-user PR is never touched.
 # Best-effort read: on failure (or a thread past the first-100 page) PR_NODE_ID /
-# thread_id stay empty and post_reply.py degrades to a detached REST reply (the
+# thread_id stay empty and create_reply.py degrades to a detached REST reply (the
 # pre-#38 path) and skips resolution, rather than failing the reply.
 PR_NODE_ID=""
 EXISTING_PENDING_REVIEW_ID=""
@@ -164,7 +164,7 @@ if gql_response="$(gh api graphql \
   }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>"$gql_err")"; then
   PR_NODE_ID="$(jq -r '.data.repository.pullRequest.id // empty' <<<"$gql_response")"
   # Only a review the daemon tagged as a reply wrapper is eligible for deletion;
-  # the marker string is post_reply.py's REPLY_REVIEW_MARKER.
+  # the marker string is create_reply.py's REPLY_REVIEW_MARKER.
   EXISTING_PENDING_REVIEW_ID="$(jq -r '
     .data.viewer.login as $me
     | (.data.repository.pullRequest.reviews.nodes // [])
@@ -256,9 +256,9 @@ fi
 log_step "posting replies"
 POST_ERR="$(mktemp -t pr-review-reply-post.XXXXXX)"
 # Extract + validate + POST in one Python process (#36); keeps the body bytes
-# intact end to end (see post_reply.py). stderr carries progress, and on
+# intact end to end (see create_reply.py). stderr carries progress, and on
 # failure a `category=` line feeds log_failure.
-if python3 "$SCRIPT_DIR/post_reply.py" \
+if python3 "$SCRIPT_DIR/create_reply.py" \
   --owner "$OWNER" --repo "$REPO" --number "$PR_NUMBER" \
   --head-sha "$HEAD_OID" --head-owner "$HEAD_REPO_OWNER" --head-repo "$HEAD_REPO_NAME" \
   --pr-node-id "$PR_NODE_ID" --existing-pending-review-id "$EXISTING_PENDING_REVIEW_ID" \

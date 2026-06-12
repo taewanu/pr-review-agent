@@ -1,4 +1,4 @@
-"""Snapshot tests for daemon/post-review.sh's --dry-run payload.
+"""Snapshot tests for daemon/create-review.sh's --dry-run payload.
 
 Fixture is `tests/fixtures/post_review_snapshot/` and holds:
 - anchored.json: 2 findings (single-line `important+bug`, range `nit+refactor`)
@@ -50,7 +50,7 @@ def _run_post_review(
     API: body + comments, plus commit_id/event when set)."""
     args = [
         "bash",
-        str(DAEMON / "post-review.sh"),
+        str(DAEMON / "create-review.sh"),
         "--owner",
         "example",
         "--repo",
@@ -89,7 +89,7 @@ def _git_remote_identity() -> tuple[str, str]:
 
 def _pyproject_version() -> str:
     """Version the daemon stamps into the preview banner, read from the same
-    pyproject.toml post-review.sh greps. Normalized away in the snapshot so a
+    pyproject.toml create-review.sh greps. Normalized away in the snapshot so a
     version bump doesn't drift it."""
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     return data["project"]["version"]
@@ -99,7 +99,7 @@ def _strip_derived(body: str) -> str:
     """Substitute live-derived values (git-remote identity, pyproject version)
     with the fixture's placeholders so the snapshot stays stable across forks
     and version bumps alike. Anchored on the exact banner/footer templates
-    emitted by post-review.sh."""
+    emitted by create-review.sh."""
     owner, repo = _git_remote_identity()
     version = _pyproject_version()
     return (
@@ -123,7 +123,7 @@ def test_dry_run_payload_matches_snapshot():
     actual["body"] = _strip_derived(actual["body"])
     expected = json.loads((FIXTURE / "expected_payload.json").read_text())
     assert actual == expected, (
-        "post-review.sh --dry-run payload drifted from snapshot. "
+        "create-review.sh --dry-run payload drifted from snapshot. "
         "Regenerate per the docstring if the change was intentional."
     )
 
@@ -136,7 +136,7 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     actual["body"] = _strip_derived(actual["body"])
     expected = json.loads((FIXTURE / "expected_payload_dropped_2.json").read_text())
     assert actual == expected, (
-        "post-review.sh --dry-run --dropped-combo 2 payload drifted from snapshot. "
+        "create-review.sh --dry-run --dropped-combo 2 payload drifted from snapshot. "
         "Regenerate per the docstring if the change was intentional."
     )
 

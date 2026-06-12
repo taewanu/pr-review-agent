@@ -4,7 +4,7 @@ reply-pr.sh used to build reply bodies through bash -> jq -> `while read -r` ->
 gh: three layers where a missing `read -r` or a stray `jq -r` silently mangles
 `\\n` / `\\t` / `\\` / backticked-regex payloads. This builds the JSON in one
 process and hands it to `gh --input -`, so the body bytes stay intact end to
-end; tests/test_post_reply.py pins the round-trip.
+end; tests/test_create_reply.py pins the round-trip.
 
 Each processed thread also gets an Ack reaction on the operator's reply
 comment, chosen by the agent's classification bucket: fix-claims and questions
@@ -39,7 +39,7 @@ On failure, stderr carries a `category=<x>` line (no-fence, parse-error,
 schema-invalid) so reply-pr.sh's log_failure mapping is unchanged.
 
 Usage:
-  python3 post_reply.py --owner O --repo R --number N --raw RAWFILE \
+  python3 create_reply.py --owner O --repo R --number N --raw RAWFILE \
     [--threads THREADSFILE] [--pr-node-id NODEID] \
     [--existing-pending-review-id ID] [--dry-run]
 """
@@ -97,7 +97,7 @@ RESOLVE_MUTATION = (
 # discriminator reply-pr.sh filters on when picking a stale review to discard, so
 # the daemon only ever deletes its OWN reply wrappers — never a Finding-bearing
 # Pending review left pending as the ADR 0008 safety gate on others' PRs, nor any
-# human's manual draft. post-review.sh refuses to cancel pending reviews for the
+# human's manual draft. create-review.sh refuses to cancel pending reviews for the
 # same reason; an unfiltered delete here would do what that path forbids.
 REPLY_REVIEW_MARKER = "<!-- pr-review-agent:reply-review -->"
 CREATE_REVIEW_MUTATION = (
@@ -166,7 +166,7 @@ class PayloadError(Exception):
 def extract_payload(raw: str) -> dict:
     """Parse the reply agent's stdout into a validated {"replies": [...]} dict.
 
-    Same fence convention as extract-json.py: the last ```json block wins.
+    Same fence convention as extract_json.py: the last ```json block wins.
     Every thread the agent processed appears here tagged with its `bucket`.
     `mode` and `body` are required for the body-bearing buckets (fix_claim and
     question, #74); `mode`'s value-set is per-bucket (BUCKET_MODES) and defaults
@@ -186,7 +186,7 @@ def extract_payload(raw: str) -> dict:
 
     # Voice violations are collected across all body-bearing replies and raised
     # once after the loop, so the whole batch fails before any POST (ADR 0010),
-    # symmetric with extract-json.py. Schema errors above still abort eagerly and
+    # symmetric with extract_json.py. Schema errors above still abort eagerly and
     # take precedence: a malformed payload never reaches the voice gate.
     style_violations: list[str] = []
     for i, r in enumerate(data["replies"]):
@@ -304,7 +304,7 @@ def build_body(body: str, addressed_id: str, link: str | None = None) -> str:
     return "\n\n".join(parts)
 
 
-def post_reply(
+def create_reply(
     owner: str, repo: str, number: str, in_reply_to_id: str, body: str
 ) -> tuple[int, str]:
     """POST one threaded reply. /comments/{id}/replies inherits path+line from
@@ -667,7 +667,7 @@ def main() -> int:
     for r in fallback:
         in_reply_to_id = str(r["in_reply_to_id"])
         full_body = build_body(r["body"], str(r["addressed_comment_id"]), link_for(args, r))
-        rc, err = post_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
+        rc, err = create_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
         if rc == 0:
             text_ok += 1
             if r.get("mode") in RESOLVE_MODES:
