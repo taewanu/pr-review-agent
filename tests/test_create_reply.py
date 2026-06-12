@@ -586,8 +586,9 @@ def test_batch_wraps_replies_in_one_review_no_detached_posts():
 
 def test_batch_submits_as_comment_with_disposition_body():
     # #38 wraps the tick's replies in one COMMENT review; #11 fills its body with
-    # the disposition summary plus the hidden marker (the body was empty under #38
-    # alone). A single confirmed reply rolls up to "1 conversation resolved."
+    # the disposition summary, then the Provenance tag (#132), then the hidden
+    # marker (the body was empty under #38 alone). A single confirmed reply rolls
+    # up to "1 conversation resolved."
     _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
     submit = _find(calls, "SubmitReview")
     assert submit is not None
@@ -956,6 +957,18 @@ def test_disposition_summary_passes_the_voice_gate():
         assert violations == [], (line, violations)
 
 
+def test_reply_review_body_carries_provenance_tag():
+    # The Reply review body is a posted artifact, not a Finding Review body, so
+    # it carries the Provenance tag like every other one (ADR 0010 §2, #132).
+    # Anatomy: disposition summary, then the tag, then the hidden marker last.
+    body = create_reply.reply_review_body(1, 1)
+    assert body == (
+        "1 conversation still open, 1 resolved.\n\n"
+        f"{create_reply.MARKER}\n\n{create_reply.REPLY_REVIEW_MARKER}"
+    )
+    assert body.index(create_reply.MARKER) < body.index(create_reply.REPLY_REVIEW_MARKER)
+
+
 def _submit_call(calls: list[tuple[str, str]]) -> tuple[str, str] | None:
     return _find(calls, "SubmitReview")
 
@@ -974,6 +987,7 @@ def test_reply_review_body_leads_with_open_then_resolved():
     submit = _submit_call(calls)
     assert submit is not None, "the wrapper review submits"
     assert "1 conversation still open, 1 resolved." in submit[0]
+    assert create_reply.MARKER in submit[0], "the wrapper body carries the Provenance tag (#132)"
     assert "pr-review-agent:reply-review" in submit[0], "the hidden marker stays in the body"
 
 

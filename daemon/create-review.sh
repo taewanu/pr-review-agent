@@ -142,9 +142,9 @@ fi
 # says "edit", not "delete": GitHub rejects deleting a submitted review, so an
 # unwanted auto-submitted review can only be edited or have its comments hidden.
 if [[ $OWN_PR -eq 1 ]]; then
-  footer=$'\n\n---\n\n_🤖 Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit as needed._'
+  footer=$'\n\n---\n\n🤖 _Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit as needed._'
 else
-  footer=$'\n\n---\n\n_🤖 Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed._'
+  footer=$'\n\n---\n\n🤖 _Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed._'
 fi
 
 # Dedup sentinel per ADR 0006. Encodes the reviewed SHA so the next tick can
@@ -166,7 +166,10 @@ TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨"}'
 
 # Render unanchored findings into a Markdown section appended to the review body.
 # `## Findings outside the diff` is the canonical relocation surface per ADR 0005.
-# Header shape per ADR 0002: `_<type-emoji> <type>_ | _<severity-emoji> <severity>_`.
+# Item shape (ADR 0010 §2, #132): `_<type-emoji> <type>_ | _<severity-emoji>
+# <severity>_: <location>`. The badge leads (triage parity with the Inline
+# comment); the location follows after a colon, mirroring the reply verdict's
+# colon-into-link (ADR 0010 #106).
 # Bodies sit inside the outer `- ` list item, so every line is 2-space indented
 # (gsub on internal newlines) to keep bullets and follow-up paragraphs nested.
 # Relocated findings are unanchored to the diff, so the location code span is
@@ -183,7 +186,6 @@ additional="$(jq -r \
   | if length == 0 then ""
   else "\n\n## Findings outside the diff\n\n" + (
     map(
-      "- " +
       (("`" + .path + ":" + (.line | tostring) +
         (if .end_line and .end_line != .line then "-" + (.end_line | tostring) else "" end) +
         "`") as $label
@@ -191,12 +193,13 @@ additional="$(jq -r \
         (if .end_line and .end_line != .line then "-L" + (.end_line | tostring) else "" end)) as $frag
       | if $linkable then
           "[" + $label + "](" + $head_repo_url + "/blob/" + $head_sha + "/" + .path + $frag + ")"
-        else $label end) +
-      " _" +
+        else $label end) as $location
+      | "- _" +
       ($typ[.type] // "❓") + " " + .type +
       "_ | _" +
       ($sev[.severity] // "❓") + " " + .severity +
-      "_\n\n  " + (.body | gsub("\n(?<c>[^\n])"; "\n  \(.c)"))
+      "_: " + $location +
+      "\n\n  " + (.body | gsub("\n(?<c>[^\n])"; "\n  \(.c)"))
     ) | join("\n\n")
   )
   end

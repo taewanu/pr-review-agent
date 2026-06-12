@@ -170,8 +170,9 @@ def test_additional_finding_location_links_to_head_blob():
     # commit (fork-correct via --head-repo-url), matching the reply blob link.
     # The visible label stays the `path:line` code span; only the wrap is added.
     body = _run_create_review()["body"]
+    # Badge-first, then the linked location after a colon (ADR 0010 §2, #132).
     expected = (
-        f"- [`src/api/auth.py:5`]"
+        f"- _✨ polish_ | _🟣 pre_existing_: [`src/api/auth.py:5`]"
         f"({FIXTURE_HEAD_REPO_URL}/blob/{FIXTURE_HEAD_SHA}/src/api/auth.py#L5)"
     )
     assert expected in body
@@ -183,7 +184,8 @@ def test_additional_finding_location_bare_when_head_unset():
     # missing sha or repo, mirroring the sentinel's omit-when-unset rule.
     for kwargs in ({"head_sha": None}, {"head_repo_url": None}):
         body = _run_create_review(**kwargs)["body"]
-        assert "- `src/api/auth.py:5`" in body
+        # Badge-first, bare code span (no link) after the colon (#132).
+        assert "_✨ polish_ | _🟣 pre_existing_: `src/api/auth.py:5`" in body
         assert "/blob/" not in body
 
 
@@ -206,7 +208,8 @@ def test_own_pr_footer_says_edit_not_submit_or_delete():
     assert "Edit as needed." in body
     assert "delete" not in body.lower()
     assert "Submit, edit, or cancel as needed." not in body
-    assert "🤖 Auto-submitted by" in body
+    # The 🤖 sits outside the italic span, matching the Provenance tag (#132).
+    assert "🤖 _Auto-submitted by" in body
 
 
 def test_footer_reflects_git_remote_identity():
