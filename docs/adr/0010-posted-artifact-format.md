@@ -35,6 +35,11 @@ The governing principle: **draft-status is a review-level fact, stated once in t
 | Reply | agent body (italic lead, see §4 amendment) · `[blob-at-HEAD link]` · **Provenance tag** · Reply sentinel |
 | Status comment | head line · scope · file list (`<details>`) · **Provenance tag** · Status marker |
 
+> **Amended 2026-06-12 (#132).** A format audit across all posted artifacts reconciled three drifts this draft left or predated:
+> - **Reply review body** (the disposition-summary wrapper, #38/#11) postdates this ADR and is not a Finding Review body: it carries no Findings, no Sha sentinel, and is always auto-submitted. It falls under §1's "every other posted artifact" and now carries the **Provenance tag** between the summary and the hidden `reply-review` marker, matching the acks it wraps. A Review footer is moot here: there is no draft-status to state (always submitted) and no submit/edit/cancel action on a rollup line.
+> - **Review footer 🤖 placement** aligns to the Provenance tag: the robot sits *outside* the emphasis span (`🤖 _Drafted by …_`, not `_🤖 Drafted by …_`), so both attribution shapes share one "🤖 then italic" form. Visually near-identical (an emoji has no italic form); the win is one markup convention, not a rendered change.
+> - **Findings-outside-the-diff item** adopts the Inline comment's badge-first order, joined to the location link by a colon: `_🐛 bug_ | _🔴 important_: [`path:line`](url)`. This mirrors the #106 verdict colon-into-link. The location led before (it was the only pointer for an unanchored finding); the badge now leads for triage parity with the Inline comment, the link still one line away.
+
 ### 3. Single source for the Provenance tag
 
 This ADR is the documentary source of truth; each renderer hard-codes the tag with a comment referencing ADR 0010, and a test pins the three emit sites (`create-review.sh` Inline comment, `create_reply.py`, `lib.sh` Status comment) to one identical string. A runtime shared constant is rejected: the renderers straddle the bash/jq–Python boundary, and coupling them at runtime to share one short string costs more than a drift test. (The Review-footer strings live at a single site, `create-review.sh`, so they need no cross-file test.)

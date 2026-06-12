@@ -434,9 +434,19 @@ def disposition_summary(open_count: int, resolved: int) -> str:
     return f"All {conversations(resolved)} resolved."
 
 
+def reply_review_body(open_count: int, resolved: int) -> str:
+    """The Reply review's COMMENT body: the disposition summary, the Provenance
+    tag, then the hidden reply-review marker. The Reply review body is a posted
+    artifact, not a Finding Review body, so it carries the tag like every other
+    (ADR 0010 §2, #132). The marker stays last so the daemon can tell its own
+    stale wrapper from a Finding draft before deleting one."""
+    return f"{disposition_summary(open_count, resolved)}\n\n{MARKER}\n\n{REPLY_REVIEW_MARKER}"
+
+
 def submit_review(review_id: str, body: str) -> tuple[int, str]:
     """Submit the pending review as COMMENT, the tick's single notification. The
-    body carries the disposition summary plus the hidden marker (#11)."""
+    body carries the disposition summary, the Provenance tag, then the hidden
+    marker (#11; tag added #132)."""
     proc = _graphql(SUBMIT_REVIEW_MUTATION, review=review_id, body=body)
     return proc.returncode, proc.stderr
 
@@ -645,8 +655,9 @@ def main() -> int:
                 )
             else:
                 resolved = sum(1 for r in added if r.get("mode") in RESOLVE_MODES)
-                summary = disposition_summary(len(added) - resolved, resolved)
-                src, serr = submit_review(review_id, f"{summary}\n\n{REPLY_REVIEW_MARKER}")
+                src, serr = submit_review(
+                    review_id, reply_review_body(len(added) - resolved, resolved)
+                )
                 if src == 0:
                     text_ok += len(added)
                     # Resolve only after submit — replies (and their sentinels)
