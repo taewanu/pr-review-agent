@@ -346,11 +346,54 @@ bundle_operator_agents() {
   done
   for f in "$repo_root/.claude/commands/review-pr.md" \
     "$repo_root/.claude/commands/edit-review.md" \
-    "$repo_root/.claude/commands/reply-pr.md"; do
+    "$repo_root/.claude/commands/reply-pr.md" \
+    "$repo_root/.claude/commands/judge-fix.md"; do
     [[ -e "$f" ]] || continue
     base="$(basename "$f")"
     [[ -e "$scratch/.claude/commands/$base" ]] || cp "$f" "$scratch/.claude/commands/$base"
   done
+}
+
+# fetch_open_review_threads <owner> <repo> <pr-number>
+# Emits a JSON array of the PR's review threads shaped for resolve_threads.py:
+#   [{thread_id, is_resolved, root_author, root_body, path, original_line, original_start_line}]
+# The root (oldest) comment is the Finding; resolve_threads.py filters to the
+# open, daemon-owned ones. `originalLine`, not `line`: GitHub nulls `line` exactly
+# when a thread goes outdated (its anchored code changed), the case commit-driven
+# resolution must catch, so the creation-side coordinate is the only one that
+# survives (#125, ADR 0017). Best-effort: prints `[]` and returns non-zero on
+# query failure, so the caller degrades to "no candidates", never fails the review.
+fetch_open_review_threads() {
+  local owner="$1" repo="$2" pr="$3"
+  local resp
+  # $owner/$repo/$pr are GraphQL variables, not shell vars — keep them literal.
+  # shellcheck disable=SC2016
+  if ! resp="$(gh api graphql \
+    -f query='query($owner:String!,$repo:String!,$pr:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$pr){
+          reviewThreads(first:100){
+            nodes{
+              id isResolved path originalLine originalStartLine
+              comments(first:1){ nodes{ author{ login } body } }
+            }
+          }
+        }
+      }
+    }' -f owner="$owner" -f repo="$repo" -F pr="$pr" 2>/dev/null)"; then
+    printf '[]'
+    return 1
+  fi
+  jq -c '[.data.repository.pullRequest.reviewThreads.nodes[]
+    | {
+        thread_id: .id,
+        is_resolved: .isResolved,
+        root_author: (.comments.nodes[0].author.login // null),
+        root_body: (.comments.nodes[0].body // ""),
+        path: .path,
+        original_line: .originalLine,
+        original_start_line: .originalStartLine
+      }]' <<<"$resp"
 }
 
 # derive_project_identity <repo-root>

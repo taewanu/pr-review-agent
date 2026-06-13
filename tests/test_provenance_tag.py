@@ -1,14 +1,16 @@
 """The Provenance tag is one string across every renderer (ADR 0010).
 
-It is emitted from three sites that straddle the bash/Python boundary:
-  - lib.sh        — the Status comment, via `PROVENANCE_TAG`
-  - create-review.sh — the Inline comment, reusing lib.sh's `PROVENANCE_TAG`
-  - create_reply.py — the reply, via its own `MARKER`
+It is emitted from sites that straddle the bash/Python boundary:
+  - lib.sh: the Status comment, via `PROVENANCE_TAG`
+  - create-review.sh: the Inline comment, reusing lib.sh's `PROVENANCE_TAG`
+  - create_reply.py: the reply, via its own `MARKER`
+  - resolve_threads.py: commit-driven resolution, matching the marker to tell a
+    daemon Finding thread from an Operator's own comment, via `PROVENANCE_MARKER`
 
-The bash sites share one constant (create-review.sh sources lib.sh), so the only
-cross-language copy is create_reply.py's MARKER. This test pins both definitions to
-the same canonical string, so a drift in either fails CI instead of shipping two
-different tags.
+The bash sites share one constant (create-review.sh sources lib.sh), so the
+cross-language copies are create_reply.py's MARKER and resolve_threads.py's
+PROVENANCE_MARKER. This test pins every definition to the same canonical string,
+so a drift in any fails CI instead of shipping two different tags.
 """
 
 from __future__ import annotations
@@ -20,8 +22,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB_SH = REPO_ROOT / "daemon" / "lib.sh"
 CREATE_REPLY = REPO_ROOT / "daemon" / "create_reply.py"
+RESOLVE_THREADS = REPO_ROOT / "daemon" / "resolve_threads.py"
 
 CANONICAL_TAG = "🤖 _pr-review-agent_"
+
+
+def _load_constant(path: Path, name: str, attr: str) -> str:
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, attr)
 
 
 def _lib_sh_provenance_tag() -> str:
@@ -36,11 +47,11 @@ def _lib_sh_provenance_tag() -> str:
 
 
 def _create_reply_marker() -> str:
-    spec = importlib.util.spec_from_file_location("create_reply", CREATE_REPLY)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.MARKER
+    return _load_constant(CREATE_REPLY, "create_reply", "MARKER")
+
+
+def _resolve_threads_marker() -> str:
+    return _load_constant(RESOLVE_THREADS, "resolve_threads", "PROVENANCE_MARKER")
 
 
 def test_lib_sh_tag_matches_canonical():
@@ -51,6 +62,10 @@ def test_create_reply_marker_matches_canonical():
     assert _create_reply_marker() == CANONICAL_TAG
 
 
+def test_resolve_threads_marker_matches_canonical():
+    assert _resolve_threads_marker() == CANONICAL_TAG
+
+
 def test_bash_and_python_provenance_tags_agree():
-    # The drift guard: the two independent definitions must stay identical.
-    assert _lib_sh_provenance_tag() == _create_reply_marker()
+    # The drift guard: every independent definition must stay identical.
+    assert _lib_sh_provenance_tag() == _create_reply_marker() == _resolve_threads_marker()
