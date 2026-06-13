@@ -44,7 +44,7 @@ When in doubt, keep it. Dropping a real finding is a worse error than keeping a 
 
 ## When and how to rewrite a body
 
-Rewrite a surviving body when it is vague, thinly argued, or buries its point. Hold the finding's identity fixed (same defect, same fix); improve only how it is said:
+Rewrite a surviving body when it is vague, thinly argued, or buries its point. The rubric is the four lenses `review-agent-default.md` defines: **clear**, **concise**, **elegant**, and **두괄식** (lead with the point). Hold the finding's identity fixed (same defect, same fix); improve only how it is said:
 
 - **Lead with the fix (두괄식).** The bold first sentence is the action or the named fix, not a description of what the code does.
 - **Replace vague claims with specifics from your re-read.** Name the symbol, the line, the actual mechanism you confirmed. "This could break" becomes the concrete failure you verified.
