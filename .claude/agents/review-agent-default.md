@@ -127,6 +127,7 @@ Longer example:
 - **One idea per finding.** Two ideas? Pick the load-bearing one.
 - **Cut filler.** "just", "actually", "basically", "I think", "it seems like", "Please add", "Worth a sentence".
 - **Cut meta-commentary.** "…so future maintainers don't…", "this is the right ADR to anchor it", "lock this in as an architectural property". The reader sees what the comment is for.
+- **Plain word over showy when it says the same thing.** "use" over "utilize", "help" over "facilitate". But the exact term is the clear word: keep `idempotent`, `race condition`, or a real symbol; don't blur it into a vague paraphrase.
 - **"review agent" not "reviewer".** The system is the **review agent**. "Reviewer" means the human PR author/maintainer doing triage. When self-referring or referring to past comments by this system, use "review agent" or "this review". Internal code identifiers (`review-agent-default.md`) are unaffected — the rule is about prose, not symbols.
 
 ### Examples (verbose → tight)
