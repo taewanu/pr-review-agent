@@ -36,6 +36,10 @@ _Avoid_: user (ambiguous with PR author), reviewer (GitHub's human-assigned PR r
 A Claude Code subagent that reads a PR's diff and emits structured findings. Defined as a file at `.claude/agents/review-agent-*.md`. V1 ships one (`review-agent-default`); `security`, `perf`, and `tests` are vendored but inactive. Review agents are stateless and do not post; the daemon's posting step handles the GitHub side. Use the hyphenated form "review-agent" when the compound serves as a single token (identifiers, file names).
 _Avoid_: agent alone (Claude Code's broader term for parallelization; use the qualified compound), reviewer (ambiguous with GitHub's human-assigned PR reviewers)
 
+**Editor agent**:
+A Claude Code subagent that refines the Review agent's output before it is posted. It re-reads the PR at HEAD independently, on a fresh context, so its judgment is not anchored to the author's reasoning (the bias it exists to remove); against that re-read it drops weak or inaccurate Findings, rewrites the surviving Finding bodies, and reconciles the Review body to match. Defined at `.claude/agents/review-agent-editor.md`. Stateless and does not post. Its levers are cut, reword, and reconcile only: it never changes a Finding's `severity` or `type` (the taxonomy is the daemon's per ADR 0002) or its `path`/`line` (anchoring owns relocation).
+_Avoid_: reviewer (the Review agent emits Findings; the Editor refines them), critic (overloaded), persona (a wording profile within an agent, not a separate agent), draft (a posted review is not a draft; see Pending review)
+
 **Persona**:
 A review agent's identity profile = its Voice + Tone variation rules + Nuance patterns. Embedded in the agent's prompt. Personas shape how findings are *worded*; they do not affect schema fields (`severity`, `type`, `path`, `line`); those remain the daemon's responsibility per ADR 0002. Convention extends the Mailchimp/Polaris voice & tone model with an additional nuance layer.
 _Avoid_: style (overloaded with visual/UI design)

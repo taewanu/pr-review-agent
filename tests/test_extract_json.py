@@ -430,3 +430,53 @@ def test_clean_payload_passes_style_check():
     raw = _wrap({"summary": "Solid diff. One naming nit.", "comments": [f]})
     payload = extract_json.extract(raw)
     assert payload.comments[0].body.startswith("Rename")
+
+
+# --- validate_style toggle (#133, ADR 0016) ----------------------------------
+
+
+def _style_breaking_payload() -> dict:
+    # Forbidden summary opener + an em dash in a body: fails the gate by default.
+    return {
+        "summary": "This change is risky.",
+        "comments": [
+            {
+                "path": "a.py",
+                "line": 1,
+                "severity": "nit",
+                "type": "polish",
+                "body": "**Fix it.** It breaks — here.",
+            }
+        ],
+    }
+
+
+def test_extract_default_validates_style():
+    with pytest.raises(ExtractError) as exc:
+        extract_json.extract(_wrap(_style_breaking_payload()))
+    assert exc.value.category == "style-violation"
+
+
+def test_extract_no_style_skips_the_gate():
+    payload = extract_json.extract(_wrap(_style_breaking_payload()), validate_style=False)
+    assert payload.summary == "This change is risky."
+    assert payload.comments[0].body.endswith("breaks — here.")
+
+
+def test_extract_no_style_still_enforces_cap():
+    big = {
+        "summary": "Many findings.",
+        "comments": [
+            {
+                "path": f"f{i}.py",
+                "line": 1,
+                "severity": "nit",
+                "type": "polish",
+                "body": f"**Item {i}.** Ok.",
+            }
+            for i in range(11)
+        ],
+    }
+    with pytest.raises(ExtractError) as exc:
+        extract_json.extract(_wrap(big), validate_style=False)
+    assert exc.value.category == "cap-violation"

@@ -51,7 +51,7 @@ class ReviewPayload(BaseModel):
     comments: list[Finding] = []
 
 
-def extract(raw: str) -> ReviewPayload:
+def extract(raw: str, *, validate_style: bool = True) -> ReviewPayload:
     if not raw.strip():
         raise ExtractError("empty-stdout", "input is empty or whitespace-only")
     matches = FENCE_RE.findall(raw)
@@ -68,8 +68,12 @@ def extract(raw: str) -> ReviewPayload:
     except ValidationError as exc:
         raise ExtractError("schema-invalid", str(exc)) from exc
     # Style first, cap second: with N>cap em-dash findings, surface the voice
-    # problem before the count noise — culling to N=cap doesn't fix em-dashes.
-    _validate_style(payload)
+    # problem before the count noise (culling to N=cap doesn't fix em-dashes).
+    # The editor stage (#133) parses the author payload with --no-style: the
+    # voice gate moves behind the Editor (ADR 0016), so the author parse only
+    # shapes the findings to hand on. The cap is not style and always applies.
+    if validate_style:
+        _validate_style(payload)
     if len(payload.comments) > MAX_FINDINGS:
         raise ExtractError(
             "cap-violation", f"too many findings: {len(payload.comments)} > cap {MAX_FINDINGS}"
@@ -80,28 +84,23 @@ def extract(raw: str) -> ReviewPayload:
 def _validate_style(payload: ReviewPayload) -> None:
     """Post-hoc voice checks. Routes through ADR 0005 as a system failure.
 
-    Shared rules live in voice.py (ADR 0010). The summary stays plain prose, so
-    it forbids a leading bold (FORBIDDEN_SUMMARY_PREFIXES); comment bodies lead
-    with a bold sentence, so they peel it before the opener scan (strip_bold)."""
-    violations = voice.check_text(
-        payload.summary, prefixes=voice.FORBIDDEN_SUMMARY_PREFIXES, label="summary"
-    )
-    for i, c in enumerate(payload.comments):
-        violations += voice.check_text(
-            c.body,
-            prefixes=voice.FORBIDDEN_PREFIXES,
-            strip_bold=True,
-            check_bullets=True,
-            label=f"comments[{i}].body",
-        )
+    Shared rules live in voice.py (ADR 0010); voice.check_payload applies the
+    summary-vs-body split once so the author parse and the post-Editor gate
+    (apply_edits.py) stay identical. Fidelity is off here: the author emits a
+    single fence the pipeline already JSON-parses, so it cannot smuggle an
+    escaped entity the way a re-emitting Editor can (ADR 0016)."""
+    violations = voice.check_payload(payload.summary, [c.body for c in payload.comments])
     if violations:
         raise ExtractError("style-violation", "; ".join(violations))
 
 
 def main() -> int:
-    raw = Path(sys.argv[1]).read_text() if len(sys.argv) > 1 else sys.stdin.read()
+    args = sys.argv[1:]
+    validate_style = "--no-style" not in args
+    args = [a for a in args if a != "--no-style"]
+    raw = Path(args[0]).read_text() if args else sys.stdin.read()
     try:
-        payload = extract(raw)
+        payload = extract(raw, validate_style=validate_style)
     except ExtractError as exc:
         # First stderr line is parseable by review-pr.sh; remaining lines are
         # human-readable detail.
