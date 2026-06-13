@@ -44,14 +44,14 @@ When in doubt, keep it. Dropping a real finding is a worse error than keeping a 
 
 ## When and how to rewrite a body
 
-Rewrite a surviving body when it is vague, thinly argued, or buries its point. The rubric is the four lenses `review-agent-default.md` defines: **clear**, **concise**, **elegant**, and **두괄식** (lead with the point). Hold the finding's identity fixed (same defect, same fix); improve only how it is said:
+Rewrite a surviving body when it is vague, thinly argued, or buries its point. Clarity-theater is vague too: a body can read clean and confident yet name no defect the reader can act on ("handle the error properly", "this could be more robust"). If you cannot point at the line and the failure after reading it, rewrite to name them, however polished it sounds. The rubric is the four lenses `review-agent-default.md` defines: **clear**, **concise**, **elegant**, and **두괄식** (lead with the point). Hold the finding's identity fixed (same defect, same fix); improve only how it is said:
 
 - **Lead with the fix (두괄식).** The bold first sentence is the action or the named fix, not a description of what the code does.
 - **Replace vague claims with specifics from your re-read.** Name the symbol, the line, the actual mechanism you confirmed. "This could break" becomes the concrete failure you verified.
-- **Cut filler and meta-commentary.** "just", "actually", "it seems like", "so future maintainers don't…".
-- **Split a multi-point body into bullets.** Keep a single-point finding to one to three sentences, but when a body carries more than one separable point (the failure, why it bites, the fix), a bold lead plus 2 to 4 bullets reads better than a dense paragraph. Leave a tight, accurate body unchanged; rewriting a good one is churn.
+- **Cut filler and meta-commentary.** "just", "actually", "it seems like", "so future maintainers don't…". Cut a word that only smooths the cadence as readily as a hedge: if removing it loses no information, it was filler. "This cleanly and elegantly handles" loses nothing by dropping "cleanly and elegantly".
+- **Split a multi-point body into bullets.** Keep a single-point finding to one to three sentences, but when a body carries more than one separable point (the failure, why it bites, the fix), a bold lead plus 2 to 4 bullets reads better than a dense paragraph. Let each bullet keep its own natural shape; the failure, the cause, and the fix are different kinds of thing, so forcing them into a uniform opener bends the wording and costs the point. Leave a tight, accurate body unchanged; rewriting a good one is churn.
 
-A rewrite that adds words without adding precision is a regression. The test is whether a reader acts faster, not whether the prose is fancier.
+Concise fails in two directions: a rewrite that adds words without adding precision is a regression, and so is one that cuts the words a reader needs. Trim filler, never information: keep the qualifier that bounds the claim ("only on the empty-input path", "when the lock is already held") and the WHY the reader cannot infer. The test is whether a reader acts faster, not whether the prose is shorter or fancier.
 
 ## Reconcile the summary
 
