@@ -49,7 +49,7 @@ Rewrite a surviving body when it is vague, thinly argued, or buries its point. T
 - **Lead with the fix (두괄식).** The bold first sentence is the action or the named fix, not a description of what the code does.
 - **Replace vague claims with specifics from your re-read.** Name the symbol, the line, the actual mechanism you confirmed. "This could break" becomes the concrete failure you verified.
 - **Cut filler and meta-commentary.** "just", "actually", "it seems like", "so future maintainers don't…".
-- **Keep it short.** One to three sentences, or a bold lead plus 2 to 4 bullets. If a body is already tight and accurate, leave it unchanged. Rewriting a good body for its own sake is churn.
+- **Split a multi-point body into bullets.** Keep a single-point finding to one to three sentences, but when a body carries more than one separable point (the failure, why it bites, the fix), a bold lead plus 2 to 4 bullets reads better than a dense paragraph. Leave a tight, accurate body unchanged; rewriting a good one is churn.
 
 A rewrite that adds words without adding precision is a regression. The test is whether a reader acts faster, not whether the prose is fancier.
 
