@@ -249,3 +249,78 @@ def test_check_text_bullets_flag_on_passes_two_to_four():
         label="replies[0].body",
     )
     assert out == []
+
+
+# --- fidelity_violation (#133, ADR 0016) -------------------------------------
+
+
+def test_fidelity_flags_html_escaped_lt_even_inside_a_code_span():
+    # The trial corruption put &lt; inside a code span where raw < belonged.
+    msg = voice.fidelity_violation("**Cover it.** The `scrollTop &lt;= 0` gate is untested.")
+    assert msg is not None and "&lt;" in msg
+
+
+def test_fidelity_flags_escaped_gt_and_amp():
+    assert voice.fidelity_violation("a &gt; b") is not None
+    assert voice.fidelity_violation("read a &amp; b") is not None
+
+
+def test_fidelity_flags_literal_backslash_n_outside_a_code_span():
+    msg = voice.fidelity_violation("Summary.\\n\\n- a point")
+    assert msg is not None and "backslash-n" in msg
+
+
+def test_fidelity_allows_backslash_n_inside_a_code_span():
+    # A body legitimately showing the escape sequence as code is not a corruption.
+    assert voice.fidelity_violation("**Match the newline.** The regex needs `\\n` here.") is None
+
+
+def test_fidelity_allows_real_newlines_and_raw_angle_brackets():
+    assert voice.fidelity_violation("**Fix it.**\n\n- a < b holds\n- ship it") is None
+
+
+def test_fidelity_clean_returns_none():
+    assert voice.fidelity_violation("**Rename `tmp`.** It shadows the builtin.") is None
+
+
+# --- check_text check_fidelity flag ------------------------------------------
+
+
+def test_check_text_fidelity_off_by_default():
+    out = voice.check_text("a &lt; b", prefixes=voice.FORBIDDEN_PREFIXES, label="x")
+    assert out == []
+
+
+def test_check_text_fidelity_on_flags_and_labels():
+    out = voice.check_text(
+        "a &lt; b", prefixes=voice.FORBIDDEN_PREFIXES, check_fidelity=True, label="comments[0].body"
+    )
+    assert len(out) == 1 and out[0].startswith("comments[0].body ")
+
+
+# --- check_payload -----------------------------------------------------------
+
+
+def test_check_payload_clean():
+    assert voice.check_payload("Renamed two helpers.", ["**Drop the token log.** It leaks."]) == []
+
+
+def test_check_payload_flags_summary_and_body():
+    out = voice.check_payload("This change is risky.", ["**Fix it.** It opens cleanly."])
+    assert any(v.startswith("summary ") and "forbidden prefix" in v for v in out)
+
+
+def test_check_payload_fidelity_only_when_requested():
+    clean_off = voice.check_payload("Summary holds.", ["**Cover `a &lt;= b`.** Untested."])
+    assert clean_off == []
+    on = voice.check_payload(
+        "Summary holds.", ["**Cover `a &lt;= b`.** Untested."], check_fidelity=True
+    )
+    assert len(on) == 1 and on[0].startswith("comments[0].body ")
+
+
+def test_check_payload_body_index_in_label():
+    out = voice.check_payload(
+        "Clean lead.", ["**Good.** Ships.", "**Bad.**\n\n- lone"], check_fidelity=True
+    )
+    assert any(v.startswith("comments[1].body ") for v in out)

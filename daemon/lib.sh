@@ -344,7 +344,9 @@ bundle_operator_agents() {
     base="$(basename "$f")"
     [[ -e "$scratch/.claude/agents/$base" ]] || cp "$f" "$scratch/.claude/agents/$base"
   done
-  for f in "$repo_root/.claude/commands/review-pr.md" "$repo_root/.claude/commands/reply-pr.md"; do
+  for f in "$repo_root/.claude/commands/review-pr.md" \
+    "$repo_root/.claude/commands/edit-review.md" \
+    "$repo_root/.claude/commands/reply-pr.md"; do
     [[ -e "$f" ]] || continue
     base="$(basename "$f")"
     [[ -e "$scratch/.claude/commands/$base" ]] || cp "$f" "$scratch/.claude/commands/$base"

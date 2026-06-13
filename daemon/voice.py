@@ -119,6 +119,35 @@ def find_task_ref(text: str) -> str | None:
     return None
 
 
+# Inline code spans, stripped before the literal-newline check. A body may
+# legitimately show `` `\n` `` as code, which is not a corruption.
+_CODE_SPAN_RE = re.compile(r"`[^`]*`")
+
+
+def fidelity_violation(text: str) -> str | None:
+    """Return a message if `text` carries a reserialization corruption, else None.
+
+    When an Editor agent reserializes a body (#133, ADR 0016) it occasionally
+    HTML-escapes `<`/`>`/`&` or writes the two literal characters backslash-n in
+    place of a real newline. Both are invisible to the lexical voice rules but
+    losslessly checkable, so the gate rejects them.
+
+    Entities are checked on the full text: the corruption seen in the trial put
+    `&lt;` inside a code span (`scrollTop &lt;= 0`) where the raw `<` belonged, so
+    stripping spans would miss it. A body that legitimately teaches the entity is
+    vanishingly rare in review prose; fail-closed and retry is fine. The literal
+    backslash-n corruption replaces real newlines, so it shows up outside code
+    spans; spans are stripped before that check to spare a body that shows a
+    backslash-n sequence as code.
+    """
+    for entity in ("&lt;", "&gt;", "&amp;"):
+        if entity in text:
+            return f"HTML-escapes {entity} (write the character raw)"
+    if "\\n" in _CODE_SPAN_RE.sub("", text):
+        return "contains a literal backslash-n outside a code span (use a real newline)"
+    return None
+
+
 # A top-level bullet: a column-0 `- ` marker. Indented continuations and prose
 # hyphens never start at column 0 with a trailing space, so they don't count.
 BULLET_RE = re.compile(r"^- ", re.MULTILINE)
@@ -149,17 +178,21 @@ def check_text(
     prefixes: tuple[str, ...],
     strip_bold: bool = False,
     check_bullets: bool = False,
+    check_fidelity: bool = False,
     label: str,
 ) -> list[str]:
     """Return human-readable voice violations for one text field.
 
     `label` names the field in each message (e.g. "summary", "comments[2].body",
     "replies[0].body"). Order is em dash, then opener, then task ref, then bullet
-    count, so callers that concatenate fields keep a stable message order.
+    count, then fidelity, so callers that concatenate fields keep a stable
+    message order.
 
     `check_bullets` adds the structural 2–4 bullet rule (bullet_count_violation);
     set it for Inline comment and reply bodies, leave it off for the summary,
-    which has its own looser 0-or-1+ bullet rule.
+    which has its own looser 0-or-1+ bullet rule. `check_fidelity` adds the
+    reserialization-corruption rule (fidelity_violation); set it on any field an
+    Editor agent may re-emit (#133, ADR 0016).
     """
     violations: list[str] = []
     if EM_DASH in text:
@@ -170,4 +203,38 @@ def check_text(
         violations.append(f"{label} contains task-scoped ref {ref!r}")
     if check_bullets and (msg := bullet_count_violation(text)) is not None:
         violations.append(f"{label} {msg}")
+    if check_fidelity and (msg := fidelity_violation(text)) is not None:
+        violations.append(f"{label} {msg}")
+    return violations
+
+
+def check_payload(summary: str, bodies: list[str], *, check_fidelity: bool = False) -> list[str]:
+    """Return all voice violations for a final review payload.
+
+    Centralizes the two-field shape every review gate shares: the summary stays
+    plain prose (FORBIDDEN_SUMMARY_PREFIXES, no bold lead), and each comment body
+    leads with a bold sentence (strip_bold) and obeys the 2–4 bullet count. Both
+    `extract_json.py` (author parse) and `apply_edits.py` (post-Editor gate) call
+    this so the rules live in one place.
+
+    `check_fidelity` adds the reserialization-corruption rule to every field; the
+    post-Editor gate sets it, the author parse leaves it off (the author emits a
+    single fence the pipeline already parses, so it cannot smuggle an escaped
+    entity past JSON the way a re-emitting Editor can).
+    """
+    violations = check_text(
+        summary,
+        prefixes=FORBIDDEN_SUMMARY_PREFIXES,
+        check_fidelity=check_fidelity,
+        label="summary",
+    )
+    for i, body in enumerate(bodies):
+        violations += check_text(
+            body,
+            prefixes=FORBIDDEN_PREFIXES,
+            strip_bold=True,
+            check_bullets=True,
+            check_fidelity=check_fidelity,
+            label=f"comments[{i}].body",
+        )
     return violations

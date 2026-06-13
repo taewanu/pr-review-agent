@@ -179,11 +179,17 @@ bundle_operator_agents "$SCRATCH"
 DIFF_BASENAME=".pr-review-diff.txt"
 DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
 RAW_FILE="$SCRATCH/.pr-review-raw.txt"
+# The editor agent reads the draft from cwd by basename (like the diff), so the
+# author payload lives in the scratch under a bare name (#133).
+AUTHOR_BASENAME=".pr-review-author.json"
+AUTHOR_FILE="$SCRATCH/$AUTHOR_BASENAME"
+EDIT_RAW_FILE="$SCRATCH/.pr-review-edit-raw.txt"
 PAYLOAD_FILE="$SCRATCH/.pr-review-payload.json"
 ANCHORED_FILE="$SCRATCH/.pr-review-anchored.json"
 UNANCHORED_FILE="$SCRATCH/.pr-review-unanchored.json"
 SUMMARY_FILE="$SCRATCH/.pr-review-summary.txt"
 EXTRACT_ERR="$SCRATCH/.pr-review-extract.err"
+EDIT_ERR="$SCRATCH/.pr-review-edit.err"
 ANCHOR_OUT="$SCRATCH/.pr-review-anchor.out"
 POST_ERR="$SCRATCH/.pr-review-post.err"
 
@@ -264,9 +270,45 @@ if [[ ! -s "$RAW_FILE" ]]; then
 fi
 
 log_step "extracting payload"
-if ! python3 "$SCRIPT_DIR/extract_json.py" "$RAW_FILE" >"$PAYLOAD_FILE" 2>"$EXTRACT_ERR"; then
+# --no-style: the voice gate moved behind the editor (ADR 0016). This parse only
+# schema-validates the author draft and shapes it to hand to the editor; the
+# final gate runs in apply_edits.py, on what is posted.
+if ! python3 "$SCRIPT_DIR/extract_json.py" --no-style "$RAW_FILE" >"$AUTHOR_FILE" 2>"$EXTRACT_ERR"; then
   cat "$EXTRACT_ERR" >&2
   log_failure "$(extract_category "$EXTRACT_ERR")" "$PR_URL" "$HEAD_OID" "extract_json.py exited non-zero"
+  exit 1
+fi
+
+# Editorial pass (#133, ADR 0016): a fresh editor agent re-reads the PR at HEAD
+# and refines the draft (drop weak findings, sharpen survivors, reconcile the
+# summary) before posting. Skipped on a zero-finding draft, where there is
+# nothing to refine; apply_edits.py still runs the moved voice gate either way.
+EDIT_ARGS=(--author "$AUTHOR_FILE")
+if [[ "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
+  log_step "running editor agent via claude -p"
+  # Same unbounded `claude -p` shape and 300s backstop as the review agent.
+  EDITOR_AGENT_TIMEOUT="${EDITOR_AGENT_TIMEOUT:-300}"
+  edit_rc=0
+  (
+    cd "$SCRATCH"
+    run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
+      claude -p "/edit-review $PR_URL --diff $DIFF_BASENAME --payload $AUTHOR_BASENAME" >"$EDIT_RAW_FILE"
+  ) || edit_rc=$?
+  if [[ "$edit_rc" -eq "$TIMEOUT_EXIT" ]]; then
+    log_failure "edit-timeout" "$PR_URL" "$HEAD_OID" "editor agent exceeded ${EDITOR_AGENT_TIMEOUT}s"
+    exit 1
+  fi
+  if [[ ! -s "$EDIT_RAW_FILE" ]]; then
+    log_failure "edit-empty" "$PR_URL" "$HEAD_OID" "editor produced no output"
+    exit 1
+  fi
+  EDIT_ARGS+=(--edits "$EDIT_RAW_FILE")
+fi
+
+log_step "applying edits"
+if ! python3 "$SCRIPT_DIR/apply_edits.py" "${EDIT_ARGS[@]}" >"$PAYLOAD_FILE" 2>"$EDIT_ERR"; then
+  cat "$EDIT_ERR" >&2
+  log_failure "$(extract_category "$EDIT_ERR")" "$PR_URL" "$HEAD_OID" "apply_edits.py exited non-zero"
   exit 1
 fi
 

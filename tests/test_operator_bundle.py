@@ -1,7 +1,7 @@
 """Tests for daemon/lib.sh's `bundle_operator_agents`.
 
 The function copies the operator's `.claude/agents/review-agent-*.md` +
-`.claude/commands/review-pr.md` + `reply-pr.md` into a scratch clone so
+`.claude/commands/review-pr.md` + `edit-review.md` + `reply-pr.md` into a scratch clone so
 `claude -p` can load them without target-repo setup (ADR 0007). Target-repo
 files (if already present) must win — a repo can customize without forcing
 a daemon restart.
@@ -33,7 +33,9 @@ def test_copies_operator_agents_into_empty_scratch():
         assert rc == 0
         assert (scratch / ".claude/agents/review-agent-default.md").exists()
         assert (scratch / ".claude/agents/review-agent-reply.md").exists()
+        assert (scratch / ".claude/agents/review-agent-editor.md").exists()
         assert (scratch / ".claude/commands/review-pr.md").exists()
+        assert (scratch / ".claude/commands/edit-review.md").exists()
         assert (scratch / ".claude/commands/reply-pr.md").exists()
 
 
