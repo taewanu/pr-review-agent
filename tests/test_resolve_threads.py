@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
+import stat
+import subprocess
+import tempfile
 import textwrap
 from pathlib import Path
 
-RESOLVE_PATH = Path(__file__).resolve().parent.parent / "daemon" / "resolve_threads.py"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RESOLVE_PATH = REPO_ROOT / "daemon" / "resolve_threads.py"
+LIB_SH = REPO_ROOT / "daemon" / "lib.sh"
 _spec = importlib.util.spec_from_file_location("resolve_threads", RESOLVE_PATH)
 assert _spec is not None and _spec.loader is not None
 resolve_threads = importlib.util.module_from_spec(_spec)
@@ -14,8 +21,12 @@ _spec.loader.exec_module(resolve_threads)
 
 IncrementDiff = resolve_threads.IncrementDiff
 select_candidates = resolve_threads.select_candidates
+select_retry_threads = resolve_threads.select_retry_threads
 parse_verdict = resolve_threads.parse_verdict
+build_fix_note_body = resolve_threads.build_fix_note_body
+fix_review_body = resolve_threads.fix_review_body
 MARKER = resolve_threads.PROVENANCE_MARKER
+FIX_NOTE_SENTINEL = resolve_threads.FIX_NOTE_SENTINEL
 
 
 # ---------- IncrementDiff.parse / touched (OLD side) ----------
@@ -129,6 +140,7 @@ def _thread(**over) -> dict:
         "path": "daemon/lib.sh",
         "original_line": 10,
         "original_start_line": None,
+        "has_fix_note": False,
     }
     base.update(over)
     return base
@@ -233,3 +245,267 @@ def test_verdict_last_fence_wins():
         '{"fixed": false, "rationale": "second"}'
     )
     assert parse_verdict(raw) == {"fixed": False, "rationale": "second"}
+
+
+# ---------- Slice B: has_fix_note routing (candidate vs retry) ----------
+
+
+def test_noted_thread_excluded_from_candidates():
+    # An already-noted open thread is never re-judged: it would otherwise get a
+    # second note (and a redundant agent call) every time a later commit touches it.
+    assert select_candidates([_thread(has_fix_note=True)], DIFF, "operator") == []
+
+
+def test_all_open_excludes_noted_thread():
+    # The force-push path drops the diff filter but must still skip noted threads,
+    # else a rebase would re-note every prior fix.
+    out = select_candidates([_thread(has_fix_note=True)], DIFF, "operator", all_open=True)
+    assert out == []
+
+
+def test_retry_selects_open_noted_daemon_thread():
+    assert select_retry_threads([_thread(has_fix_note=True)], "operator") == [
+        {"thread_id": "PRRT_1"}
+    ]
+
+
+def test_retry_excludes_unnoted_thread():
+    # No note yet -> nothing to retry; it flows through the judge path instead.
+    assert select_retry_threads([_thread(has_fix_note=False)], "operator") == []
+
+
+def test_retry_excludes_resolved_thread():
+    assert select_retry_threads([_thread(has_fix_note=True, is_resolved=True)], "operator") == []
+
+
+def test_retry_excludes_non_daemon_thread():
+    assert (
+        select_retry_threads([_thread(has_fix_note=True, root_author="someone")], "operator") == []
+    )
+    assert (
+        select_retry_threads([_thread(has_fix_note=True, root_body="manual comment")], "operator")
+        == []
+    )
+
+
+def test_candidate_and_retry_are_disjoint():
+    # The whole point of has_fix_note: one thread is either a judge candidate or a
+    # retry, never both. A touched-but-unnoted one judges; a noted one retries.
+    threads = [
+        _thread(thread_id="PRRT_judge", has_fix_note=False),
+        _thread(thread_id="PRRT_retry", has_fix_note=True),
+    ]
+    judged = {c["thread_id"] for c in select_candidates(threads, DIFF, "operator")}
+    retried = {r["thread_id"] for r in select_retry_threads(threads, "operator")}
+    assert judged == {"PRRT_judge"}
+    assert retried == {"PRRT_retry"}
+    assert judged.isdisjoint(retried)
+
+
+# ---------- Slice B: note + review bodies ----------
+
+
+def test_fix_note_body_shape():
+    body = build_fix_note_body(
+        "loop now breaks on a cap", "[`abc1234:L10`](https://x/blob/abc/a#L10)"
+    )
+    assert body.startswith("_Fixed:_ [`abc1234:L10`]")
+    assert "loop now breaks on a cap" in body
+    assert body.endswith(f"{MARKER}\n\n{FIX_NOTE_SENTINEL}")
+    # Lead, link line, rationale, marker, sentinel are blank-line separated blocks.
+    assert body.split("\n\n") == [
+        "_Fixed:_ [`abc1234:L10`](https://x/blob/abc/a#L10)",
+        "loop now breaks on a cap",
+        MARKER,
+        FIX_NOTE_SENTINEL,
+    ]
+
+
+def test_fix_note_body_without_link():
+    # No head sha or no line -> the lead stands alone, rationale still below.
+    body = build_fix_note_body("defect gone after the rewrite", None)
+    assert body.split("\n\n") == [
+        "_Fixed:_",
+        "defect gone after the rewrite",
+        MARKER,
+        FIX_NOTE_SENTINEL,
+    ]
+
+
+def test_fix_review_body_singular_and_plural():
+    assert fix_review_body(1).startswith("1 conversation resolved as fixed by a later commit.")
+    assert fix_review_body(3).startswith("3 conversations resolved as fixed by a later commit.")
+    # Carries the Provenance tag and the reply-review marker (shared so a crashed
+    # fix-note wrapper is discardable by reply-pr.sh's cleanup).
+    assert MARKER in fix_review_body(2)
+    assert resolve_threads.create_reply.REPLY_REVIEW_MARKER in fix_review_body(2)
+
+
+# ---------- Slice B: voice gating leaves a thread open ----------
+
+
+def _act_dry_run(notes: list[dict], retry: list[dict]) -> dict:
+    with tempfile.TemporaryDirectory() as tmp:
+        nf = Path(tmp) / "notes.json"
+        rf = Path(tmp) / "retry.json"
+        nf.write_text(json.dumps(notes))
+        rf.write_text(json.dumps(retry))
+        out = subprocess.run(
+            [
+                "python3",
+                str(RESOLVE_PATH),
+                "act",
+                "--notes",
+                str(nf),
+                "--retry",
+                str(rf),
+                "--head-owner",
+                "o",
+                "--head-repo",
+                "r",
+                "--head-sha",
+                "abcdef1234567890",
+                "--dry-run",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(out.stdout)
+
+
+def test_act_dry_run_plan_notes_and_resolves():
+    plan = _act_dry_run(
+        [{"thread_id": "PRRT_a", "path": "a.py", "line": 10, "rationale": "loop now caps"}],
+        [{"thread_id": "PRRT_b"}],
+    )
+    assert [n["thread_id"] for n in plan["would_note"]] == ["PRRT_a"]
+    # Both the freshly-noted thread and the retry thread are resolved.
+    assert plan["would_resolve"] == ["PRRT_a", "PRRT_b"]
+    assert plan["skipped"] == []
+
+
+def test_act_dry_run_voice_violation_leaves_open():
+    # An em dash in the rationale fails the voice gate, so the note is not built and
+    # the thread is left open (safe bias): it is neither noted nor resolved.
+    plan = _act_dry_run(
+        [{"thread_id": "PRRT_bad", "path": "a.py", "line": 10, "rationale": "fixed — see below"}],
+        [],
+    )
+    assert plan["would_note"] == []
+    assert plan["would_resolve"] == []
+    assert len(plan["skipped"]) == 1 and "em dash" in plan["skipped"][0]
+
+
+def test_act_dry_run_empty_rationale_leaves_open():
+    plan = _act_dry_run(
+        [{"thread_id": "PRRT_x", "path": "a.py", "line": 10, "rationale": "  "}], []
+    )
+    assert plan["would_note"] == [] and plan["would_resolve"] == []
+
+
+# ---------- Slice B: act posts and resolves through a gh stub ----------
+
+
+def _run_act(notes: list[dict], retry: list[dict], *, fail_ops: list[str] | None = None):
+    """Run `resolve_threads.py act` with a recording gh stub on PATH. Returns
+    (result, calls): calls is a list of argv strings in order. The stub feeds a
+    canned review id back for CreatePendingReview so add/submit have a target, and
+    can be made to fail only for calls whose argv contains a given substring."""
+    fail_ops = fail_ops or []
+    create_stdout = '{"data":{"addPullRequestReview":{"pullRequestReview":{"id":"PRR_stub"}}}}'
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpd = Path(tmp)
+        (tmpd / "notes.json").write_text(json.dumps(notes))
+        (tmpd / "retry.json").write_text(json.dumps(retry))
+        argv_log = tmpd / "argv.txt"
+        stub = tmpd / "gh"
+        lines = [
+            "#!/usr/bin/env bash",
+            f'printf "%s\\0" "$*" >> "{argv_log}"',
+            f"case \"$*\" in *CreatePendingReview*) printf '%s' '{create_stdout}' ;; esac",
+        ]
+        if fail_ops:
+            clauses = " ".join(f'*"{op}"*) exit 1 ;;' for op in fail_ops)
+            lines.append(f'case "$*" in {clauses} esac')
+        lines.append("exit 0")
+        stub.write_text("\n".join(lines) + "\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        env = os.environ.copy()
+        env["PATH"] = f"{tmpd}:{env['PATH']}"
+        result = subprocess.run(
+            [
+                "python3",
+                str(RESOLVE_PATH),
+                "act",
+                "--notes",
+                str(tmpd / "notes.json"),
+                "--retry",
+                str(tmpd / "retry.json"),
+                "--pr-node-id",
+                "PR_node",
+                "--head-owner",
+                "o",
+                "--head-repo",
+                "r",
+                "--head-sha",
+                "abcdef1234567890",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        calls = argv_log.read_text().split("\0")[:-1] if argv_log.exists() else []
+        return result, calls
+
+
+def test_act_posts_batched_note_then_resolves():
+    result, calls = _run_act(
+        [{"thread_id": "PRRT_a", "path": "a.py", "line": 10, "rationale": "loop now caps"}],
+        [{"thread_id": "PRRT_b"}],
+    )
+    assert result.returncode == 0, result.stderr
+    joined = "\n".join(calls)
+    # One batched review: create -> add reply -> submit, then a resolve per thread.
+    assert "CreatePendingReview" in joined
+    assert "AddReply" in joined
+    assert "SubmitReview" in joined
+    # The note rides the pending review (not a detached REST reply), so no
+    # /replies POST is made for the note.
+    assert "/replies" not in joined
+    # Both the noted thread and the retry thread are resolved.
+    resolves = [c for c in calls if "resolveReviewThread" in c]
+    assert any("PRRT_a" in c for c in resolves)
+    assert any("PRRT_b" in c for c in resolves)
+
+
+def test_act_resolve_only_for_retry_with_no_notes():
+    # Retry-only tick: no notes, so no review is opened, just the resolve retry.
+    result, calls = _run_act([], [{"thread_id": "PRRT_b"}])
+    assert result.returncode == 0, result.stderr
+    joined = "\n".join(calls)
+    assert "CreatePendingReview" not in joined
+    assert any("resolveReviewThread" in c and "PRRT_b" in c for c in calls)
+
+
+def test_act_submit_failure_discards_wrapper_and_leaves_thread_open():
+    # If submit fails, the note never went live, so the thread must NOT be resolved,
+    # and the empty pending wrapper is self-deleted so it cannot block the next tick.
+    result, calls = _run_act(
+        [{"thread_id": "PRRT_a", "path": "a.py", "line": 10, "rationale": "loop now caps"}],
+        [],
+        fail_ops=["SubmitReview"],
+    )
+    assert result.returncode == 0, result.stderr
+    joined = "\n".join(calls)
+    assert "DeletePendingReview" in joined
+    assert not any("resolveReviewThread" in c and "PRRT_a" in c for c in calls)
+
+
+# ---------- Slice B: sentinel pinned across the bash/Python boundary ----------
+
+
+def test_fix_note_sentinel_pinned_in_lib_sh():
+    # lib.sh's fetch_open_review_threads hard-codes the same literal to compute
+    # has_fix_note; a drift would silently break retry detection.
+    assert FIX_NOTE_SENTINEL in LIB_SH.read_text()

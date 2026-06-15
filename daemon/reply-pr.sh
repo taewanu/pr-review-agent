@@ -163,8 +163,12 @@ if gql_response="$(gh api graphql \
     }
   }' -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" 2>"$gql_err")"; then
   PR_NODE_ID="$(jq -r '.data.repository.pullRequest.id // empty' <<<"$gql_response")"
-  # Only a review the daemon tagged as a reply wrapper is eligible for deletion;
-  # the marker string is create_reply.py's REPLY_REVIEW_MARKER.
+  # Delete only a daemon-tagged wrapper review (marker: create_reply.py's
+  # REPLY_REVIEW_MARKER). Two producers emit it: create_reply.py and the
+  # commit-driven fix-note wrapper (resolve_threads.fix_review_body). Discarding
+  # either crashed wrapper here keeps a crash from wedging GitHub's
+  # one-pending-review-per-viewer limit; renaming the marker for one path must
+  # keep both producers in sync.
   EXISTING_PENDING_REVIEW_ID="$(jq -r '
     .data.viewer.login as $me
     | (.data.repository.pullRequest.reviews.nodes // [])
