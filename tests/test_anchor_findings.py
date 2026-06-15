@@ -408,6 +408,17 @@ def test_resolve_range_quote_relocates_when_shift_exits_hunk():
     assert anchor_findings.resolve_finding(finding, d) is None
 
 
+def test_resolve_range_quote_shifts_up_on_negative_delta():
+    d = _block_fixture()  # `charlie` is uniquely new-side line 3
+    # Agent miscounts the block as lines 10..12; the quote pins the start at 3, so
+    # the span shifts by -7 to 3..5 (delta is negative).
+    finding = {"path": "src/x.py", "line": 10, "end_line": 12, "quote": "charlie", "body": "x"}
+    resolved = anchor_findings.resolve_finding(finding, d)
+    assert resolved is not None
+    assert resolved["line"] == 3
+    assert resolved["end_line"] == 5
+
+
 # ---------- split_findings ----------
 
 
