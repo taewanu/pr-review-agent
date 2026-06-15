@@ -408,6 +408,37 @@ fetch_open_review_threads() {
       }]' <<<"$resp"
 }
 
+# find_stale_wrapper_review <owner> <repo> <pr-number> <operator>
+# Echoes the node id of a stale wrapper review to discard: a PENDING review by
+# <operator> whose body carries the wrapper marker (batch_review.WRAPPER_MARKER,
+# the same literal reply-pr.sh matches). Empty when none. The marker is the gate
+# that keeps this from ever deleting a Finding-bearing Pending review (the ADR
+# 0008 safety gate) or a human reviewer's draft, so the review path's resolution
+# stage can clear a crashed fix-note wrapper without touching anything else (#125,
+# #38). test_find_stale_wrapper pins the marker identical across the three sites.
+# Best-effort: prints nothing and returns 0 on query failure, so the caller just
+# skips the discard and lets create fail loudly if the wrapper really still blocks.
+find_stale_wrapper_review() {
+  local owner="$1" repo="$2" pr="$3" operator="$4"
+  local resp
+  # $owner/$repo/$pr are GraphQL variables, not shell vars — keep them literal.
+  # shellcheck disable=SC2016
+  if ! resp="$(gh api graphql \
+    -f query='query($owner:String!,$repo:String!,$pr:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$pr){
+          reviews(first:50,states:[PENDING]){ nodes{ id author{ login } body } }
+        }
+      }
+    }' -f owner="$owner" -f repo="$repo" -F pr="$pr" 2>/dev/null)"; then
+    return 0
+  fi
+  jq -r --arg me "$operator" '
+    (.data.repository.pullRequest.reviews.nodes // [])
+    | map(select(.author.login == $me and ((.body // "") | contains("pr-review-agent:reply-review"))))
+    | .[0].id // empty' <<<"$resp"
+}
+
 # derive_project_identity <repo-root>
 # Sets PROJECT_URL/PROJECT_NAME from `git remote get-url origin`. Returns
 # non-zero if the origin is missing or not a parseable github.com URL.

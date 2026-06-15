@@ -338,7 +338,7 @@ def test_fix_review_body_singular_and_plural():
     # Carries the Provenance tag and the reply-review marker (shared so a crashed
     # fix-note wrapper is discardable by reply-pr.sh's cleanup).
     assert MARKER in fix_review_body(2)
-    assert resolve_threads.create_reply.REPLY_REVIEW_MARKER in fix_review_body(2)
+    assert resolve_threads.batch_review.WRAPPER_MARKER in fix_review_body(2)
 
 
 # ---------- Slice B: voice gating leaves a thread open ----------
@@ -407,7 +407,13 @@ def test_act_dry_run_empty_rationale_leaves_open():
 # ---------- Slice B: act posts and resolves through a gh stub ----------
 
 
-def _run_act(notes: list[dict], retry: list[dict], *, fail_ops: list[str] | None = None):
+def _run_act(
+    notes: list[dict],
+    retry: list[dict],
+    *,
+    fail_ops: list[str] | None = None,
+    existing_review_id: str = "",
+):
     """Run `resolve_threads.py act` with a recording gh stub on PATH. Returns
     (result, calls): calls is a list of argv strings in order. The stub feeds a
     canned review id back for CreatePendingReview so add/submit have a target, and
@@ -433,28 +439,26 @@ def _run_act(notes: list[dict], retry: list[dict], *, fail_ops: list[str] | None
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         env = os.environ.copy()
         env["PATH"] = f"{tmpd}:{env['PATH']}"
-        result = subprocess.run(
-            [
-                "python3",
-                str(RESOLVE_PATH),
-                "act",
-                "--notes",
-                str(tmpd / "notes.json"),
-                "--retry",
-                str(tmpd / "retry.json"),
-                "--pr-node-id",
-                "PR_node",
-                "--head-owner",
-                "o",
-                "--head-repo",
-                "r",
-                "--head-sha",
-                "abcdef1234567890",
-            ],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        argv = [
+            "python3",
+            str(RESOLVE_PATH),
+            "act",
+            "--notes",
+            str(tmpd / "notes.json"),
+            "--retry",
+            str(tmpd / "retry.json"),
+            "--pr-node-id",
+            "PR_node",
+            "--head-owner",
+            "o",
+            "--head-repo",
+            "r",
+            "--head-sha",
+            "abcdef1234567890",
+        ]
+        if existing_review_id:
+            argv += ["--existing-pending-review-id", existing_review_id]
+        result = subprocess.run(argv, capture_output=True, text=True, env=env)
         calls = argv_log.read_text().split("\0")[:-1] if argv_log.exists() else []
         return result, calls
 
@@ -500,6 +504,26 @@ def test_act_submit_failure_discards_wrapper_and_leaves_thread_open():
     joined = "\n".join(calls)
     assert "DeletePendingReview" in joined
     assert not any("resolveReviewThread" in c and "PRRT_a" in c for c in calls)
+
+
+def test_act_discards_stale_wrapper_before_create():
+    # A prior fix-note tick left a pending wrapper unsubmitted; act discards it
+    # before opening this tick's review, so the create is not blocked by GitHub's
+    # one-pending-per-viewer rule. This is the reply path's #38 cleanup, now on the
+    # resolution path (#125).
+    result, calls = _run_act(
+        [{"thread_id": "PRRT_a", "path": "a.py", "line": 10, "rationale": "loop now caps"}],
+        [],
+        existing_review_id="PRR_stale",
+    )
+    assert result.returncode == 0, result.stderr
+    del_idx = next(
+        (i for i, c in enumerate(calls) if "DeletePendingReview" in c and "PRR_stale" in c),
+        None,
+    )
+    assert del_idx is not None, "the stale wrapper is discarded"
+    create_idx = next(i for i, c in enumerate(calls) if "CreatePendingReview" in c)
+    assert del_idx < create_idx, "discard precedes this tick's create"
 
 
 # ---------- Slice B: sentinel pinned across the bash/Python boundary ----------

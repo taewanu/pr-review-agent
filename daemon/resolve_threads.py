@@ -29,10 +29,10 @@ Pure selection/format entry points (unit-tested without gh):
 
   build_fix_note_body: the `_Fixed:_` note text, voice-gated before posting.
 
-The `act` subcommand posts the notes (batched under one COMMENT review, #38) and
-resolves both the freshly-noted and the retry threads, reusing create_reply.py's
-posting helpers so a note is voice-gated, carries the Provenance tag, and follows
-the #106 reply-lead format.
+The `act` subcommand posts the notes (batched under one COMMENT review, #38) via
+batch_review.submit and resolves both the freshly-noted and the retry threads. A
+note is voice-gated, carries the Provenance tag, and follows the #106 reply-lead
+format (italic colon-lead, no trailing period).
 """
 
 import argparse
@@ -43,10 +43,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # daemon/ is not a package and this script is run by path, so add its own dir to
-# the import path before importing the shared posting helpers and voice rules.
+# the import path before importing the shared posting toolkit, the blob-link
+# helper, and the voice rules.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import create_reply  # noqa: E402
+import batch_review  # noqa: E402
 import voice  # noqa: E402
+from batch_review import build_blob_link  # noqa: E402
 
 DIFF_GIT_RE = re.compile(r"^diff --git a/(?P<old>.+) b/(?P<new>.+)$")
 # Old-side range of a hunk: `@@ -<start>,<count> +... @@`. Count defaults to 1
@@ -213,16 +215,15 @@ def build_fix_note_body(rationale: str, link: str | None) -> str:
 
 def fix_review_body(resolved: int) -> str:
     """Build the batched COMMENT review body wrapping the tick's `_Fixed:_` notes
-    (#38): the count first, then the Provenance tag, then the hidden
-    REPLY_REVIEW_MARKER.
+    (#38): the count first, then the Provenance tag, then the hidden WRAPPER_MARKER.
 
-    Reusing the reply path's marker is deliberate: it makes a crashed-pending
-    fix-note wrapper discardable by reply-pr.sh's existing stale-wrapper cleanup,
-    so a fix-note crash can't wedge the reply path on GitHub's
+    Sharing batch_review.WRAPPER_MARKER is deliberate: it makes a crashed-pending
+    fix-note wrapper discardable by the same stale-wrapper cleanup the reply path
+    uses, so a fix-note crash can't wedge either path on GitHub's
     one-pending-review-per-viewer limit. Called only with resolved >= 1."""
     noun = "conversation" if resolved == 1 else "conversations"
     summary = f"{resolved} {noun} resolved as fixed by a later commit."
-    return f"{summary}\n\n{PROVENANCE_MARKER}\n\n{create_reply.REPLY_REVIEW_MARKER}"
+    return f"{summary}\n\n{PROVENANCE_MARKER}\n\n{batch_review.WRAPPER_MARKER}"
 
 
 def parse_verdict(raw: str) -> dict:
@@ -272,9 +273,7 @@ def _vet_notes(
         if violations:
             skipped.append("; ".join(violations))
             continue
-        link = create_reply.build_link(
-            head_owner, head_repo, head_sha, n.get("path"), n.get("line")
-        )
+        link = build_blob_link(head_owner, head_repo, head_sha, n.get("path"), n.get("line"))
         postable.append((tid, build_fix_note_body(rationale, link)))
     return postable, skipped
 
@@ -287,65 +286,36 @@ def post_and_resolve(
     head_owner: str,
     head_repo: str,
     head_sha: str,
+    existing_review_id: str = "",
 ) -> dict:
     """Post the `_Fixed:_` notes under one batched COMMENT review (#38), then
     resolve every thread that now carries a note plus every retry thread.
 
     Note-then-resolve order and best-effort throughout (ADR 0017 §4): the note is
     the audit trace and must land first, so a thread is only resolved after its
-    note is live (the review submitted). A create/add/submit failure leaves the
-    thread open and unnoted, so a later tick retries it; on submit failure the
-    wrapper is self-deleted so it never lingers to block GitHub's one-pending rule.
-    Resolve is idempotent, so a retry thread re-resolves harmlessly.
-
-    The create/add/submit/resolve ladder mirrors create_reply.py's reply batch; it
-    reuses the leaf helpers but not the flow. Extracting a shared batch-poster is
-    deferred to the #38 notification-batching consolidation (#125), where both call
-    sites are in scope; until then a change to the batch protocol must touch both."""
+    note is live (the review submitted). batch_review.submit returns only the notes
+    that landed, so a create/add/submit failure leaves its thread open and unnoted
+    and a later tick retries it; the resolve loop then runs over the landed notes
+    plus the retry threads. Resolve is idempotent, so a retry thread re-resolves
+    harmlessly. The batch ladder lives in batch_review.submit, shared with the reply
+    path so the two can no longer drift; only the resolve set differs (here it is
+    every landed note plus every retry thread)."""
     postable, skipped = _vet_notes(notes, head_owner, head_repo, head_sha)
     for line in skipped:
         print(f"fix-note voice violation, leaving open: {line}", file=sys.stderr)
 
-    noted_threads: list[str] = []
-    if postable:
-        if not pr_node_id:
-            print("no PR node id; cannot batch fix-notes, leaving threads open", file=sys.stderr)
-        else:
-            _rc, review_id, cerr = create_reply.create_pending_review(pr_node_id)
-            if not review_id:
-                print(
-                    f"fix-note review create failed; leaving {len(postable)} thread(s) open: "
-                    f"{cerr.strip()}",
-                    file=sys.stderr,
-                )
-            else:
-                added: list[str] = []
-                for tid, body in postable:
-                    arc, aerr = create_reply.add_thread_reply(review_id, tid, body)
-                    if arc == 0:
-                        added.append(tid)
-                    else:
-                        print(
-                            f"fix-note add failed for thread {tid}: {aerr.strip()}", file=sys.stderr
-                        )
-                if not added:
-                    create_reply.delete_pending_review(review_id)
-                    print("no fix-notes added; discarded the empty review", file=sys.stderr)
-                else:
-                    src, serr = create_reply.submit_review(review_id, fix_review_body(len(added)))
-                    if src == 0:
-                        noted_threads = added
-                    else:
-                        create_reply.delete_pending_review(review_id)
-                        print(
-                            f"fix-note review submit failed; leaving {len(added)} thread(s) open: "
-                            f"{serr.strip()}",
-                            file=sys.stderr,
-                        )
+    items = [batch_review.BatchItem(tid, body, tag=tid) for tid, body in postable]
+    added = batch_review.submit(
+        items,
+        pr_node_id=pr_node_id,
+        review_body=lambda landed: fix_review_body(len(landed)),
+        existing_review_id=existing_review_id,
+    )
+    noted_threads = [it.thread_id for it in added]
 
     resolved_threads = []
     for tid in noted_threads + [r["thread_id"] for r in retry]:
-        rrc, rerr = create_reply.resolve_thread(tid)
+        rrc, rerr = batch_review.resolve_thread(tid)
         if rrc == 0:
             resolved_threads.append(tid)
         else:
@@ -394,6 +364,7 @@ def _cmd_act(args: argparse.Namespace) -> int:
         head_owner=args.head_owner,
         head_repo=args.head_repo,
         head_sha=args.head_sha,
+        existing_review_id=args.existing_pending_review_id,
     )
     print(
         f"resolution: {len(result['noted'])} noted, {len(result['resolved'])} resolved "
@@ -440,6 +411,13 @@ def main() -> int:
     p_act.add_argument("--head-owner", default="", help="head repo owner for the blob link")
     p_act.add_argument("--head-repo", default="", help="head repo name for the blob link")
     p_act.add_argument("--head-sha", default="", help="PR HEAD sha the note's blob link points at")
+    p_act.add_argument(
+        "--existing-pending-review-id",
+        default="",
+        help="a viewer pending fix-note wrapper left by a prior tick that failed to "
+        "submit; discarded before opening this tick's review so the create is not "
+        "blocked by GitHub's one-pending-per-viewer rule (#125)",
+    )
     p_act.add_argument(
         "--dry-run", action="store_true", help="print the note bodies and resolves, call no gh"
     )
