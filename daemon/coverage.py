@@ -6,7 +6,7 @@ def coverage_percent(reviewed: int, total: int) -> float:
 
     `reviewed` is the count that passed the path filters; `total` is every
     changed file in the diff."""
-    return reviewed / total * 100
+    return 0.0 if total == 0 else reviewed / total * 100
 
 
 def format_coverage(reviewed: int, total: int) -> str:
