@@ -12,7 +12,7 @@ Output is consumed by a deterministic pipeline (`daemon/extract_json.py`, `daemo
 The slash command will pass:
 
 - A PR URL as the first positional arg
-- `--diff <path>` pointing to a file containing `gh pr diff <url>` output
+- `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Each new-side line (added and context) is prefixed with its new-file line number and a `│` separator, e.g. `42│+    foo = bar`; deleted lines and headers have no number. Read the line number to fill `line`; do not count lines yourself. The leading number and the `+`/`-`/space marker are display only, not part of the source.
 
 Your cwd is a shallow clone of the PR's HEAD. Use `Read`, `Glob`, `Grep` freely to inspect surrounding code beyond the diff window.
 
@@ -185,6 +185,7 @@ The last thing in your stdout MUST be a fenced ` ```json ` block containing a JS
     {
       "path": "relative/path/from/repo/root.py",
       "line": 42,
+      "quote": "        log.warning(f\"auth failed for {session.token}\")",
       "severity": "important",
       "type": "bug",
       "body": "**Drop `session.token` from the warning log.** It writes the token in plaintext; redact before emit."
@@ -193,6 +194,7 @@ The last thing in your stdout MUST be a fenced ` ```json ` block containing a JS
       "path": "relative/path/to/other.py",
       "line": 10,
       "end_line": 18,
+      "quote": "    def parse_and_persist(raw):",
       "severity": "nit",
       "type": "refactor",
       "body": "**Split the helper into two functions.**\n\n- Parses, validates, and persists in one call\n- Splitting makes failure modes orthogonal\n- Each function then tests in isolation"
@@ -205,7 +207,8 @@ Field rules:
 
 - `summary`: 두괄식 lead sentence + 0 or 1+ bulleted independent judgments. See "Summary shape" under Prose style.
 - `comments[].path`: repo-relative path of the changed file.
-- `comments[].line`: required integer, 1-indexed line in the file at PR HEAD. Never `null`. For file-level findings with no natural line anchor (e.g. "this whole module's docstring is missing"), pick a representative line inside one of the file's diff hunks; the daemon will keep it inline. For concerns that don't fit any file, put them in `summary` instead of inventing a path.
+- `comments[].line`: required integer, 1-indexed line in the file at PR HEAD. Read it off the leading line number (`42│…`); never count lines. Never `null`. For file-level findings with no natural line anchor (e.g. "this whole module's docstring is missing"), pick a representative line inside one of the file's diff hunks; the daemon will keep it inline. For concerns that don't fit any file, put them in `summary` instead of inventing a path.
+- `comments[].quote`: the exact source text of the flagged `line` (for a block, the first line, the one `line` points to), leading line number and `+`/`-`/space marker stripped (the code only). The daemon matches it against the diff to anchor the comment on the right line even if the number is slightly off. Always include it for a single-line or block finding. Omit it only for a genuinely line-less finding (a file-level or "missing X" finding with no single line to quote); its absence tells the daemon the finding is region-level.
 - `comments[].end_line`: optional. When set and greater than `line`, the comment renders as a multi-line range from `line` to `end_line` (both inclusive). Use this when the finding is about a contiguous block: a function body, a conditional, a helper. Both `line` and `end_line` must fall in the same diff hunk or the comment relocates into the Review body's `## Findings outside the diff` section (per ADR 0005). Omit `end_line` for single-line findings; `end_line == line` is treated as single-line.
 - `comments[].severity`: one of `important`, `nit`, `pre_existing`. See ADR 0002.
 - `comments[].type`: one of `bug`, `refactor`, `polish`. See ADR 0002.

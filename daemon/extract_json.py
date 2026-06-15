@@ -34,6 +34,11 @@ class Finding(BaseModel):
     severity: Literal["important", "nit", "pre_existing"]
     type: Literal["bug", "refactor", "polish"]
     body: str
+    # Exact source text of the flagged line, used to content-anchor the finding
+    # to its true line (ADR 0018). Optional with graceful fallback: a missing
+    # quote never fails the review (#44); the agent omits it only for region-level
+    # findings with no single line to quote.
+    quote: str | None = None
 
     @model_validator(mode="after")
     def _check_end_line(self) -> Self:

@@ -165,6 +165,22 @@ def test_end_line_greater_than_line_is_valid():
     assert payload.comments[0].end_line == 20
 
 
+def test_quote_survives_extraction():
+    # The agent's quoted line text must reach the payload so anchor_findings can
+    # content-anchor it (ADR 0018); pydantic drops unknown fields by default.
+    f = _minimal_finding(quote="    total = a + b")
+    raw = _wrap({"summary": "x", "comments": [f]})
+    payload = extract_json.extract(raw)
+    assert payload.comments[0].quote == "    total = a + b"
+
+
+def test_quote_defaults_to_none_when_omitted():
+    f = _minimal_finding()
+    raw = _wrap({"summary": "x", "comments": [f]})
+    payload = extract_json.extract(raw)
+    assert payload.comments[0].quote is None
+
+
 def test_end_line_less_than_line_raises_schema_invalid():
     f = _minimal_finding(line=20, end_line=10)
     raw = _wrap({"summary": "x", "comments": [f]})

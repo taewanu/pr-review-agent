@@ -291,6 +291,11 @@ bundle_operator_agents "$SCRATCH"
 # diff by basename so $TMPDIR containing a space can't split the slash-command args.
 DIFF_BASENAME=".pr-review-diff.txt"
 DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
+# The agents read a line-numbered copy so they read `line` off the leading number
+# instead of counting hunk lines (ADR 0018). The raw DIFF_FILE stays the
+# pipeline's input (anchor_findings split, commit-driven resolution).
+NUMBERED_BASENAME=".pr-review-diff-numbered.txt"
+NUMBERED_FILE="$SCRATCH/$NUMBERED_BASENAME"
 RAW_FILE="$SCRATCH/.pr-review-raw.txt"
 # The editor agent reads the draft from cwd by basename (like the diff), so the
 # author payload lives in the scratch under a bare name (#133).
@@ -331,6 +336,9 @@ if [[ $diff_scoped -eq 0 ]]; then
   gh pr diff "$PR_URL" >"$DIFF_FILE"
 fi
 
+# Line-numbered diff for the agents (ADR 0018, layer A).
+python3 "$SCRIPT_DIR/anchor_findings.py" number "$DIFF_FILE" >"$NUMBERED_FILE"
+
 # Post (or reuse) the durable status comment before the multi-minute review, so
 # the operator sees the PR is being looked at and the scope being read (#60).
 # Scope comes from the same diff: file list plus commit range (full PR first,
@@ -370,7 +378,7 @@ review_rc=0
 (
   cd "$SCRATCH"
   run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-    claude -p "/review-pr $PR_URL --diff $DIFF_BASENAME" >"$RAW_FILE"
+    claude -p "/review-pr $PR_URL --diff $NUMBERED_BASENAME" >"$RAW_FILE"
 ) || review_rc=$?
 if [[ "$review_rc" -eq "$TIMEOUT_EXIT" ]]; then
   log_failure "review-timeout" "$PR_URL" "$HEAD_OID" \
@@ -405,7 +413,7 @@ if [[ "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
   (
     cd "$SCRATCH"
     run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
-      claude -p "/edit-review $PR_URL --diff $DIFF_BASENAME --payload $AUTHOR_BASENAME" >"$EDIT_RAW_FILE"
+      claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" >"$EDIT_RAW_FILE"
   ) || edit_rc=$?
   if [[ "$edit_rc" -eq "$TIMEOUT_EXIT" ]]; then
     log_failure "edit-timeout" "$PR_URL" "$HEAD_OID" "editor agent exceeded ${EDITOR_AGENT_TIMEOUT}s"
@@ -426,7 +434,7 @@ if ! python3 "$SCRIPT_DIR/apply_edits.py" "${EDIT_ARGS[@]}" >"$PAYLOAD_FILE" 2>"
 fi
 
 log_step "anchoring findings"
-python3 "$SCRIPT_DIR/anchor_findings.py" \
+python3 "$SCRIPT_DIR/anchor_findings.py" split \
   "$PAYLOAD_FILE" "$DIFF_FILE" \
   --anchored "$ANCHORED_FILE" \
   --unanchored "$UNANCHORED_FILE" \

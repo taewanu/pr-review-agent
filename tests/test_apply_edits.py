@@ -72,6 +72,45 @@ def test_rewrite_swaps_body_keeps_other_fields():
     assert c["path"] == "f0.py" and c["line"] == 1 and c["severity"] == "nit"
 
 
+def test_quote_rides_through_keep_and_rewrite_untouched():
+    # ADR 0018 boundary: the Editor names a decision by index and never touches
+    # `quote`, so it survives both keep and rewrite via the by-reference contract.
+    author = {
+        "summary": "s",
+        "comments": [
+            {
+                "path": "a.py",
+                "line": 1,
+                "severity": "nit",
+                "type": "polish",
+                "body": "**Keep.**",
+                "quote": "    keep_me = 1",
+            },
+            {
+                "path": "b.py",
+                "line": 2,
+                "severity": "nit",
+                "type": "polish",
+                "body": "**Rewrite.**",
+                "quote": "    rewrite_me = 2",
+            },
+        ],
+    }
+    edits = apply_edits.EditorPayload.model_validate(
+        {
+            "summary": "s",
+            "decisions": [
+                {"index": 0, "action": "keep"},
+                {"index": 1, "action": "rewrite", "body": "**Sharper.** Now clear."},
+            ],
+        }
+    )
+    final = apply_edits.apply_edits(author, edits)
+    assert final["comments"][0]["quote"] == "    keep_me = 1"
+    assert final["comments"][1]["quote"] == "    rewrite_me = 2"
+    assert final["comments"][1]["body"] == "**Sharper.** Now clear."
+
+
 def test_drop_omits_and_survivors_keep_order():
     author = _author("**A.** one", "**B.** two", "**C.** three")
     edits = apply_edits.EditorPayload.model_validate(

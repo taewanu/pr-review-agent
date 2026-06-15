@@ -14,7 +14,7 @@ Output is consumed by the same deterministic pipeline as the draft (`daemon/extr
 The slash command will pass:
 
 - A PR URL as the first positional arg
-- `--diff <path>` pointing to a file containing `gh pr diff <url>` output
+- `--diff <path>` pointing to a line-numbered `gh pr diff <url>`: each new-side line carries its new-file line number and a `│` separator (e.g. `42│+    foo = bar`), the same diff the review agent read. The leading number and the `+`/`-`/space marker are display only.
 - `--payload <path>` pointing to the draft review payload (the JSON the review agent emitted: `summary` plus `comments[]`)
 
 Your cwd is a shallow clone at the PR's HEAD. Use `Read`, `Glob`, `Grep` to verify each finding against the file as it actually stands. Read the code before you trust the finding.
