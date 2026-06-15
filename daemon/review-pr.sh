@@ -194,9 +194,17 @@ resolution() {
   fi
 
   log_info "posting ${notes_n} fix-note(s), retrying ${retry_n} resolve(s)"
+  # Discard a stale fix-note wrapper a prior tick left unsubmitted, so this tick's
+  # create is not blocked by GitHub's one-pending-per-viewer rule (#125, #38).
+  # Only when we open a review (notes to post); a retry-only tick opens none.
+  # Best-effort: empty when there is none or on query failure.
+  local existing_wrapper=""
+  if [[ "$notes_n" -gt 0 ]]; then
+    existing_wrapper="$(find_stale_wrapper_review "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
+  fi
   python3 "$SCRIPT_DIR/resolve_threads.py" act \
     --notes "$notes_file" --retry "$retry_file" \
-    --pr-node-id "$PR_NODE_ID" \
+    --pr-node-id "$PR_NODE_ID" --existing-pending-review-id "$existing_wrapper" \
     --head-owner "$HEAD_REPO_OWNER" --head-repo "$HEAD_REPO_NAME" --head-sha "$HEAD_OID" ||
     log_info "fix-note posting failed (non-fatal)"
   return 0

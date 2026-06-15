@@ -56,6 +56,7 @@ from pathlib import Path
 # daemon/ is not a package and this script is run by path, so add its own dir to
 # the import path before importing the shared voice rules (ADR 0010).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import batch_review  # noqa: E402
 import voice  # noqa: E402
 
 REQUIRED = ("in_reply_to_id", "addressed_comment_id", "bucket")
@@ -79,59 +80,11 @@ BUCKET_MODES = {
 # state change, orthogonal to the Reply sentinel (CONTEXT.md "Thread resolution").
 RESOLVE_MODES = ("confirmed", "withdrawn")
 
-# Single-line so the test gh-stub records the call on one argv line. GraphQL is
-# whitespace-insensitive, so this is equivalent to the pretty form.
-RESOLVE_MUTATION = (
-    "mutation($threadId: ID!) { resolveReviewThread(input: {threadId: $threadId}) "
-    "{ thread { id isResolved } } }"
-)
-
-# Review-wrapper batching (#38). Body-bearing replies post under ONE pending
-# COMMENTED review per tick instead of N detached `/replies` comments, so the
-# operator gets one GitHub notification. Each named so the test gh-stub can match
-# the call by operation name (CreatePendingReview's response carries the new
-# review id the adds and submit need). addPullRequestReviewThreadReply attaches a
-# reply to the pending review AND to its parent thread, preserving threading; the
-# `PRRT_` thread id is the same one reply-pr.sh joins for #75 resolution.
-# The wrapper review body is a single hidden marker (renders empty). It is the
-# discriminator reply-pr.sh filters on when picking a stale review to discard, so
-# the daemon only ever deletes its OWN reply wrappers — never a Finding-bearing
-# Pending review left pending as the ADR 0008 safety gate on others' PRs, nor any
-# human's manual draft. create-review.sh refuses to cancel pending reviews for the
-# same reason; an unfiltered delete here would do what that path forbids.
-# Reused by resolve_threads.fix_review_body for the commit-driven fix-note wrapper
-# (#125), so reply-pr.sh's stale-wrapper cleanup discards a crashed fix-note
-# wrapper too; the name predates that second producer.
-REPLY_REVIEW_MARKER = "<!-- pr-review-agent:reply-review -->"
-CREATE_REVIEW_MUTATION = (
-    "mutation CreatePendingReview($pr: ID!, $body: String!) { "
-    "addPullRequestReview(input: {pullRequestId: $pr, body: $body}) "
-    "{ pullRequestReview { id } } }"
-)
-ADD_REPLY_MUTATION = (
-    "mutation AddReply($review: ID!, $thread: ID!, $body: String!) { "
-    "addPullRequestReviewThreadReply(input: {pullRequestReviewId: $review, "
-    "pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }"
-)
-# Submit as COMMENT, setting the review body to the disposition summary plus the
-# hidden REPLY_REVIEW_MARKER (#11). submitPullRequestReview accepts a `body` that
-# overrides the create-time body, so the summary counts the replies that actually
-# landed with no extra round-trip.
-SUBMIT_REVIEW_MUTATION = (
-    "mutation SubmitReview($review: ID!, $body: String!) { "
-    "submitPullRequestReview(input: {pullRequestReviewId: $review, event: COMMENT, body: $body}) "
-    "{ pullRequestReview { id state } } }"
-)
-# Discards a stale pending review (a prior tick that added replies but failed to
-# submit). GitHub allows one pending review per viewer per PR, so a leftover
-# would block this tick's create; deleting it also drops its orphan comments,
-# which are invisible to the REST scan and would otherwise re-trigger duplicate
-# replies next cycle.
-DELETE_REVIEW_MUTATION = (
-    "mutation DeletePendingReview($review: ID!) { "
-    "deletePullRequestReview(input: {pullRequestReviewId: $review}) "
-    "{ pullRequestReview { id } } }"
-)
+# The batched-review GraphQL leaves, the wrapper marker, and the blob-link helper
+# now live in batch_review (#125), shared with resolve_threads so neither imports
+# the other. REPLY_REVIEW_MARKER kept here as the path-local name for the wrapper
+# marker's one producer (this module's reply acks); the wire string is identical.
+REPLY_REVIEW_MARKER = batch_review.WRAPPER_MARKER
 
 # Ack reaction per bucket. GitHub's reaction set is fixed to
 # +1/-1/laugh/confused/heart/hooray/rocket/eyes, so the design note's 🙏 is not
@@ -235,48 +188,12 @@ def extract_payload(raw: str) -> dict:
     return data
 
 
-def build_link(
-    owner: str,
-    repo: str,
-    head_sha: str,
-    path: str | None,
-    line: object,
-    end_line: object = None,
-) -> str | None:
-    """A blob-at-HEAD deep link to the verified line(s), or None when there is
-    nothing to anchor (no head sha, or the agent emitted no line, for example a
-    confirmed-by-deletion).
-
-    `owner`/`repo` must be the **head** repo: `head_sha` is a commit in the fork,
-    so a base-repo blob URL 404s on a cross-repo PR. The daemon reply asserts the
-    file's *current* state, so it points at the blob at HEAD (#11), not a
-    per-commit diff. The anchor is GitHub's plain `#L<n>` blob form; the sha256
-    path hash is the per-commit *diff* anchor and does not apply here. The label
-    shows a short sha plus line so the destination reads without hovering; the URL
-    carries the full sha for stability."""
-    if not (head_sha and path and line):
-        return None
-    try:
-        start = int(line)
-        end = int(end_line) if end_line else None
-    except (TypeError, ValueError):
-        return None
-    if end and end != start:
-        frag = f"L{start}-L{end}"
-        label = f"{head_sha[:7]}:L{start}-L{end}"
-    else:
-        frag = f"L{start}"
-        label = f"{head_sha[:7]}:L{start}"
-    url = f"https://github.com/{owner}/{repo}/blob/{head_sha}/{path}#{frag}"
-    return f"[`{label}`]({url})"
-
-
 def link_for(args: argparse.Namespace, reply: dict) -> str | None:
     """The blob-at-HEAD link for one body-bearing reply, from its `verified_*`
     fields plus the head repo and head sha. None when nothing to anchor. The link
     targets the head repo (where `head_sha` lives), falling back to the base
     owner/repo when not supplied so same-repo PRs and older callers still link."""
-    return build_link(
+    return batch_review.build_blob_link(
         args.head_owner or args.owner,
         args.head_repo or args.repo,
         args.head_sha,
@@ -359,61 +276,6 @@ def patch_finding(owner: str, repo: str, finding_id: str, body: str) -> tuple[in
     return proc.returncode, proc.stderr
 
 
-def resolve_thread(thread_id: str) -> tuple[int, str]:
-    """Resolve a GitHub review thread via the GraphQL resolveReviewThread
-    mutation (#75). Idempotent on GitHub's side — safe on an already-resolved
-    thread. Best-effort: callers log a failure and move on, never retrying. The
-    reply already carried the Reply sentinel, so the next cycle will not revisit
-    this thread; a failed resolve just leaves it open (the pre-#75 state).
-    `input=""` closes stdin: gh reads the query from argv, not stdin."""
-    proc = subprocess.run(
-        ["gh", "api", "graphql", "-f", f"query={RESOLVE_MUTATION}", "-f", f"threadId={thread_id}"],
-        input="",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return proc.returncode, proc.stderr
-
-
-def _graphql(query: str, **variables: str) -> subprocess.CompletedProcess:
-    """Run one `gh api graphql` mutation. Variables go through `-f name=value`, so
-    gh JSON-encodes each value — a reply body with `\\n` / backticks / non-ASCII
-    survives byte-for-byte without any shell quoting (same guarantee as the REST
-    `--input -` path). `input=""` closes stdin since the query rides in argv."""
-    args = ["gh", "api", "graphql", "-f", f"query={query}"]
-    for name, value in variables.items():
-        args += ["-f", f"{name}={value}"]
-    return subprocess.run(args, input="", capture_output=True, text=True, check=False)
-
-
-def create_pending_review(pr_node_id: str) -> tuple[int, str | None, str]:
-    """Open a pending COMMENTED review on the PR (#38). Returns
-    (returncode, review_node_id, stderr); review_node_id is None when the call
-    failed or the response did not carry an id, so the caller defers the batch to
-    the next cycle rather than posting replies into a review that never opened.
-
-    The review body is the hidden REPLY_REVIEW_MARKER (renders empty), tagging the
-    wrapper so a stale one can be told apart from a Finding-bearing draft before
-    deletion."""
-    proc = _graphql(CREATE_REVIEW_MUTATION, pr=pr_node_id, body=REPLY_REVIEW_MARKER)
-    if proc.returncode != 0:
-        return proc.returncode, None, proc.stderr
-    try:
-        review_id = json.loads(proc.stdout)["data"]["addPullRequestReview"]["pullRequestReview"][
-            "id"
-        ]
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return proc.returncode, None, proc.stdout
-    return proc.returncode, review_id, proc.stderr
-
-
-def add_thread_reply(review_id: str, thread_id: str, body: str) -> tuple[int, str]:
-    """Attach one reply to the pending review and its parent thread (#38)."""
-    proc = _graphql(ADD_REPLY_MUTATION, review=review_id, thread=thread_id, body=body)
-    return proc.returncode, proc.stderr
-
-
 def disposition_summary(open_count: int, resolved: int) -> str:
     """One-line disposition rollup for the Reply review body (#11).
 
@@ -444,21 +306,6 @@ def reply_review_body(open_count: int, resolved: int) -> str:
     (ADR 0010 §2, #132). The marker stays last so the daemon can tell its own
     stale wrapper from a Finding draft before deleting one."""
     return f"{disposition_summary(open_count, resolved)}\n\n{MARKER}\n\n{REPLY_REVIEW_MARKER}"
-
-
-def submit_review(review_id: str, body: str) -> tuple[int, str]:
-    """Submit the pending review as COMMENT, the tick's single notification. The
-    body carries the disposition summary, the Provenance tag, then the hidden
-    marker (#11; tag added #132)."""
-    proc = _graphql(SUBMIT_REVIEW_MUTATION, review=review_id, body=body)
-    return proc.returncode, proc.stderr
-
-
-def delete_pending_review(review_id: str) -> tuple[int, str]:
-    """Discard a pending review (a stale one before creating, or this tick's own
-    review when nothing was added so we never submit an empty COMMENTED review)."""
-    proc = _graphql(DELETE_REVIEW_MUTATION, review=review_id)
-    return proc.returncode, proc.stderr
 
 
 def main() -> int:
@@ -594,7 +441,7 @@ def main() -> int:
         if not tid:
             print(f"no thread id for finding {in_reply_to_id}; skipping resolve", file=sys.stderr)
             return
-        rrc, rerr = resolve_thread(tid)
+        rrc, rerr = batch_review.resolve_thread(tid)
         if rrc == 0:
             resolve_ok += 1
         else:
@@ -615,65 +462,36 @@ def main() -> int:
         else:
             fallback.append(r)
 
-    # --- Batch: one COMMENTED review (empty body) wraps every batchable reply, so
-    # the operator gets a single notification for the tick (#38). A failed add or
-    # submit leaves no sentinel on the affected thread, so the next cycle retries
-    # it — same best-effort contract as the detached path.
+    # --- Batch: one COMMENTED review (empty body) wraps every batchable reply via
+    # batch_review.submit, so the operator gets a single notification for the tick
+    # (#38). A failed add or submit lands no reply (and no sentinel) on the affected
+    # thread, so the next cycle retries it — the poster's best-effort contract.
     if batched:
-        if args.existing_pending_review_id:
-            drc, derr = delete_pending_review(args.existing_pending_review_id)
-            if drc != 0:
-                # Non-fatal here; the create below fails loudly if the stale
-                # review really still blocks GitHub's one-pending-per-viewer rule.
-                print(
-                    f"could not delete stale pending review "
-                    f"{args.existing_pending_review_id}: {derr.strip()}",
-                    file=sys.stderr,
-                )
-        _crc, review_id, cerr = create_pending_review(args.pr_node_id)
-        if not review_id:
-            print(
-                f"pending review create failed; {len(batched)} repl(y/ies) deferred "
-                f"to next cycle: {cerr.strip()}",
-                file=sys.stderr,
+        items = [
+            batch_review.BatchItem(
+                thread_ids[str(r["in_reply_to_id"])],
+                build_body(r["body"], str(r["addressed_comment_id"]), link_for(args, r)),
+                tag=r,
             )
-        else:
-            added: list[dict] = []
-            for r in batched:
-                tid = thread_ids[str(r["in_reply_to_id"])]
-                full_body = build_body(r["body"], str(r["addressed_comment_id"]), link_for(args, r))
-                arc, aerr = add_thread_reply(review_id, tid, full_body)
-                if arc == 0:
-                    added.append(r)
-                else:
-                    print(
-                        f"thread reply add failed for thread {tid}: {aerr.strip()}", file=sys.stderr
-                    )
-            if not added:
-                # A COMMENTED review with no comments and no body is rejected, so
-                # discard the empty pending review rather than submit it.
-                delete_pending_review(review_id)
-                print(
-                    "no thread replies added; discarded the empty pending review", file=sys.stderr
-                )
-            else:
-                resolved = sum(1 for r in added if r.get("mode") in RESOLVE_MODES)
-                src, serr = submit_review(
-                    review_id, reply_review_body(len(added) - resolved, resolved)
-                )
-                if src == 0:
-                    text_ok += len(added)
-                    # Resolve only after submit — replies (and their sentinels)
-                    # are not live until the review is submitted.
-                    for r in added:
-                        if r.get("mode") in RESOLVE_MODES:
-                            do_resolve(str(r["in_reply_to_id"]))
-                else:
-                    print(
-                        f"review submit failed; {len(added)} repl(y/ies) deferred to "
-                        f"next cycle: {serr.strip()}",
-                        file=sys.stderr,
-                    )
+            for r in batched
+        ]
+
+        def reply_wrapper_body(landed: list[batch_review.BatchItem]) -> str:
+            resolved = sum(1 for it in landed if it.tag.get("mode") in RESOLVE_MODES)
+            return reply_review_body(len(landed) - resolved, resolved)
+
+        added = batch_review.submit(
+            items,
+            pr_node_id=args.pr_node_id,
+            review_body=reply_wrapper_body,
+            existing_review_id=args.existing_pending_review_id,
+        )
+        text_ok += len(added)
+        # Resolve only after submit — replies (and their sentinels) are not live
+        # until the review is submitted.
+        for it in added:
+            if it.tag.get("mode") in RESOLVE_MODES:
+                do_resolve(str(it.tag["in_reply_to_id"]))
 
     # --- Fallback: a detached REST reply for any non-batchable body reply. Same
     # path the daemon used before #38; resolution stays inline since these post
