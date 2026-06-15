@@ -79,46 +79,8 @@ COMMENTS_JSON="$(gh api --paginate "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/co
 # and operator share an identity). Multi-user behavior unchanged. The scan
 # matches both the old `addressed:` wire and the current `reply:` so threads
 # acked before the #79 rename are not re-dispatched during the transition.
-THREADS_JSON="$(jq --arg login "$GITHUB_USER" '
-  . as $all
-  # Operator-reply IDs we have already acked, read from prior Reply sentinels
-  # (a body-bearing reply for fix claims and questions, or an acknowledgment
-  # parent finding body).
-  | [.[] | (.body // "") | scan("pr-review-agent:(?:addressed|reply):([0-9]+)") | .[0]]
-    as $addressed
-  | (map({key: (.id | tostring), value: .}) | from_entries) as $by_id
-  | map(
-      # Bind .id to $cur first; piping into $addressed shifts `.` to the array,
-      # so a naked `.id` inside `index(...)` would fail.
-      . as $cur
-      | select(
-          $cur.in_reply_to_id != null
-          # parent must be our finding
-          and ($by_id[($cur.in_reply_to_id | tostring)].user.login == $login)
-          # exclude our own body-bearing acks (the reply body carries the sentinel)
-          and (($cur.body // "") | test("pr-review-agent:(addressed|reply):") | not)
-          # exclude replies already in the addressed-set
-          and (($addressed | index($cur.id | tostring)) | not)
-        )
-      | . as $op
-      | ($by_id[($op.in_reply_to_id | tostring)]) as $parent
-      | ($parent.line // $parent.original_line) as $endL
-      | ($parent.start_line // $parent.original_start_line // $endL) as $startL
-      | {
-          parent_finding: {
-            comment_id: ($parent.id | tostring),
-            path: $parent.path,
-            line: $startL,
-            end_line: $endL,
-            body: $parent.body
-          },
-          operator_reply: {
-            comment_id: ($op.id | tostring),
-            body: $op.body
-          }
-        }
-    )
-' <<<"$COMMENTS_JSON")"
+THREADS_JSON="$(jq --arg login "$GITHUB_USER" --arg provenance "$PROVENANCE_TAG" \
+  -f "$SCRIPT_DIR/detect-replies.jq" <<<"$COMMENTS_JSON")"
 
 THREAD_COUNT="$(jq 'length' <<<"$THREADS_JSON")"
 if [[ "$THREAD_COUNT" -eq 0 ]]; then
