@@ -154,6 +154,109 @@ def test_parse_dev_null_added_file():
     assert d.hunks == {"src/new.py": [(1, 3)]}
 
 
+# ---------- Diff.match_quote ----------
+
+
+def test_match_quote_finds_new_side_line_by_content():
+    diff = textwrap.dedent(
+        """\
+        diff --git a/src/foo.py b/src/foo.py
+        --- a/src/foo.py
+        +++ b/src/foo.py
+        @@ -10,5 +10,5 @@ def foo():
+             x = 1
+             y = 2
+        -    z = 3
+        +    z = 4
+             return x
+        """
+    )
+    d = anchor_findings.Diff.parse(diff)
+    # `+    z = 4` is new-side line 12 (context 10, 11; deleted line has no new number).
+    assert d.match_quote("src/foo.py", "z = 4") == [12]
+
+
+def _quote_fixture():
+    # New-side lines 1..5: a deleted line carries no new number, so the second
+    # `log(x)` lands at 5, not 6.
+    diff = textwrap.dedent(
+        """\
+        diff --git a/src/foo.py b/src/foo.py
+        --- a/src/foo.py
+        +++ b/src/foo.py
+        @@ -1,2 +1,5 @@
+        +    total = a + b
+        +    log(x)
+        +    total = a + b
+             keep this
+        -    gone
+        +    log(x)
+        """
+    )
+    return anchor_findings.Diff.parse(diff)
+
+
+def test_match_quote_strips_leading_and_trailing_whitespace():
+    d = _quote_fixture()
+    # Agent drops the indentation; still matches lines 2 and 5 (`    log(x)`).
+    assert d.match_quote("src/foo.py", "log(x)") == [2, 5]
+    assert d.match_quote("src/foo.py", "  log(x)  ") == [2, 5]
+
+
+def test_match_quote_preserves_internal_whitespace():
+    d = _quote_fixture()
+    # Collapsing internal spaces would match `total = a + b`; it must not.
+    assert d.match_quote("src/foo.py", "total = a+b") == []
+    assert d.match_quote("src/foo.py", "total = a + b") == [1, 3]
+
+
+def test_match_quote_includes_context_lines():
+    d = _quote_fixture()
+    # Context (unchanged) lines are new-side anchorable too; line 4 here.
+    assert d.match_quote("src/foo.py", "keep this") == [4]
+
+
+def test_match_quote_no_match_returns_empty():
+    d = _quote_fixture()
+    assert d.match_quote("src/foo.py", "nonexistent line") == []
+    assert d.match_quote("src/other.py", "log(x)") == []
+
+
+def test_match_quote_empty_quote_returns_empty():
+    d = _quote_fixture()
+    assert d.match_quote("src/foo.py", "   ") == []
+
+
+# ---------- numbered_diff (line-numbered diff for the agent, ADR 0018) ----------
+
+
+def test_numbered_diff_numbers_new_side_lines():
+    diff = textwrap.dedent(
+        """\
+        diff --git a/src/foo.py b/src/foo.py
+        --- a/src/foo.py
+        +++ b/src/foo.py
+        @@ -10,5 +10,5 @@ def foo():
+             x = 1
+             y = 2
+        -    z = 3
+        +    z = 4
+             return x
+        """
+    )
+    out = anchor_findings.numbered_diff(diff).splitlines()
+    # Context and added lines carry their new-side number.
+    assert "10│     x = 1" in out
+    assert "11│     y = 2" in out
+    assert "12│+    z = 4" in out
+    assert "13│     return x" in out
+    # The deleted line and the headers carry a blank number column, so `+++` is
+    # never mistaken for an added new-side line.
+    assert "  │-    z = 3" in out
+    assert "  │+++ b/src/foo.py" in out
+    assert "  │@@ -10,5 +10,5 @@ def foo():" in out
+
+
 # ---------- Diff.is_anchored ----------
 
 
@@ -217,6 +320,105 @@ def test_anchored_range_equal_endpoints_treated_as_single_line():
     assert not d.is_anchored("src/foo.py", 9, end_line=9)
 
 
+# ---------- resolve_finding (content anchoring, ADR 0018) ----------
+
+
+def test_resolve_corrects_wrong_line_on_unique_quote_match():
+    d = _quote_fixture()  # "keep this" is uniquely new-side line 4
+    finding = {"path": "src/foo.py", "line": 1, "quote": "keep this", "body": "x"}
+    resolved = anchor_findings.resolve_finding(finding, d)
+    assert resolved is not None
+    assert resolved["line"] == 4
+
+
+def test_resolve_relocates_on_no_quote_match():
+    d = _quote_fixture()
+    finding = {"path": "src/foo.py", "line": 2, "quote": "not in this diff", "body": "x"}
+    assert anchor_findings.resolve_finding(finding, d) is None
+
+
+def test_resolve_multi_match_corroborated_by_emitted_line():
+    d = _quote_fixture()  # `log(x)` matches new-side lines 2 and 5
+    finding = {"path": "src/foo.py", "line": 5, "quote": "log(x)", "body": "x"}
+    resolved = anchor_findings.resolve_finding(finding, d)
+    assert resolved is not None
+    assert resolved["line"] == 5
+
+
+def test_resolve_multi_match_without_corroboration_relocates():
+    d = _quote_fixture()  # `log(x)` matches 2 and 5; emitted line is neither
+    finding = {"path": "src/foo.py", "line": 9, "quote": "log(x)", "body": "x"}
+    assert anchor_findings.resolve_finding(finding, d) is None
+
+
+def test_resolve_quote_absent_falls_back_to_range_check():
+    d = _quote_fixture()  # hunk covers new-side lines 1..5
+    in_hunk = {"path": "src/foo.py", "line": 3, "body": "no quote, in hunk"}
+    resolved = anchor_findings.resolve_finding(in_hunk, d)
+    assert resolved is not None
+    assert resolved["line"] == 3
+    out_of_hunk = {"path": "src/foo.py", "line": 99, "body": "no quote, outside"}
+    assert anchor_findings.resolve_finding(out_of_hunk, d) is None
+
+
+def test_resolve_quote_absent_range_finding_uses_range_check():
+    d = _quote_fixture()
+    rng = {"path": "src/foo.py", "line": 2, "end_line": 4, "body": "block, no quote"}
+    resolved = anchor_findings.resolve_finding(rng, d)
+    assert resolved is not None
+    assert resolved["line"] == 2
+    assert resolved["end_line"] == 4
+
+
+def _block_fixture():
+    # New-side lines 1..7, all in one hunk; start-line quotes are unique.
+    diff = textwrap.dedent(
+        """\
+        diff --git a/src/x.py b/src/x.py
+        --- a/src/x.py
+        +++ b/src/x.py
+        @@ -1,1 +1,7 @@
+        +    alpha
+        +    bravo
+        +    charlie
+        +    delta
+        +    echo
+        +    foxtrot
+             base
+        """
+    )
+    return anchor_findings.Diff.parse(diff)
+
+
+def test_resolve_range_quote_shifts_end_line_by_delta():
+    d = _block_fixture()  # `charlie` is uniquely new-side line 3
+    # Agent miscounts the block as lines 1..3; the quote pins the start at 3, so
+    # the span shifts by +2 to 3..5.
+    finding = {"path": "src/x.py", "line": 1, "end_line": 3, "quote": "charlie", "body": "x"}
+    resolved = anchor_findings.resolve_finding(finding, d)
+    assert resolved is not None
+    assert resolved["line"] == 3
+    assert resolved["end_line"] == 5
+
+
+def test_resolve_range_quote_relocates_when_shift_exits_hunk():
+    d = _block_fixture()  # hunk covers 1..7; `foxtrot` is uniquely line 6
+    # Shift (+2) pushes end_line to 11, outside the hunk: relocate, don't anchor.
+    finding = {"path": "src/x.py", "line": 4, "end_line": 9, "quote": "foxtrot", "body": "x"}
+    assert anchor_findings.resolve_finding(finding, d) is None
+
+
+def test_resolve_range_quote_shifts_up_on_negative_delta():
+    d = _block_fixture()  # `charlie` is uniquely new-side line 3
+    # Agent miscounts the block as lines 10..12; the quote pins the start at 3, so
+    # the span shifts by -7 to 3..5 (delta is negative).
+    finding = {"path": "src/x.py", "line": 10, "end_line": 12, "quote": "charlie", "body": "x"}
+    resolved = anchor_findings.resolve_finding(finding, d)
+    assert resolved is not None
+    assert resolved["line"] == 3
+    assert resolved["end_line"] == 5
+
+
 # ---------- split_findings ----------
 
 
@@ -225,6 +427,18 @@ def test_split_empty_payload_yields_two_empty_lists():
     anchored, unanchored = anchor_findings.split_findings([], d)
     assert anchored == []
     assert unanchored == []
+
+
+def test_split_uses_content_anchoring_and_corrects_line():
+    d = _quote_fixture()  # `keep this` is uniquely new-side line 4
+    findings = [
+        {"path": "src/foo.py", "line": 1, "quote": "keep this", "body": "corrected"},
+        {"path": "src/foo.py", "line": 2, "quote": "not present", "body": "relocated"},
+    ]
+    anchored, unanchored = anchor_findings.split_findings(findings, d)
+    assert [f["body"] for f in anchored] == ["corrected"]
+    assert anchored[0]["line"] == 4
+    assert [f["body"] for f in unanchored] == ["relocated"]
 
 
 def test_split_routes_findings_per_anchor_status():
