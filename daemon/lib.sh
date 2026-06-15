@@ -356,13 +356,24 @@ bundle_operator_agents() {
 
 # fetch_open_review_threads <owner> <repo> <pr-number>
 # Emits a JSON array of the PR's review threads shaped for resolve_threads.py:
-#   [{thread_id, is_resolved, root_author, root_body, path, original_line, original_start_line}]
+#   [{thread_id, is_resolved, root_author, root_body, path, original_line,
+#     original_start_line, has_fix_note}]
 # The root (oldest) comment is the Finding; resolve_threads.py filters to the
 # open, daemon-owned ones. `originalLine`, not `line`: GitHub nulls `line` exactly
 # when a thread goes outdated (its anchored code changed), the case commit-driven
 # resolution must catch, so the creation-side coordinate is the only one that
-# survives (#125, ADR 0017). Best-effort: prints `[]` and returns non-zero on
-# query failure, so the caller degrades to "no candidates", never fails the review.
+# survives (#125, ADR 0017). `has_fix_note` is true when a *daemon* comment in the
+# thread carries the `_Fixed:_` note's hidden sentinel, so an already-noted thread
+# skips re-judgment and routes to resolve-only retry (ADR 0017 §4). A comment
+# counts only when it carries BOTH the Provenance tag and the sentinel, so an
+# Operator quoting the sentinel into a reply cannot trip it; both literals mirror
+# resolve_threads (PROVENANCE_MARKER and FIX_NOTE_SENTINEL), pinned by
+# test_resolve_threads. Fetches comments(first:100) so a note posted as a later
+# reply is visible (the sentinel is on the note, not the root). A thread past 100
+# comments reads as un-noted: it is re-judged, and if its earlier resolve had
+# dropped it could take a second note (one extra notification), the recoverable
+# side. Best-effort: prints `[]` and returns non-zero on query failure, so the
+# caller degrades to "no candidates".
 fetch_open_review_threads() {
   local owner="$1" repo="$2" pr="$3"
   local resp
@@ -375,7 +386,7 @@ fetch_open_review_threads() {
           reviewThreads(first:100){
             nodes{
               id isResolved path originalLine originalStartLine
-              comments(first:1){ nodes{ author{ login } body } }
+              comments(first:100){ nodes{ author{ login } body } }
             }
           }
         }
@@ -392,7 +403,8 @@ fetch_open_review_threads() {
         root_body: (.comments.nodes[0].body // ""),
         path: .path,
         original_line: .originalLine,
-        original_start_line: .originalStartLine
+        original_start_line: .originalStartLine,
+        has_fix_note: ([.comments.nodes[].body // "" | (contains("🤖 _pr-review-agent_") and contains("<!-- pr-review-agent:fixed -->"))] | any)
       }]' <<<"$resp"
 }
 

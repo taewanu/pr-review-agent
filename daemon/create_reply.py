@@ -99,6 +99,9 @@ RESOLVE_MUTATION = (
 # Pending review left pending as the ADR 0008 safety gate on others' PRs, nor any
 # human's manual draft. create-review.sh refuses to cancel pending reviews for the
 # same reason; an unfiltered delete here would do what that path forbids.
+# Reused by resolve_threads.fix_review_body for the commit-driven fix-note wrapper
+# (#125), so reply-pr.sh's stale-wrapper cleanup discards a crashed fix-note
+# wrapper too; the name predates that second producer.
 REPLY_REVIEW_MARKER = "<!-- pr-review-agent:reply-review -->"
 CREATE_REVIEW_MUTATION = (
     "mutation CreatePendingReview($pr: ID!, $body: String!) { "

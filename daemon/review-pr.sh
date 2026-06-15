@@ -100,87 +100,119 @@ extract_category() {
   [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
 }
 
-# resolution_dry_run — Slice A of commit-driven thread resolution (#125, ADR 0017).
-# Finds prior open, daemon-owned Findings whose flagged line this increment touched,
-# asks the fix-check agent whether each defect is gone at HEAD, and LOGS the verdict.
-# This slice writes nothing: the `_Fixed:_` note and the resolve land later. Reads
-# run-scoped globals (SCRATCH at HEAD, DIFF_FILE, OPERATOR, diff_scoped) like
-# cleanup() does, and is best-effort: the review has already landed when it runs, so
+# resolution — commit-driven thread resolution (#125, ADR 0017). Finds prior open,
+# daemon-owned Findings whose flagged line this increment touched and are not yet
+# noted, asks the fix-check agent whether each defect is gone at HEAD, and on a fix
+# posts a `_Fixed:_` note then resolves the thread. Also re-resolves any thread
+# already carrying a note whose earlier resolve dropped under rate-limit (retry,
+# §4). Reads run-scoped globals (SCRATCH at HEAD, DIFF_FILE, OPERATOR, diff_scoped,
+# PR_NODE_ID, HEAD_*). Best-effort: the review has already landed when it runs, so
 # every failure is logged and returns 0 rather than failing the PR-tick.
-resolution_dry_run() {
-  local threads_file candidates_file finding_file judge_raw
+resolution() {
+  local threads_file candidates_file retry_file notes_file notes_jsonl finding_file judge_raw
   threads_file="$SCRATCH/.pr-review-threads.json"
   candidates_file="$SCRATCH/.pr-review-candidates.json"
+  retry_file="$SCRATCH/.pr-review-retry.json"
+  notes_file="$SCRATCH/.pr-review-fix-notes.json"
+  notes_jsonl="$SCRATCH/.pr-review-fix-notes.jsonl"
 
   if ! fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$threads_file"; then
-    log_info "reviewThreads query failed; skipping resolution dry-run"
+    log_info "reviewThreads query failed; skipping resolution"
     return 0
   fi
 
-  # On a force-push/rebase the increment diff couldn't be computed (diff_scoped=0),
-  # so DIFF_FILE is the full PR diff, whose old side is the base branch, not the
-  # coordinate space the Findings' creation-side lines live in. Take every open
-  # daemon thread there (ADR 0017 §1's "full PR diff" scope) rather than line-filter
-  # against the wrong side.
+  # Threads already carrying a `_Fixed:_` note whose resolve dropped earlier:
+  # re-resolve only, no re-judgment and no second note (ADR 0017 §4).
+  if ! python3 "$SCRIPT_DIR/resolve_threads.py" select-retry \
+    --threads "$threads_file" --operator "$OPERATOR" >"$retry_file"; then
+    printf '[]' >"$retry_file"
+  fi
+
+  # Candidates to judge: open daemon threads, not yet noted, whose flagged line
+  # this increment touched. On a force-push/rebase the increment diff couldn't be
+  # computed (diff_scoped=0), so DIFF_FILE is the full PR diff, whose old side is
+  # the base branch, not the coordinate space the Findings' creation-side lines
+  # live in; take every open daemon thread there (ADR 0017 §1) rather than
+  # line-filter against the wrong side.
   local select_args=(--threads "$threads_file" --diff "$DIFF_FILE" --operator "$OPERATOR")
   if [[ $diff_scoped -eq 0 ]]; then
     select_args+=(--all-open)
   fi
   if ! python3 "$SCRIPT_DIR/resolve_threads.py" select "${select_args[@]}" >"$candidates_file"; then
-    log_info "candidate selection failed; skipping resolution dry-run"
-    return 0
+    log_info "candidate selection failed; skipping judgment"
+    printf '[]' >"$candidates_file"
   fi
 
+  : >"$notes_jsonl"
   local n
   n="$(jq 'length' "$candidates_file")"
-  if [[ "$n" -eq 0 ]]; then
-    log_info "no commit-fixed candidates among open findings"
+  if [[ "$n" -gt 0 ]]; then
+    log_info "judging ${n} candidate thread(s) for commit-driven resolution"
+    # Focused single-file judgment, so a shorter backstop than the full review's 300s.
+    local fix_check_timeout="${FIX_CHECK_AGENT_TIMEOUT:-180}"
+    local i tid path line verdict fixed rationale rc
+    for ((i = 0; i < n; i++)); do
+      tid="$(jq -r ".[$i].thread_id" "$candidates_file")"
+      path="$(jq -r ".[$i].path" "$candidates_file")"
+      line="$(jq -r ".[$i].line" "$candidates_file")"
+      finding_file="$SCRATCH/.pr-review-finding-${i}.json"
+      jq ".[$i] | {path, line, finding_body}" "$candidates_file" >"$finding_file"
+
+      judge_raw="$SCRATCH/.pr-review-judge-${i}.txt"
+      rc=0
+      (
+        cd "$SCRATCH"
+        run_with_timeout "$fix_check_timeout" \
+          claude -p "/judge-fix $PR_URL --finding $(basename "$finding_file")" >"$judge_raw"
+      ) || rc=$?
+      if [[ "$rc" -ne 0 || ! -s "$judge_raw" ]]; then
+        log_info "fix-check failed for ${path}:${line} (${tid}), rc=${rc}; leaving open"
+        continue
+      fi
+
+      verdict="$(python3 "$SCRIPT_DIR/resolve_threads.py" parse-verdict "$judge_raw")"
+      fixed="$(jq -r '.fixed' <<<"$verdict")"
+      rationale="$(jq -r '.rationale' <<<"$verdict")"
+      if [[ "$fixed" == "true" ]]; then
+        log_info "fix detected ${path}:${line} (${tid}): ${rationale}"
+        jq -nc --arg tid "$tid" --arg path "$path" --argjson line "$line" \
+          --arg rationale "$rationale" \
+          '{thread_id:$tid, path:$path, line:$line, rationale:$rationale}' >>"$notes_jsonl"
+      else
+        log_info "left open ${path}:${line} (${tid}): ${rationale}"
+      fi
+    done
+  fi
+  jq -sc '.' "$notes_jsonl" >"$notes_file" 2>/dev/null || printf '[]' >"$notes_file"
+
+  local notes_n retry_n
+  notes_n="$(jq 'length' "$notes_file")"
+  retry_n="$(jq 'length' "$retry_file")"
+  if [[ "$notes_n" -eq 0 && "$retry_n" -eq 0 ]]; then
+    log_info "nothing to resolve (no fixed findings, no retries)"
     return 0
   fi
-  log_info "judging ${n} candidate thread(s) for commit-driven resolution (dry-run)"
 
-  # Focused single-file judgment, so a shorter backstop than the full review's 300s.
-  local fix_check_timeout="${FIX_CHECK_AGENT_TIMEOUT:-180}"
-  local i tid path line verdict fixed rationale rc
-  for ((i = 0; i < n; i++)); do
-    tid="$(jq -r ".[$i].thread_id" "$candidates_file")"
-    path="$(jq -r ".[$i].path" "$candidates_file")"
-    line="$(jq -r ".[$i].line" "$candidates_file")"
-    finding_file="$SCRATCH/.pr-review-finding-${i}.json"
-    jq ".[$i] | {path, line, finding_body}" "$candidates_file" >"$finding_file"
-
-    judge_raw="$SCRATCH/.pr-review-judge-${i}.txt"
-    rc=0
-    (
-      cd "$SCRATCH"
-      run_with_timeout "$fix_check_timeout" \
-        claude -p "/judge-fix $PR_URL --finding $(basename "$finding_file")" >"$judge_raw"
-    ) || rc=$?
-    if [[ "$rc" -ne 0 || ! -s "$judge_raw" ]]; then
-      log_info "[dry-run] fix-check failed for ${path}:${line} (${tid}), rc=${rc}; would leave open"
-      continue
-    fi
-
-    verdict="$(python3 "$SCRIPT_DIR/resolve_threads.py" parse-verdict "$judge_raw")"
-    fixed="$(jq -r '.fixed' <<<"$verdict")"
-    rationale="$(jq -r '.rationale' <<<"$verdict")"
-    if [[ "$fixed" == "true" ]]; then
-      log_info "[dry-run] WOULD RESOLVE ${path}:${line} (${tid}): ${rationale}"
-    else
-      log_info "[dry-run] would leave open ${path}:${line} (${tid}): ${rationale}"
-    fi
-  done
+  log_info "posting ${notes_n} fix-note(s), retrying ${retry_n} resolve(s)"
+  python3 "$SCRIPT_DIR/resolve_threads.py" act \
+    --notes "$notes_file" --retry "$retry_file" \
+    --pr-node-id "$PR_NODE_ID" \
+    --head-owner "$HEAD_REPO_OWNER" --head-repo "$HEAD_REPO_NAME" --head-sha "$HEAD_OID" ||
+    log_info "fix-note posting failed (non-fatal)"
   return 0
 }
 
 log_info "PR ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}"
 
-meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid,author)"
+meta="$(gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,author)"
 HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
 HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
 HEAD_OID="$(jq -r '.headRefOid // empty' <<<"$meta")"
 PR_AUTHOR="$(jq -r '.author.login // empty' <<<"$meta")"
+# PR GraphQL node id for the batched fix-note review (#38). Empty -> resolution
+# skips posting and leaves threads open (safe bias); never fails the tick.
+PR_NODE_ID="$(jq -r '.id // empty' <<<"$meta")"
 if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HEAD_OID" ]]; then
   log_err "gh pr view returned incomplete metadata for $PR_URL (closed PR with deleted fork?)"
   exit 1
@@ -436,13 +468,13 @@ reviewed_body="$(render_status_comment \
   "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
 edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
 
-# Commit-driven thread resolution, dry-run (#125, ADR 0017). Runs only on a
-# re-review (LAST_SHA set): a first review has no prior daemon threads to resolve.
-# Placed after the review lands so it is pure best-effort cleanup; resolution_dry_run
-# returns 0 on any internal failure, but guard the call too so set -e never trips.
+# Commit-driven thread resolution (#125, ADR 0017). Runs only on a re-review
+# (LAST_SHA set): a first review has no prior daemon threads to resolve. Placed
+# after the review lands so it is pure best-effort cleanup; resolution returns 0 on
+# any internal failure, but guard the call too so set -e never trips.
 if [[ -n "$LAST_SHA" ]]; then
-  log_step "commit-driven resolution (dry-run)"
-  resolution_dry_run || log_info "resolution dry-run skipped (non-fatal)"
+  log_step "commit-driven resolution"
+  resolution || log_info "resolution skipped (non-fatal)"
 fi
 
 log_step "done"
