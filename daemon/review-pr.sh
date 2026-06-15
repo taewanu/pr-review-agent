@@ -100,6 +100,79 @@ extract_category() {
   [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
 }
 
+# resolution_dry_run — Slice A of commit-driven thread resolution (#125, ADR 0017).
+# Finds prior open, daemon-owned Findings whose flagged line this increment touched,
+# asks the fix-check agent whether each defect is gone at HEAD, and LOGS the verdict.
+# This slice writes nothing: the `_Fixed:_` note and the resolve land later. Reads
+# run-scoped globals (SCRATCH at HEAD, DIFF_FILE, OPERATOR, diff_scoped) like
+# cleanup() does, and is best-effort: the review has already landed when it runs, so
+# every failure is logged and returns 0 rather than failing the PR-tick.
+resolution_dry_run() {
+  local threads_file candidates_file finding_file judge_raw
+  threads_file="$SCRATCH/.pr-review-threads.json"
+  candidates_file="$SCRATCH/.pr-review-candidates.json"
+
+  if ! fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$threads_file"; then
+    log_info "reviewThreads query failed; skipping resolution dry-run"
+    return 0
+  fi
+
+  # On a force-push/rebase the increment diff couldn't be computed (diff_scoped=0),
+  # so DIFF_FILE is the full PR diff, whose old side is the base branch, not the
+  # coordinate space the Findings' creation-side lines live in. Take every open
+  # daemon thread there (ADR 0017 §1's "full PR diff" scope) rather than line-filter
+  # against the wrong side.
+  local select_args=(--threads "$threads_file" --diff "$DIFF_FILE" --operator "$OPERATOR")
+  if [[ $diff_scoped -eq 0 ]]; then
+    select_args+=(--all-open)
+  fi
+  if ! python3 "$SCRIPT_DIR/resolve_threads.py" select "${select_args[@]}" >"$candidates_file"; then
+    log_info "candidate selection failed; skipping resolution dry-run"
+    return 0
+  fi
+
+  local n
+  n="$(jq 'length' "$candidates_file")"
+  if [[ "$n" -eq 0 ]]; then
+    log_info "no commit-fixed candidates among open findings"
+    return 0
+  fi
+  log_info "judging ${n} candidate thread(s) for commit-driven resolution (dry-run)"
+
+  # Focused single-file judgment, so a shorter backstop than the full review's 300s.
+  local fix_check_timeout="${FIX_CHECK_AGENT_TIMEOUT:-180}"
+  local i tid path line verdict fixed rationale rc
+  for ((i = 0; i < n; i++)); do
+    tid="$(jq -r ".[$i].thread_id" "$candidates_file")"
+    path="$(jq -r ".[$i].path" "$candidates_file")"
+    line="$(jq -r ".[$i].line" "$candidates_file")"
+    finding_file="$SCRATCH/.pr-review-finding-${i}.json"
+    jq ".[$i] | {path, line, finding_body}" "$candidates_file" >"$finding_file"
+
+    judge_raw="$SCRATCH/.pr-review-judge-${i}.txt"
+    rc=0
+    (
+      cd "$SCRATCH"
+      run_with_timeout "$fix_check_timeout" \
+        claude -p "/judge-fix $PR_URL --finding $(basename "$finding_file")" >"$judge_raw"
+    ) || rc=$?
+    if [[ "$rc" -ne 0 || ! -s "$judge_raw" ]]; then
+      log_info "[dry-run] fix-check failed for ${path}:${line} (${tid}), rc=${rc}; would leave open"
+      continue
+    fi
+
+    verdict="$(python3 "$SCRIPT_DIR/resolve_threads.py" parse-verdict "$judge_raw")"
+    fixed="$(jq -r '.fixed' <<<"$verdict")"
+    rationale="$(jq -r '.rationale' <<<"$verdict")"
+    if [[ "$fixed" == "true" ]]; then
+      log_info "[dry-run] WOULD RESOLVE ${path}:${line} (${tid}): ${rationale}"
+    else
+      log_info "[dry-run] would leave open ${path}:${line} (${tid}): ${rationale}"
+    fi
+  done
+  return 0
+}
+
 log_info "PR ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}"
 
 meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid,author)"
@@ -362,5 +435,14 @@ reviewed_body="$(render_status_comment \
   "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID"): ${findings_total} ${finding_noun}" \
   "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
 edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
+
+# Commit-driven thread resolution, dry-run (#125, ADR 0017). Runs only on a
+# re-review (LAST_SHA set): a first review has no prior daemon threads to resolve.
+# Placed after the review lands so it is pure best-effort cleanup; resolution_dry_run
+# returns 0 on any internal failure, but guard the call too so set -e never trips.
+if [[ -n "$LAST_SHA" ]]; then
+  log_step "commit-driven resolution (dry-run)"
+  resolution_dry_run || log_info "resolution dry-run skipped (non-fatal)"
+fi
 
 log_step "done"
