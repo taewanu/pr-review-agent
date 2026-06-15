@@ -42,9 +42,9 @@ Write one plain sentence describing what at HEAD resolves the defect (for a fix)
 
 Examples:
 
-- Finding: "Unbounded retry loop." At HEAD the loop has a `max_attempts` cap and breaks on it → `fixed`, rationale `The retry loop now breaks on a max_attempts cap`.
-- Finding: "`session.token` logged in plaintext." At HEAD the value is masked before the log call → `fixed`, rationale `The token is masked before it reaches the log call`.
-- Finding: "Drop the verbose retry log." At HEAD the import is gone but the call still emits the line → `not fixed`, rationale `The import was removed but the call still emits the log line`.
+- Finding: "Unbounded retry loop." At HEAD the loop has a `max_attempts` cap and breaks on it → `fixed`, rationale `Retry loop now breaks on a max_attempts cap`.
+- Finding: "`session.token` logged in plaintext." At HEAD the value is masked before the log call → `fixed`, rationale `Token is masked before it reaches the log call`.
+- Finding: "Drop the verbose retry log." At HEAD the import is gone but the call still emits the line → `not fixed`, rationale `Import was removed but the call still emits the log line`.
 - Finding: "Split into two functions." Only one function still present at HEAD → `not fixed`, rationale `Still one function; the split did not land`.
 
 ## Voice
