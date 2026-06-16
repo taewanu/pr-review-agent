@@ -533,6 +533,60 @@ def test_resolve_failure_is_best_effort_exit_zero():
     assert _resolve_call(calls) is not None, "resolve was attempted"
 
 
+# ---------- #159 / ADR 0019: a resolving reply also stamps the Finding comment ----------
+
+RESOLVED_SENTINEL = create_reply.batch_review.RESOLUTION_SENTINEL
+
+
+def _patch_body(calls: list[tuple[str, str]]) -> str | None:
+    patch = _find(calls, "--method PATCH")
+    return json.loads(patch[1])["body"] if patch is not None else None
+
+
+def test_confirmed_stamps_the_finding_in_place():
+    # A confirmed verdict resolves the thread AND edits the Finding's own comment to
+    # append the single resolution stamp (ADR 0019), on top of the threaded ack.
+    result, calls = _run(
+        _raw([_reply()]),
+        threads=_threads("111", f"Unbounded loop.\n\n{create_reply.MARKER}", thread_id="PRRT_c"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert _resolve_call(calls) is not None, "confirmed resolves the thread"
+    patch = _find(calls, "--method PATCH")
+    assert patch is not None and "pulls/comments/111" in patch[0], "the Finding comment is stamped"
+    body = _patch_body(calls)
+    assert "✅ _Resolved_: confirmed fixed by the author" in body
+    assert body.endswith(RESOLVED_SENTINEL)
+    # The edit appends below the original body, never clobbers it.
+    assert body.startswith("Unbounded loop.")
+
+
+def test_withdrawn_stamp_carries_its_own_rationale():
+    result, calls = _run(
+        _raw([_question(mode="withdrawn")]),
+        threads=_threads("111", "Off-by-one.", thread_id="PRRT_w"),
+    )
+    assert result.returncode == 0, result.stderr
+    body = _patch_body(calls)
+    assert body is not None and "withdrawn by the author as a false positive" in body
+
+
+def test_resolving_reply_does_not_re_stamp_an_already_stamped_finding():
+    # Re-run safety: the Finding comment already carries a stamp (its earlier resolve
+    # had dropped), so append_stamp returns None and no second edit is made.
+    already = f"Off-by-one.\n\n✅ _Resolved_: confirmed fixed by the author\n\n{RESOLVED_SENTINEL}"
+    _, calls = _run(_raw([_reply()]), threads=_threads("111", already, thread_id="PRRT_c"))
+    assert _find(calls, "--method PATCH") is None, "an already-stamped Finding is not re-edited"
+
+
+def test_non_resolving_verdict_leaves_no_stamp():
+    # pushback keeps the Finding live, so no resolution stamp is written.
+    _, calls = _run(
+        _raw([_reply(mode="pushback")]), threads=_threads("111", "F", thread_id="PRRT_p")
+    )
+    assert _find(calls, "--method PATCH") is None, "a non-resolving verdict leaves no stamp"
+
+
 def test_resolve_skipped_when_review_create_fails():
     # If the pending-review create fails, nothing lands and the next cycle retries;
     # the thread must not be resolved off a reply that never posted.
@@ -734,13 +788,14 @@ def test_dry_run_marks_unmapped_reply_via_detached():
     assert entry["via"] == "detached"
 
 
-def test_dry_run_confirmed_includes_resolve_thread_id():
+def test_dry_run_confirmed_includes_resolve_thread_id_and_stamp():
     result, _ = _run(
         _raw([_reply()]), dry_run=True, threads=_threads("111", "F", thread_id="PRRT_d")
     )
     assert result.returncode == 0, result.stderr
     entry = json.loads(result.stdout)["plan"][0]
     assert entry["resolve_thread_id"] == "PRRT_d"
+    assert "✅ _Resolved_: confirmed fixed by the author" in entry["resolution_stamp"]
 
 
 def test_dry_run_emits_plan_without_calling_gh():

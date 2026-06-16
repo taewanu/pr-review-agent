@@ -80,6 +80,15 @@ BUCKET_MODES = {
 # state change, orthogonal to the Reply sentinel (CONTEXT.md "Thread resolution").
 RESOLVE_MODES = ("confirmed", "withdrawn")
 
+# Resolution-stamp rationale per resolving Verdict (ADR 0019). A reply-driven
+# resolution names no commit (unlike the commit-driven stamp), so the rationale
+# records who and why: a confirmed fix vs a retracted false positive. Hard-coded and
+# clean, so unlike the agent's commit-driven rationale it needs no voice gate.
+STAMP_RATIONALE = {
+    "confirmed": "confirmed fixed by the author",
+    "withdrawn": "withdrawn by the author as a false positive",
+}
+
 # The batched-review GraphQL leaves, the wrapper marker, and the blob-link helper
 # now live in batch_review (#125), shared with resolve_threads so neither imports
 # the other. REPLY_REVIEW_MARKER kept here as the path-local name for the wrapper
@@ -415,6 +424,9 @@ def main() -> int:
                 }
                 if r.get("mode") in RESOLVE_MODES:
                     entry["resolve_thread_id"] = thread_ids.get(in_reply_to_id)
+                    entry["resolution_stamp"] = batch_review.build_resolution_stamp(
+                        STAMP_RATIONALE[r["mode"]], None
+                    )
             else:
                 entry["sentinel_patch"] = {
                     "finding_id": in_reply_to_id,
@@ -431,21 +443,48 @@ def main() -> int:
     react_ok = 0
     patch_ok = 0
     resolve_ok = 0
+    stamp_ok = 0
+    # A running copy of each Finding body, so accumulating edits (the resolution
+    # stamp here, the acknowledgment Reply sentinel later) build on each other
+    # instead of clobbering.
+    finding_work = dict(finding_bodies)
 
-    def do_resolve(in_reply_to_id: str) -> None:
-        """Resolve the settled thread for a reply that landed (#75), best-effort.
-        Shared by the batch and fallback paths; a missing thread id (degraded
-        reviewThreads read) just skips, leaving the thread open."""
-        nonlocal resolve_ok
-        tid = thread_ids.get(in_reply_to_id)
-        if not tid:
-            print(f"no thread id for finding {in_reply_to_id}; skipping resolve", file=sys.stderr)
-            return
-        rrc, rerr = batch_review.resolve_thread(tid)
-        if rrc == 0:
-            resolve_ok += 1
+    def do_resolve(reply: dict) -> None:
+        """Resolve the settled thread for a landed reply, then stamp its Finding
+        comment resolved (#75, ADR 0019). Both best-effort and independent: a missing
+        thread id (degraded reviewThreads read) skips the resolve, a missing parent
+        body skips the stamp. The stamp is the same single slot the commit-driven path
+        writes, so a stamped-but-open thread is re-resolved by that path's retry; that
+        is why the stamp is not gated on the resolve succeeding here."""
+        nonlocal resolve_ok, stamp_ok
+        fid = str(reply["in_reply_to_id"])
+        tid = thread_ids.get(fid)
+        if tid:
+            rrc, rerr = batch_review.resolve_thread(tid)
+            if rrc == 0:
+                resolve_ok += 1
+            else:
+                print(
+                    f"resolveReviewThread failed for thread {tid}: {rerr.strip()}", file=sys.stderr
+                )
         else:
-            print(f"resolveReviewThread failed for thread {tid}: {rerr.strip()}", file=sys.stderr)
+            print(f"no thread id for finding {fid}; skipping resolve", file=sys.stderr)
+        base = finding_work.get(fid)
+        if base is None:
+            print(f"no parent body for finding {fid}; skipping stamp", file=sys.stderr)
+            return
+        stamp = batch_review.build_resolution_stamp(STAMP_RATIONALE[reply["mode"]], None)
+        new_body = batch_review.append_stamp(base, stamp)
+        if new_body is None:
+            return  # already stamped (a re-run): no second edit
+        rc, err = patch_finding(args.owner, args.repo, fid, new_body)
+        if rc == 0:
+            finding_work[fid] = new_body
+            stamp_ok += 1
+        else:
+            print(
+                f"resolution-stamp PATCH failed for finding {fid}: {err.strip()}", file=sys.stderr
+            )
 
     # Partition body-bearing replies: batch under one pending review when we have
     # a PR node id AND the reply's thread id (#38); otherwise fall back to a
@@ -491,7 +530,7 @@ def main() -> int:
         # until the review is submitted.
         for it in added:
             if it.tag.get("mode") in RESOLVE_MODES:
-                do_resolve(str(it.tag["in_reply_to_id"]))
+                do_resolve(it.tag)
 
     # --- Fallback: a detached REST reply for any non-batchable body reply. Same
     # path the daemon used before #38; resolution stays inline since these post
@@ -503,16 +542,15 @@ def main() -> int:
         if rc == 0:
             text_ok += 1
             if r.get("mode") in RESOLVE_MODES:
-                do_resolve(in_reply_to_id)
+                do_resolve(r)
         else:
             print(f"reply POST failed for comment {in_reply_to_id}: {err.strip()}", file=sys.stderr)
 
     # --- Reactions + bodiless sentinel PATCH: every reply, independent of the
     # text-reply path above. The reaction is idempotent; an acknowledgment then
     # embeds the Reply sentinel in its parent Finding once the reaction lands (its
-    # only dedup carrier). A running copy of each Finding body lets two non-claim
-    # replies on the same Finding accumulate both sentinels instead of clobbering.
-    finding_work = dict(finding_bodies)
+    # only dedup carrier). finding_work (above) carries any stamp already written, so
+    # a sentinel PATCH builds on it instead of clobbering.
     for r in replies:
         bucket = r["bucket"]
         addressed_id = str(r["addressed_comment_id"])
@@ -555,7 +593,7 @@ def main() -> int:
     if sentinel_total:
         summary += f", {patch_ok}/{sentinel_total} sentinels"
     if resolve_total:
-        summary += f", {resolve_ok}/{resolve_total} threads resolved"
+        summary += f", {resolve_ok}/{resolve_total} threads resolved, {stamp_ok} stamped"
     print(summary + " posted", file=sys.stderr)
     return 0
 

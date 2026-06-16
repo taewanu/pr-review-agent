@@ -52,7 +52,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import batch_review  # noqa: E402
 import voice  # noqa: E402
-from batch_review import build_blob_link  # noqa: E402
+from batch_review import (  # noqa: E402
+    append_stamp,
+    build_blob_link,
+    build_resolution_stamp,
+)
 
 DIFF_GIT_RE = re.compile(r"^diff --git a/(?P<old>.+) b/(?P<new>.+)$")
 # Old-side range of a hunk: `@@ -<start>,<count> +... @@`. Count defaults to 1
@@ -65,14 +69,6 @@ HUNK_OLD_RE = re.compile(r"^@@ -(?P<start>\d+)(?:,(?P<count>\d+))? \+\d+(?:,\d+)
 # Operator's own manual review comment, so only the daemon's own threads can
 # become resolution candidates.
 PROVENANCE_MARKER = "🤖 _pr-review-agent_"
-
-# Hidden dedup marker on a Resolution stamp (ADR 0019, #159). The stamp is edited
-# into the Finding's own root comment, so this marker lives there, not on a
-# separate note. A root comment carrying it is already stamped: select_candidates
-# skips it (no second stamp) and select_retry_threads re-resolves it. lib.sh's
-# fetch_open_review_threads scans the root comment for this same literal to compute
-# has_resolution_stamp; test_resolve_threads pins the two identical.
-RESOLUTION_SENTINEL = "<!-- pr-review-agent:resolved -->"
 
 
 @dataclass
@@ -196,34 +192,6 @@ def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
             continue
         retry.append({"thread_id": t["thread_id"]})
     return retry
-
-
-def build_resolution_stamp(rationale: str, link: str | None) -> str:
-    """Assemble the Resolution stamp appended to a resolved Finding's own comment
-    (ADR 0019, #159): one visible line carrying a lead, the commit-anchored blob
-    link, and the one-line rationale, then the hidden RESOLUTION_SENTINEL.
-
-    The stamp is appended to the Finding's root comment, which already carries the
-    Provenance marker, so the stamp adds none. `link` is None when there is nothing
-    to anchor (no head sha or no line); the lead then drops its "in" clause.
-    Voice-gating runs on the rationale before this is called, not here."""
-    lead = f"✅ _Resolved in_ {link}" if link else "✅ _Resolved_"
-    return "\n\n".join([f"{lead}: {rationale}", RESOLUTION_SENTINEL])
-
-
-def append_stamp(body: str, stamp: str) -> str | None:
-    """Return the Finding comment `body` with the Resolution stamp appended below it,
-    or None when `body` already carries a stamp (#159, ADR 0019).
-
-    Idempotence guard for the in-place edit. select_candidates already excludes
-    stamped threads, so this is a re-run backstop: it makes a second pass over the
-    same comment a no-op rather than a double-stamp. A None return means "already
-    stamped: skip the edit, but still resolve the thread"; a string return is the new
-    comment body (existing body plus the stamp) for update_review_comment. The stamp's
-    own dedup marker is RESOLUTION_SENTINEL."""
-    if RESOLUTION_SENTINEL in body:
-        return None
-    return "\n\n".join([body, stamp])
 
 
 def parse_verdict(raw: str) -> dict:

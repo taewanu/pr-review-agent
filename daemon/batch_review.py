@@ -116,6 +116,44 @@ def build_blob_link(
     return f"[`{label}`]({url})"
 
 
+# Hidden dedup marker on a Resolution stamp (ADR 0019, #159). The stamp is edited
+# into the Finding's own root comment, so this marker lives there, not on a separate
+# note. Both resolution drivers (commit-driven resolve_threads, reply-driven
+# create_reply) build the stamp here so neither imports the other; lib.sh's
+# fetch_open_review_threads scans the root comment for this same literal to compute
+# has_resolution_stamp, and test_resolve_threads pins the two identical.
+RESOLUTION_SENTINEL = "<!-- pr-review-agent:resolved -->"
+
+
+def build_resolution_stamp(rationale: str, link: str | None) -> str:
+    """Assemble the Resolution stamp appended to a resolved Finding's own comment
+    (ADR 0019, #159): one visible line carrying a lead, an optional commit-anchored
+    blob link, and the one-line rationale, then the hidden RESOLUTION_SENTINEL.
+
+    The stamp is appended to the Finding's root comment, which already carries the
+    Provenance marker, so the stamp adds none. `link` is None when there is nothing
+    to anchor (the reply-driven path, or no head sha/line); the lead then drops its
+    "in" clause. Voice-gating runs on the rationale before this is called, not here."""
+    lead = f"✅ _Resolved in_ {link}" if link else "✅ _Resolved_"
+    return "\n\n".join([f"{lead}: {rationale}", RESOLUTION_SENTINEL])
+
+
+def append_stamp(body: str, stamp: str) -> str | None:
+    """Return the Finding comment `body` with the Resolution stamp appended below it,
+    or None when `body` already carries a stamp (#159, ADR 0019).
+
+    Idempotence guard for the in-place edit. Both drivers exclude already-stamped
+    threads before reaching here (commit-driven via select_candidates, reply-driven
+    via reply dedup), so this is a re-run backstop: it makes a second pass over the
+    same comment a no-op rather than a double-stamp. A None return means "already
+    stamped: skip the edit, but still resolve the thread"; a string return is the new
+    comment body (existing body plus the stamp) for update_review_comment. The stamp's
+    own dedup marker is RESOLUTION_SENTINEL."""
+    if RESOLUTION_SENTINEL in body:
+        return None
+    return "\n\n".join([body, stamp])
+
+
 def _graphql(query: str, **variables: str) -> subprocess.CompletedProcess:
     """Run one `gh api graphql` mutation. Variables go through `-f name=value`, so
     gh JSON-encodes each value — a body with `\\n` / backticks / non-ASCII survives
