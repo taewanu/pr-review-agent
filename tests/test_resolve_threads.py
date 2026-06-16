@@ -332,6 +332,33 @@ def test_fix_note_body_without_link():
     ]
 
 
+# ---------- #159 / ADR 0019: Resolution stamp (appended to the Finding comment) ----------
+
+
+def test_resolution_stamp_shape():
+    # The stamp is appended to the Finding's own comment, so it carries no
+    # Provenance marker (the host comment already has one). One visible line
+    # (lead + commit-anchored link + rationale), then the hidden dedup sentinel.
+    stamp = resolve_threads.build_resolution_stamp(
+        "loop now breaks on a cap", "[`abc1234:L10`](https://x/blob/abc/a#L10)"
+    )
+    assert resolve_threads.PROVENANCE_MARKER not in stamp
+    assert stamp.endswith(resolve_threads.RESOLUTION_SENTINEL)
+    assert stamp.split("\n\n") == [
+        "✅ _Resolved in_ [`abc1234:L10`](https://x/blob/abc/a#L10): loop now breaks on a cap",
+        resolve_threads.RESOLUTION_SENTINEL,
+    ]
+
+
+def test_resolution_stamp_without_link():
+    # No head sha or no line -> the lead drops its "in" clause, rationale stays.
+    stamp = resolve_threads.build_resolution_stamp("defect gone after the rewrite", None)
+    assert stamp.split("\n\n") == [
+        "✅ _Resolved_: defect gone after the rewrite",
+        resolve_threads.RESOLUTION_SENTINEL,
+    ]
+
+
 def test_fix_review_body_singular_and_plural():
     assert fix_review_body(1).startswith("1 conversation resolved as fixed by a later commit.")
     assert fix_review_body(3).startswith("3 conversations resolved as fixed by a later commit.")

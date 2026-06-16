@@ -76,6 +76,13 @@ FIX_NOTE_LEAD = "_Fixed:_"
 # `has_fix_note`; test_resolve_threads pins the two identical.
 FIX_NOTE_SENTINEL = "<!-- pr-review-agent:fixed -->"
 
+# Hidden dedup marker on a Resolution stamp (ADR 0019, #159). The stamp is edited
+# into the Finding's own root comment, so this marker lives there, not on a
+# separate note. A root comment carrying it is already stamped: select_candidates
+# skips it (no second stamp) and select_retry_threads re-resolves it. Supersedes
+# FIX_NOTE_SENTINEL, which keyed the now-retired `_Fixed:_` threaded note.
+RESOLUTION_SENTINEL = "<!-- pr-review-agent:resolved -->"
+
 
 @dataclass
 class IncrementDiff:
@@ -211,6 +218,20 @@ def build_fix_note_body(rationale: str, link: str | None) -> str:
     called, not here."""
     head = f"{FIX_NOTE_LEAD} {link}" if link else FIX_NOTE_LEAD
     return "\n\n".join([head, rationale, PROVENANCE_MARKER, FIX_NOTE_SENTINEL])
+
+
+def build_resolution_stamp(rationale: str, link: str | None) -> str:
+    """Assemble the Resolution stamp appended to a resolved Finding's own comment
+    (ADR 0019, #159): one visible line carrying a lead, the commit-anchored blob
+    link, and the one-line rationale, then the hidden RESOLUTION_SENTINEL.
+
+    Unlike build_fix_note_body, this is not a standalone comment: it is appended
+    to the Finding's root comment, which already carries the Provenance marker, so
+    the stamp adds none. `link` is None when there is nothing to anchor (no head
+    sha or no line); the lead then drops its "in" clause. Voice-gating runs on the
+    rationale before this is called, not here."""
+    lead = f"✅ _Resolved in_ {link}" if link else "✅ _Resolved_"
+    return "\n\n".join([f"{lead}: {rationale}", RESOLUTION_SENTINEL])
 
 
 def fix_review_body(resolved: int) -> str:
