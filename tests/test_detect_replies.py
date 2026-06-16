@@ -2,9 +2,9 @@
 
 reply-pr.sh feeds the PR's inline review comments through this filter to decide which
 threads still need a daemon reply. The logic was an untested inline jq blob; that let
-#153 ship, where the daemon's own `_Fixed:_` note (commit-driven resolution, #125) was
-mistaken for an Operator fix-claim and answered `_Confirmed:_`. These tests pin the
-selection against the real jq.
+#153 ship, where a daemon-authored comment was mistaken for an Operator reply and
+answered. These tests pin the selection against the real jq, including that the
+Provenance tag excludes the daemon's own threaded comments.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ JQ_FILE = REPO_ROOT / "daemon" / "detect-replies.jq"
 
 LOGIN = "operator"
 MARKER = "🤖 _pr-review-agent_"  # lib.sh PROVENANCE_TAG; pinned by test_provenance_tag
-FIX_SENTINEL = "<!-- pr-review-agent:fixed -->"
 
 
 def _comment(cid, *, in_reply_to=None, login=LOGIN, body="", path="a.py", line=9) -> dict:
@@ -69,23 +68,22 @@ def test_reply_to_a_non_daemon_finding_is_excluded():
     assert _select([other, reply]) == []
 
 
-def test_fix_note_is_not_treated_as_an_operator_reply():
-    # #153: a commit-driven `_Fixed:_` note is a daemon comment (Provenance tag +
-    # fix sentinel, no reply sentinel). It must never be dispatched as a fix-claim.
-    fix_note = _comment(
+def test_daemon_reply_ack_is_not_treated_as_an_operator_reply():
+    # #153: a daemon reply ack is a daemon comment (Provenance tag) threaded under the
+    # Finding. Its own id is not in the addressed-set, so the Provenance tag is the only
+    # gate; without it the daemon would dispatch and answer its own ack.
+    ack = _comment(
         4,
         in_reply_to=1,
-        body=f"_Fixed:_ [link](url)\n\nguard added\n\n{MARKER}\n\n{FIX_SENTINEL}",
+        body=f"Thanks, confirmed.\n\n{MARKER}\n\n<!-- pr-review-agent:reply:2 -->",
     )
-    assert _select([_finding(1), fix_note]) == []
+    assert _select([_finding(1), ack]) == []
 
 
-def test_operator_reply_selected_even_with_a_fix_note_present():
-    # A real Operator reply alongside a `_Fixed:_` note: only the human reply is picked.
+def test_operator_reply_selected_even_with_a_daemon_ack_present():
+    # A real Operator reply alongside a daemon ack: only the human reply is picked.
     reply = _comment(2, in_reply_to=1, body="looks good now")
-    fix_note = _comment(
-        4, in_reply_to=1, body=f"_Fixed:_ guard added\n\n{MARKER}\n\n{FIX_SENTINEL}"
-    )
-    threads = _select([_finding(1), reply, fix_note])
+    ack = _comment(4, in_reply_to=1, body=f"Glad to hear it.\n\n{MARKER}")
+    threads = _select([_finding(1), reply, ack])
     assert len(threads) == 1
     assert threads[0]["operator_reply"]["comment_id"] == "2"

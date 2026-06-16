@@ -26,9 +26,10 @@
         $cur.in_reply_to_id != null
         # parent must be our finding
         and ($by_id[($cur.in_reply_to_id | tostring)].user.login == $login)
-        # exclude our own comments: a reply ack carries a reply sentinel, but a
-        # `_Fixed:_` note carries only the fix sentinel — both carry the Provenance
-        # tag, so that is the reliable own-comment gate (#153).
+        # exclude our own comments: every daemon comment threaded under a Finding (a
+        # reply ack) carries the Provenance tag, so the tag is the reliable own-comment
+        # gate. Without it a daemon reply ack, whose own id is not in the addressed-set,
+        # would be dispatched as an Operator reply (the #153 self-reply bug).
         and (($cur.body // "") | contains($provenance) | not)
         # exclude replies already in the addressed-set
         and (($addressed | index($cur.id | tostring)) | not)
