@@ -140,7 +140,7 @@ def _thread(**over) -> dict:
         "path": "daemon/lib.sh",
         "original_line": 10,
         "original_start_line": None,
-        "has_fix_note": False,
+        "has_resolution_stamp": False,
     }
     base.update(over)
     return base
@@ -247,53 +247,61 @@ def test_verdict_last_fence_wins():
     assert parse_verdict(raw) == {"fixed": False, "rationale": "second"}
 
 
-# ---------- Slice B: has_fix_note routing (candidate vs retry) ----------
+# ---------- Slice B: has_resolution_stamp routing (candidate vs retry) ----------
 
 
 def test_noted_thread_excluded_from_candidates():
     # An already-noted open thread is never re-judged: it would otherwise get a
     # second note (and a redundant agent call) every time a later commit touches it.
-    assert select_candidates([_thread(has_fix_note=True)], DIFF, "operator") == []
+    assert select_candidates([_thread(has_resolution_stamp=True)], DIFF, "operator") == []
 
 
 def test_all_open_excludes_noted_thread():
     # The force-push path drops the diff filter but must still skip noted threads,
     # else a rebase would re-note every prior fix.
-    out = select_candidates([_thread(has_fix_note=True)], DIFF, "operator", all_open=True)
+    out = select_candidates([_thread(has_resolution_stamp=True)], DIFF, "operator", all_open=True)
     assert out == []
 
 
 def test_retry_selects_open_noted_daemon_thread():
-    assert select_retry_threads([_thread(has_fix_note=True)], "operator") == [
+    assert select_retry_threads([_thread(has_resolution_stamp=True)], "operator") == [
         {"thread_id": "PRRT_1"}
     ]
 
 
 def test_retry_excludes_unnoted_thread():
     # No note yet -> nothing to retry; it flows through the judge path instead.
-    assert select_retry_threads([_thread(has_fix_note=False)], "operator") == []
+    assert select_retry_threads([_thread(has_resolution_stamp=False)], "operator") == []
 
 
 def test_retry_excludes_resolved_thread():
-    assert select_retry_threads([_thread(has_fix_note=True, is_resolved=True)], "operator") == []
+    assert (
+        select_retry_threads([_thread(has_resolution_stamp=True, is_resolved=True)], "operator")
+        == []
+    )
 
 
 def test_retry_excludes_non_daemon_thread():
     assert (
-        select_retry_threads([_thread(has_fix_note=True, root_author="someone")], "operator") == []
+        select_retry_threads(
+            [_thread(has_resolution_stamp=True, root_author="someone")], "operator"
+        )
+        == []
     )
     assert (
-        select_retry_threads([_thread(has_fix_note=True, root_body="manual comment")], "operator")
+        select_retry_threads(
+            [_thread(has_resolution_stamp=True, root_body="manual comment")], "operator"
+        )
         == []
     )
 
 
 def test_candidate_and_retry_are_disjoint():
-    # The whole point of has_fix_note: one thread is either a judge candidate or a
+    # The whole point of has_resolution_stamp: one thread is either a judge candidate or a
     # retry, never both. A touched-but-unnoted one judges; a noted one retries.
     threads = [
-        _thread(thread_id="PRRT_judge", has_fix_note=False),
-        _thread(thread_id="PRRT_retry", has_fix_note=True),
+        _thread(thread_id="PRRT_judge", has_resolution_stamp=False),
+        _thread(thread_id="PRRT_retry", has_resolution_stamp=True),
     ]
     judged = {c["thread_id"] for c in select_candidates(threads, DIFF, "operator")}
     retried = {r["thread_id"] for r in select_retry_threads(threads, "operator")}

@@ -22,7 +22,7 @@ Pure selection/format entry points (unit-tested without gh):
   select_retry_threads: an open, daemon-owned thread that already carries a
     `_Fixed:_` note. The note landed but its resolve dropped (rate-limit); this
     re-resolves it with no re-judgment and no second note (ADR 0017 §4). The
-    has_fix_note exclusion in select_candidates is what keeps the two disjoint.
+    has_resolution_stamp exclusion in select_candidates is what keeps the two disjoint.
 
   parse_verdict: the Fix-check agent's {fixed, rationale}. Any parse or schema
     failure returns fixed=False, so a malformed judgment leaves the thread open.
@@ -149,7 +149,7 @@ def select_candidates(
     The review path sets it on a force-push or rebase, where the increment diff
     can't be computed and the Findings' creation-side lines no longer share a
     coordinate space with the full PR diff (ADR 0017 §1's "full PR diff" scope).
-    The has_fix_note exclusion holds there too, so all_open never re-notes a thread.
+    The has_resolution_stamp exclusion holds there too, so all_open never re-notes a thread.
     """
     candidates: list[dict] = []
     for t in threads:
@@ -160,7 +160,7 @@ def select_candidates(
         body = t.get("root_body") or ""
         if PROVENANCE_MARKER not in body:
             continue
-        if t.get("has_fix_note"):
+        if t.get("has_resolution_stamp"):
             continue
         path = t.get("path") or ""
         line = t.get("original_line")
@@ -189,7 +189,7 @@ def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
     resolve mutation dropped under rate-limit. They re-resolve here with no
     re-judgment and no second note; the note is the work, the resolve is the
     retry. Disjoint from select_candidates by construction: a noted thread is
-    excluded there (has_fix_note) and selected here. No diff filter, since after a
+    excluded there (has_resolution_stamp) and selected here. No diff filter, since after a
     fix the Finding's `original_line` no longer shares a coordinate space with the
     new increment's diff, so candidacy by diff would never re-catch it.
     """
@@ -201,7 +201,7 @@ def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
             continue
         if PROVENANCE_MARKER not in (t.get("root_body") or ""):
             continue
-        if not t.get("has_fix_note"):
+        if not t.get("has_resolution_stamp"):
             continue
         retry.append({"thread_id": t["thread_id"]})
     return retry
