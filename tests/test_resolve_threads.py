@@ -138,6 +138,7 @@ def _thread(**over) -> dict:
         "is_resolved": False,
         "root_author": "operator",
         "root_body": f"Unbounded loop.\n\n{MARKER}",
+        "root_comment_id": "RC_1",
         "path": "daemon/lib.sh",
         "original_line": 10,
         "original_start_line": None,
@@ -155,11 +156,19 @@ def test_candidate_happy_path():
     assert out == [
         {
             "thread_id": "PRRT_1",
+            "comment_id": "RC_1",
             "path": "daemon/lib.sh",
             "line": 10,
             "finding_body": f"Unbounded loop.\n\n{MARKER}",
         }
     ]
+
+
+def test_candidate_comment_id_defaults_none_when_absent():
+    # A degraded reviewThreads read may omit root_comment_id; the candidate still
+    # selects, carrying comment_id=None (the edit target is then unavailable downstream).
+    out = select_candidates([_thread(root_comment_id=None)], DIFF, "operator")
+    assert len(out) == 1 and out[0]["comment_id"] is None
 
 
 def test_resolved_thread_excluded():

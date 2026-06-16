@@ -161,6 +161,7 @@ def select_candidates(
         candidates.append(
             {
                 "thread_id": t["thread_id"],
+                "comment_id": t.get("root_comment_id"),
                 "path": path,
                 "line": line,
                 "finding_body": body,
@@ -374,7 +375,9 @@ def main() -> int:
     )
     p_select.set_defaults(func=_cmd_select)
 
-    p_retry = sub.add_parser("select-retry", help="emit open threads already carrying a fix-note")
+    p_retry = sub.add_parser(
+        "select-retry", help="emit open threads already carrying a resolution stamp"
+    )
     p_retry.add_argument("--threads", type=Path, required=True, help="open-threads JSON array")
     p_retry.add_argument("--operator", required=True, help="daemon's gh login")
     p_retry.set_defaults(func=_cmd_select_retry)

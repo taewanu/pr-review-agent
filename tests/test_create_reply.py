@@ -1070,3 +1070,12 @@ def test_disposition_excludes_reaction_only_acknowledgment():
     submit = _submit_call(calls)
     assert submit is not None
     assert "1 conversation resolved." in submit[0]
+
+
+def test_reply_wrapper_marker_pinned_in_reply_pr_sh():
+    # reply-pr.sh discards a stale wrapper by matching this marker substring inline;
+    # a drift from batch_review.WRAPPER_MARKER would silently break that cleanup. (The
+    # old find_stale_wrapper helper carried this pin; it was retired with #159.)
+    reply_pr = (REPO_ROOT / "daemon" / "reply-pr.sh").read_text()
+    assert "pr-review-agent:reply-review" in create_reply.batch_review.WRAPPER_MARKER
+    assert "pr-review-agent:reply-review" in reply_pr

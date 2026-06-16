@@ -1,16 +1,16 @@
-"""Shared batched-review posting toolkit (#38, #125).
+"""Shared posting toolkit for the two resolution drivers (#38, #125, #159).
 
-Both posting paths wrap a tick's threaded comments in ONE pending COMMENT review
-and submit it once, so the Operator gets a single GitHub notification instead of
-one per comment. create_reply.py wraps reply acks; resolve_threads.py wraps
-`_Fixed:_` notes. The create -> add -> submit -> delete ladder was identical in
-both and drifted independently; `submit` is that ladder extracted once, leaving
-each caller only its own resolve policy (the two resolve different thread sets).
+create_reply.py wraps a tick's reply acks in ONE pending COMMENT review and submits
+it once, so the Operator gets a single GitHub notification instead of one per comment;
+`submit` is that create -> add -> submit -> delete ladder. The commit-driven path
+(resolve_threads.py) no longer wraps a review: it stamps the Finding comment in place
+(ADR 0019), so `submit` has one caller now, but the ladder stays here as the shared
+home for the GraphQL leaves.
 
-The leaf GraphQL helpers live here too, so neither orchestrator imports the
-other for them. `build_blob_link` (the comment-body permalink helper both paths
-use) rides along: it builds the links embedded in the comments this module
-posts.
+Those leaves live here so neither orchestrator imports the other: the GraphQL
+mutations, `build_blob_link` (the comment-body permalink both paths embed), and the
+resolution-stamp builders (`build_resolution_stamp` / `append_stamp`), since both
+drivers write the same stamp.
 
 `input=""` on every `gh` call closes stdin, since the query rides in argv.
 """
@@ -23,13 +23,12 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-# Hidden marker on the wrapper review body (renders empty). It is the
-# discriminator reply-pr.sh / review-pr.sh filter on when discarding a stale
-# wrapper, so the daemon only ever deletes its OWN comment wrappers, never a
-# Finding-bearing Pending review left pending as the ADR 0008 safety gate, nor a
-# human's manual draft. create_reply (reply acks) is its sole producer; the
-# commit-driven path stamps in place and emits no wrapper. lib.sh's
-# find_stale_wrapper_review and reply-pr.sh pin this same literal.
+# Hidden marker on the wrapper review body (renders empty). It is the discriminator
+# reply-pr.sh filters on when discarding a stale wrapper, so the daemon only ever
+# deletes its OWN comment wrappers, never a Finding-bearing Pending review left
+# pending as the ADR 0008 safety gate, nor a human's manual draft. create_reply
+# produces it (reply acks) and reply-pr.sh cleans and pins it; the commit-driven path
+# stamps in place and emits no wrapper.
 WRAPPER_MARKER = "<!-- pr-review-agent:reply-review -->"
 
 # Each mutation is named so the test gh-stub can match the call by operation
