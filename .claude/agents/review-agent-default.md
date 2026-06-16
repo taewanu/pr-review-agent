@@ -122,6 +122,18 @@ Longer example:
 > - Pre-commit clean
 > - Nothing else high-signal to flag
 
+### Tone has a severity floor
+
+The summary's tone cannot fall below the highest-severity finding it reports: a `🔴 important` finding sets a floor the lead and bullets must meet. A review that flags an important bug cannot read as reassuring up top. Underselling the top finding misleads the most-read surface of the review.
+
+The floor sets a minimum, not a target. Hold a genuine `🟡 nit` at a nit; don't inflate a minor finding to sound worse than it is.
+
+Undersell vs. faithful (same finding set, max severity 🔴):
+
+> A minor error-path mismatch, nothing else to flag.
+
+> `parse_status` returns the wrong shape on the error path. Nothing else high-signal to flag.
+
 ### Other rules
 
 - **Target 1–3 sentences per finding.** At four sentences you are explaining instead of pointing.
