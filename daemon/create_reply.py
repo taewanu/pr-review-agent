@@ -450,14 +450,31 @@ def main() -> int:
     finding_work = dict(finding_bodies)
 
     def do_resolve(reply: dict) -> None:
-        """Resolve the settled thread for a landed reply, then stamp its Finding
-        comment resolved (#75, ADR 0019). Both best-effort and independent: a missing
-        thread id (degraded reviewThreads read) skips the resolve, a missing parent
-        body skips the stamp. The stamp is the same single slot the commit-driven path
-        writes, so a stamped-but-open thread is re-resolved by that path's retry; that
-        is why the stamp is not gated on the resolve succeeding here."""
+        """Stamp the settled Finding's comment resolved, then resolve its thread (#75,
+        ADR 0019). Stamp-then-resolve matches the commit-driven order, so the trace
+        lands before the thread collapses; both are best-effort and independent (a
+        missing parent body skips the stamp, a missing thread id skips the resolve).
+        The resolve is not gated on the stamp: the threaded ack already records the
+        outcome, and a stamped-but-open thread is re-resolved by the commit path's
+        retry."""
         nonlocal resolve_ok, stamp_ok
         fid = str(reply["in_reply_to_id"])
+        base = finding_work.get(fid)
+        if base is None:
+            print(f"no parent body for finding {fid}; skipping stamp", file=sys.stderr)
+        else:
+            stamp = batch_review.build_resolution_stamp(STAMP_RATIONALE[reply["mode"]], None)
+            new_body = batch_review.append_stamp(base, stamp)
+            if new_body is not None:  # None -> already stamped (a re-run): no second edit
+                rc, err = patch_finding(args.owner, args.repo, fid, new_body)
+                if rc == 0:
+                    finding_work[fid] = new_body
+                    stamp_ok += 1
+                else:
+                    print(
+                        f"resolution-stamp PATCH failed for finding {fid}: {err.strip()}",
+                        file=sys.stderr,
+                    )
         tid = thread_ids.get(fid)
         if tid:
             rrc, rerr = batch_review.resolve_thread(tid)
@@ -469,22 +486,6 @@ def main() -> int:
                 )
         else:
             print(f"no thread id for finding {fid}; skipping resolve", file=sys.stderr)
-        base = finding_work.get(fid)
-        if base is None:
-            print(f"no parent body for finding {fid}; skipping stamp", file=sys.stderr)
-            return
-        stamp = batch_review.build_resolution_stamp(STAMP_RATIONALE[reply["mode"]], None)
-        new_body = batch_review.append_stamp(base, stamp)
-        if new_body is None:
-            return  # already stamped (a re-run): no second edit
-        rc, err = patch_finding(args.owner, args.repo, fid, new_body)
-        if rc == 0:
-            finding_work[fid] = new_body
-            stamp_ok += 1
-        else:
-            print(
-                f"resolution-stamp PATCH failed for finding {fid}: {err.strip()}", file=sys.stderr
-            )
 
     # Partition body-bearing replies: batch under one pending review when we have
     # a PR node id AND the reply's thread id (#38); otherwise fall back to a

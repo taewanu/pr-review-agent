@@ -554,6 +554,27 @@ def test_act_already_stamped_skips_edit_still_resolves():
     assert any("resolveReviewThread" in c and "PRRT_a" in c for c in calls)
 
 
+def test_act_skips_when_comment_id_missing():
+    # A degraded fetch can yield comment_id=None. The stamp is skipped rather than
+    # firing a doomed null-id mutation, and the thread is left open (not resolved).
+    result, calls = _run_act(
+        [
+            {
+                "thread_id": "PRRT_a",
+                "comment_id": None,
+                "finding_body": f"Unbounded loop.\n\n{MARKER}",
+                "path": "a.py",
+                "line": 10,
+                "rationale": "loop now caps",
+            }
+        ],
+        [],
+    )
+    assert result.returncode == 0, result.stderr
+    assert "UpdateComment" not in "\n".join(calls), "no edit fired for a null comment id"
+    assert not any("resolveReviewThread" in c and "PRRT_a" in c for c in calls)
+
+
 # ---------- resolution sentinel pinned across the bash/Python boundary ----------
 
 

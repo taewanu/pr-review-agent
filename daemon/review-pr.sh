@@ -100,7 +100,7 @@ extract_category() {
   [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
 }
 
-# resolution — commit-driven thread resolution (#125, ADR 0017; stamp model ADR 0019).
+# resolution: commit-driven thread resolution (#125, ADR 0017; stamp model ADR 0019).
 # Finds prior open, daemon-owned Findings whose flagged line this increment touched and
 # are not yet stamped, asks the fix-check agent whether each defect is gone at HEAD, and
 # on a fix stamps the Finding's comment resolved in place then resolves the thread. Also

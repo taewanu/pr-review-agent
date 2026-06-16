@@ -282,6 +282,11 @@ def post_and_resolve(
     stamped_threads = []
     for note in postable:
         tid = note["thread_id"]
+        if not note["comment_id"]:
+            # No edit target (a degraded fetch returned no root comment id): leave
+            # open rather than fire a doomed null-id mutation, same as a missing tid.
+            print(f"no comment id for thread {tid}; skipping stamp", file=sys.stderr)
+            continue
         new_body = append_stamp(note["body"], note["stamp"])
         if new_body is None:
             # Already stamped (re-run): skip the edit, still resolve.
