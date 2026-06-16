@@ -314,22 +314,23 @@ POST_ERR="$SCRATCH/.pr-review-post.err"
 log_step "fetching diff"
 # When --last-sha is set, scope the diff to changes since the prior review's
 # HEAD so the agent only re-reads what's new. Falls back to the full PR diff
-# when last_sha wasn't passed (first-review), can't be fetched, or is no longer
-# an ancestor of HEAD after a force-push/rebase (#123): an incremental diff
-# across diverged tips reads the wrong delta. git supports `fetch origin <sha>`
-# against GitHub when the SHA is reachable from any ref the server exposes.
+# when last_sha wasn't passed (first-review), is no longer an ancestor of HEAD
+# after a force-push/rebase (#123: an incremental diff across diverged tips reads
+# the wrong delta), or can't be fetched into the shallow clone for the diff.
+# The fast-forward check runs first so a force-push skips the now-pointless
+# fetch; it asks GitHub's compare API, not the shallow local history (#149).
 diff_scoped=0
 if [[ -n "$LAST_SHA" ]]; then
-  if (cd "$SCRATCH" && git fetch --quiet origin "$LAST_SHA" 2>/dev/null); then
-    if is_fast_forward "$SCRATCH" "$LAST_SHA"; then
+  if is_fast_forward "$HEAD_REPO" "$LAST_SHA" "$HEAD_OID"; then
+    if (cd "$SCRATCH" && git fetch --quiet origin "$LAST_SHA" 2>/dev/null); then
       (cd "$SCRATCH" && git diff "$LAST_SHA..HEAD") >"$DIFF_FILE"
       diff_scoped=1
       log_info "diff scoped to ${LAST_SHA:0:12}..HEAD"
     else
-      log_info "non-fast-forward since ${LAST_SHA:0:12} (force-push/rebase), using full PR diff"
+      log_info "could not fetch ${LAST_SHA:0:12}, falling back to full PR diff"
     fi
   else
-    log_info "could not fetch ${LAST_SHA:0:12}, falling back to full PR diff"
+    log_info "non-fast-forward since ${LAST_SHA:0:12} (force-push/rebase), using full PR diff"
   fi
 fi
 if [[ $diff_scoped -eq 0 ]]; then
