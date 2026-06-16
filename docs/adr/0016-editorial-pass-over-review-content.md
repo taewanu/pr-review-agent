@@ -39,6 +39,12 @@ Add a fresh **Editor agent** (`review-agent-editor`, see CONTEXT.md) as a daemon
 
 5. **Fail-closed.** An Editor stage that times out, crashes, or emits an invalid payload fails the PR-tick through `log_failure` (ADR 0005). Same-SHA dedup re-runs it on the next polling cycle, the same failure-then-retry path the Review agent already uses. No review is posted from a failed editorial pass.
 
+> **Amended 2026-06-16 (#148).** The Editor's summary reconciliation (Decision point 2) gains the first codified Tone rule, the **severity floor**: the reconciled summary cannot read weaker than the highest-severity Finding that survives the Editor's drops. The rule's wording lives in the prompt SSOT (`review-agent-default.md` §"Tone has a severity floor"); the Editor applies it to the surviving set, the only set whose post-drop max severity is known at reconcile time.
+>
+> The floor is one-directional because undersell is the documented failure while over-emphasis is already contained: the Editor's drop lever removes an over-labeled Finding, so a summary ceiling would guard a case the pipeline mostly handles, left to a future rule if dogfooding warrants one. It stays prompt-side because tone-to-severity coherence is a judgment: no deterministic check can tell an `important` Finding fairly weighted from one underplayed without reading the prose, the same false-positive risk that kept the seven #144 facets out of `voice.py` (ADR 0010 §4).
+>
+> `voice.py` is untouched, consistent with the ADR 0010 §4 boundary that #144 reaffirmed for the seven prior semantic facets.
+
 ## Boundary
 
 This ADR decides the editorial pass over content. It does not touch the severity/type taxonomy (ADR 0002), finding relocation (anchoring), the format layer (ADR 0010 §1 to §3), or the reply path. The voice gate's *scope* is unchanged by ADR 0010 §4; only its pipeline position moves.

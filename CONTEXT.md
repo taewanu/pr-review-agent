@@ -49,7 +49,7 @@ A review agent's fixed identity, "who it is." Constant across all findings in a 
 _Avoid_: tone (voice is invariant; tone varies)
 
 **Tone**:
-How a review agent's voice shifts across review contexts (e.g., emphatic for `important` findings, light for `nit`, matter-of-fact for `pre_existing`). The voice stays constant; the tone adapts. Part of Persona. Tone variation rules are not codified in V1; they emerge from voice naturally and may be pinned in a future release.
+How a review agent's voice shifts across review contexts (e.g., emphatic for `important` findings, light for `nit`, matter-of-fact for `pre_existing`). The voice stays constant; the tone adapts. Part of Persona. The first codified tone rule is the **severity floor**: a Review body's summary cannot read weaker than the highest-severity Finding it reports (an `important` Finding summarized as a minor aside is the undersell it forbids). The floor is one-directional, a minimum and not a target; finer tone variation still emerges from voice rather than being pinned.
 _Avoid_: voice (tone varies; voice is invariant), nuance (tone is the category-level shift; nuance is finer)
 
 **Nuance**:
