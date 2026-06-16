@@ -84,14 +84,32 @@ arm_git_stall_timeout() {
   export GIT_HTTP_LOW_SPEED_TIME="${GIT_HTTP_LOW_SPEED_TIME:-30}"
 }
 
-# True when $2 (the prior-reviewed SHA) is an ancestor of HEAD in the repo at
-# $1, i.e. the branch advanced by a fast-forward so an incremental `$2..HEAD`
-# diff still reflects the whole PR. False after a force-push or rebase: the tips
-# have diverged, so `$2..HEAD` surfaces unrelated base commits and cancels the
-# PR's own change (#123). Also false when ancestry can't be resolved locally (a
-# shallow clone lacking $2's history), so callers fall back to the full PR diff.
+# Pure predicate over a GitHub compare `status` ($1): true when the prior SHA is
+# an ancestor of HEAD, so an incremental diff is valid. "ahead" (HEAD has new
+# commits on top) and "identical" (same commit) are fast-forwards; "diverged"
+# (force-push/rebase) and "behind" are not. An unknown or empty status (a failed
+# or empty compare API call) is treated as not-a-fast-forward so callers fall
+# back to the full PR diff rather than scoping on an unverified ancestry (#149).
+_status_is_fast_forward() {
+  [[ "$1" == "ahead" || "$1" == "identical" ]]
+}
+
+# True when the prior-reviewed SHA ($2) is an ancestor of HEAD ($3) in the head
+# repo ($1, "owner/name"), i.e. the branch advanced by a fast-forward so an
+# incremental `$2..HEAD` diff still reflects only the PR's new commits. False
+# after a force-push or rebase: the tips diverged, so `$2..HEAD` surfaces
+# unrelated base commits and cancels the PR's own change (#123).
+#
+# Asks GitHub's compare API rather than the local clone. The per-PR clone is
+# shallow (--depth=1), so it lacks the history for `merge-base --is-ancestor` to
+# prove ancestry and every clean fast-forward read as a force-push, silently
+# defeating the incremental scope (#149). The server computes `status` from full
+# history; a failed or empty response falls through to not-a-fast-forward, so
+# callers take the safe full PR diff.
 is_fast_forward() {
-  git -C "$1" merge-base --is-ancestor "$2" HEAD 2>/dev/null
+  local status
+  status="$(gh api "repos/$1/compare/$2...$3" --jq '.status' 2>/dev/null)"
+  _status_is_fast_forward "$status"
 }
 
 # State tracking for same-SHA dedup. One file per PR. Layered behind the
