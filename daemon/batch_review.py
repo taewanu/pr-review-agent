@@ -69,6 +69,15 @@ RESOLVE_MUTATION = (
     "mutation($threadId: ID!) { resolveReviewThread(input: {threadId: $threadId}) "
     "{ thread { id isResolved } } }"
 )
+# Replaces a review comment's whole body (#159, ADR 0019): the resolution stamp is
+# appended to the Finding's root comment in place, so the caller sends the existing
+# body plus the stamp. `updatePullRequestReviewComment` overwrites body wholesale,
+# which is why append-vs-overwrite is the caller's concern (resolve_threads.append_stamp).
+UPDATE_COMMENT_MUTATION = (
+    "mutation UpdateComment($commentId: ID!, $body: String!) { "
+    "updatePullRequestReviewComment(input: {pullRequestReviewCommentId: $commentId, body: $body}) "
+    "{ pullRequestReviewComment { id } } }"
+)
 
 
 def build_blob_link(
@@ -165,6 +174,15 @@ def resolve_thread(thread_id: str) -> tuple[int, str]:
     (#75). Idempotent on GitHub's side — safe on an already-resolved thread.
     Best-effort: callers log a failure and move on, never retrying."""
     proc = _graphql(RESOLVE_MUTATION, threadId=thread_id)
+    return proc.returncode, proc.stderr
+
+
+def update_review_comment(comment_id: str, body: str) -> tuple[int, str]:
+    """Overwrite a review comment's body via updatePullRequestReviewComment (#159).
+    The caller passes the existing comment plus the resolution stamp as `body` (see
+    UPDATE_COMMENT_MUTATION). Best-effort: the caller logs a failure and leaves the
+    thread open (safe bias, ADR 0017)."""
+    proc = _graphql(UPDATE_COMMENT_MUTATION, commentId=comment_id, body=body)
     return proc.returncode, proc.stderr
 
 
