@@ -25,11 +25,11 @@ from dataclasses import dataclass
 
 # Hidden marker on the wrapper review body (renders empty). It is the
 # discriminator reply-pr.sh / review-pr.sh filter on when discarding a stale
-# wrapper, so the daemon only ever deletes its OWN comment wrappers — never a
+# wrapper, so the daemon only ever deletes its OWN comment wrappers, never a
 # Finding-bearing Pending review left pending as the ADR 0008 safety gate, nor a
-# human's manual draft. Two producers emit it (create_reply reply acks,
-# resolve_threads fix-notes), so renaming the wire string must keep both in sync;
-# lib.sh's find_stale_wrapper_review and reply-pr.sh pin this same literal.
+# human's manual draft. create_reply (reply acks) is its sole producer; the
+# commit-driven path stamps in place and emits no wrapper. lib.sh's
+# find_stale_wrapper_review and reply-pr.sh pin this same literal.
 WRAPPER_MARKER = "<!-- pr-review-agent:reply-review -->"
 
 # Each mutation is named so the test gh-stub can match the call by operation

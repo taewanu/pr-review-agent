@@ -23,8 +23,6 @@ IncrementDiff = resolve_threads.IncrementDiff
 select_candidates = resolve_threads.select_candidates
 select_retry_threads = resolve_threads.select_retry_threads
 parse_verdict = resolve_threads.parse_verdict
-build_fix_note_body = resolve_threads.build_fix_note_body
-fix_review_body = resolve_threads.fix_review_body
 MARKER = resolve_threads.PROVENANCE_MARKER
 FIX_NOTE_SENTINEL = resolve_threads.FIX_NOTE_SENTINEL
 RESOLVED_SENTINEL = resolve_threads.RESOLUTION_SENTINEL
@@ -311,36 +309,6 @@ def test_candidate_and_retry_are_disjoint():
     assert judged.isdisjoint(retried)
 
 
-# ---------- Slice B: note + review bodies ----------
-
-
-def test_fix_note_body_shape():
-    body = build_fix_note_body(
-        "loop now breaks on a cap", "[`abc1234:L10`](https://x/blob/abc/a#L10)"
-    )
-    assert body.startswith("_Fixed:_ [`abc1234:L10`]")
-    assert "loop now breaks on a cap" in body
-    assert body.endswith(f"{MARKER}\n\n{FIX_NOTE_SENTINEL}")
-    # Lead, link line, rationale, marker, sentinel are blank-line separated blocks.
-    assert body.split("\n\n") == [
-        "_Fixed:_ [`abc1234:L10`](https://x/blob/abc/a#L10)",
-        "loop now breaks on a cap",
-        MARKER,
-        FIX_NOTE_SENTINEL,
-    ]
-
-
-def test_fix_note_body_without_link():
-    # No head sha or no line -> the lead stands alone, rationale still below.
-    body = build_fix_note_body("defect gone after the rewrite", None)
-    assert body.split("\n\n") == [
-        "_Fixed:_",
-        "defect gone after the rewrite",
-        MARKER,
-        FIX_NOTE_SENTINEL,
-    ]
-
-
 # ---------- #159 / ADR 0019: Resolution stamp (appended to the Finding comment) ----------
 
 
@@ -366,15 +334,6 @@ def test_resolution_stamp_without_link():
         "✅ _Resolved_: defect gone after the rewrite",
         resolve_threads.RESOLUTION_SENTINEL,
     ]
-
-
-def test_fix_review_body_singular_and_plural():
-    assert fix_review_body(1).startswith("1 conversation resolved as fixed by a later commit.")
-    assert fix_review_body(3).startswith("3 conversations resolved as fixed by a later commit.")
-    # Carries the Provenance tag and the reply-review marker (shared so a crashed
-    # fix-note wrapper is discardable by reply-pr.sh's cleanup).
-    assert MARKER in fix_review_body(2)
-    assert resolve_threads.batch_review.WRAPPER_MARKER in fix_review_body(2)
 
 
 # ---------- Slice B: voice gating leaves a thread open ----------

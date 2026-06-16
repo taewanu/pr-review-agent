@@ -66,18 +66,11 @@ HUNK_OLD_RE = re.compile(r"^@@ -(?P<start>\d+)(?:,(?P<count>\d+))? \+\d+(?:,\d+)
 # become resolution candidates.
 PROVENANCE_MARKER = "🤖 _pr-review-agent_"
 
-# Italic colon-lead of the commit-driven note (#106 format, ADR 0017 §3). A new
-# lead distinct from the four reply Verdicts, which all answer an Operator reply;
-# this one answers a commit and has none.
-FIX_NOTE_LEAD = "_Fixed:_"
-
-# Hidden dedup marker on the `_Fixed:_` note (ADR 0017 §4). Distinct from the
-# Reply sentinel (create_reply.SENTINEL): that keys on an Operator reply comment
-# id a commit-driven note has none of, and #39 reply-detection scans its
-# namespace. A thread carrying this marker is past judgment: select_candidates
-# skips it (no second note) and select_retry_threads re-resolves it (resolve
-# only). lib.sh's fetch_open_review_threads pins this same literal to compute
-# `has_fix_note`; test_resolve_threads pins the two identical.
+# Legacy hidden marker of the retired `_Fixed:_` note (ADR 0017 §4), superseded by
+# RESOLUTION_SENTINEL. Retained only because lib.sh's fetch_open_review_threads still
+# scans this literal to compute the resolution-stamp flag; test_resolve_threads pins
+# the two identical so the bash and Python copies stay in sync. Removed once lib.sh
+# migrates to RESOLUTION_SENTINEL.
 FIX_NOTE_SENTINEL = "<!-- pr-review-agent:fixed -->"
 
 # Hidden dedup marker on a Resolution stamp (ADR 0019, #159). The stamp is edited
@@ -211,29 +204,15 @@ def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
     return retry
 
 
-def build_fix_note_body(rationale: str, link: str | None) -> str:
-    """Assemble the `_Fixed:_` note body (ADR 0017 §3, #106 layout): italic
-    colon-lead, the blob-at-HEAD link on the lead line, the one-line rationale
-    below, then the Provenance marker and the fix-note sentinel footer.
-
-    Location lives in the link, so the rationale never repeats the file and line.
-    `link` is None when there is nothing to anchor (no head sha or no line); the
-    lead then stands alone. Voice-gating runs on the rationale before this is
-    called, not here."""
-    head = f"{FIX_NOTE_LEAD} {link}" if link else FIX_NOTE_LEAD
-    return "\n\n".join([head, rationale, PROVENANCE_MARKER, FIX_NOTE_SENTINEL])
-
-
 def build_resolution_stamp(rationale: str, link: str | None) -> str:
     """Assemble the Resolution stamp appended to a resolved Finding's own comment
     (ADR 0019, #159): one visible line carrying a lead, the commit-anchored blob
     link, and the one-line rationale, then the hidden RESOLUTION_SENTINEL.
 
-    Unlike build_fix_note_body, this is not a standalone comment: it is appended
-    to the Finding's root comment, which already carries the Provenance marker, so
-    the stamp adds none. `link` is None when there is nothing to anchor (no head
-    sha or no line); the lead then drops its "in" clause. Voice-gating runs on the
-    rationale before this is called, not here."""
+    The stamp is appended to the Finding's root comment, which already carries the
+    Provenance marker, so the stamp adds none. `link` is None when there is nothing
+    to anchor (no head sha or no line); the lead then drops its "in" clause.
+    Voice-gating runs on the rationale before this is called, not here."""
     lead = f"✅ _Resolved in_ {link}" if link else "✅ _Resolved_"
     return "\n\n".join([f"{lead}: {rationale}", RESOLUTION_SENTINEL])
 
@@ -251,19 +230,6 @@ def append_stamp(body: str, stamp: str) -> str | None:
     if RESOLUTION_SENTINEL in body:
         return None
     return "\n\n".join([body, stamp])
-
-
-def fix_review_body(resolved: int) -> str:
-    """Build the batched COMMENT review body wrapping the tick's `_Fixed:_` notes
-    (#38): the count first, then the Provenance tag, then the hidden WRAPPER_MARKER.
-
-    Sharing batch_review.WRAPPER_MARKER is deliberate: it makes a crashed-pending
-    fix-note wrapper discardable by the same stale-wrapper cleanup the reply path
-    uses, so a fix-note crash can't wedge either path on GitHub's
-    one-pending-review-per-viewer limit. Called only with resolved >= 1."""
-    noun = "conversation" if resolved == 1 else "conversations"
-    summary = f"{resolved} {noun} resolved as fixed by a later commit."
-    return f"{summary}\n\n{PROVENANCE_MARKER}\n\n{batch_review.WRAPPER_MARKER}"
 
 
 def parse_verdict(raw: str) -> dict:
