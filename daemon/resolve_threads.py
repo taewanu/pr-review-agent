@@ -66,18 +66,12 @@ HUNK_OLD_RE = re.compile(r"^@@ -(?P<start>\d+)(?:,(?P<count>\d+))? \+\d+(?:,\d+)
 # become resolution candidates.
 PROVENANCE_MARKER = "🤖 _pr-review-agent_"
 
-# Legacy hidden marker of the retired `_Fixed:_` note (ADR 0017 §4), superseded by
-# RESOLUTION_SENTINEL. Retained only because lib.sh's fetch_open_review_threads still
-# scans this literal to compute the resolution-stamp flag; test_resolve_threads pins
-# the two identical so the bash and Python copies stay in sync. Removed once lib.sh
-# migrates to RESOLUTION_SENTINEL.
-FIX_NOTE_SENTINEL = "<!-- pr-review-agent:fixed -->"
-
 # Hidden dedup marker on a Resolution stamp (ADR 0019, #159). The stamp is edited
 # into the Finding's own root comment, so this marker lives there, not on a
 # separate note. A root comment carrying it is already stamped: select_candidates
-# skips it (no second stamp) and select_retry_threads re-resolves it. Supersedes
-# FIX_NOTE_SENTINEL, which keyed the now-retired `_Fixed:_` threaded note.
+# skips it (no second stamp) and select_retry_threads re-resolves it. lib.sh's
+# fetch_open_review_threads scans the root comment for this same literal to compute
+# has_resolution_stamp; test_resolve_threads pins the two identical.
 RESOLUTION_SENTINEL = "<!-- pr-review-agent:resolved -->"
 
 

@@ -24,7 +24,6 @@ select_candidates = resolve_threads.select_candidates
 select_retry_threads = resolve_threads.select_retry_threads
 parse_verdict = resolve_threads.parse_verdict
 MARKER = resolve_threads.PROVENANCE_MARKER
-FIX_NOTE_SENTINEL = resolve_threads.FIX_NOTE_SENTINEL
 RESOLVED_SENTINEL = resolve_threads.RESOLUTION_SENTINEL
 
 
@@ -543,10 +542,10 @@ def test_act_already_stamped_skips_edit_still_resolves():
     assert any("resolveReviewThread" in c and "PRRT_a" in c for c in calls)
 
 
-# ---------- Slice B: sentinel pinned across the bash/Python boundary ----------
+# ---------- resolution sentinel pinned across the bash/Python boundary ----------
 
 
-def test_fix_note_sentinel_pinned_in_lib_sh():
-    # lib.sh's fetch_open_review_threads hard-codes the same literal to compute
-    # has_fix_note; a drift would silently break retry detection.
-    assert FIX_NOTE_SENTINEL in LIB_SH.read_text()
+def test_resolution_sentinel_pinned_in_lib_sh():
+    # lib.sh's fetch_open_review_threads scans the root comment for the same literal
+    # to compute has_resolution_stamp; a drift would silently break retry detection.
+    assert RESOLVED_SENTINEL in LIB_SH.read_text()
