@@ -100,10 +100,10 @@ dispatch_review() {
   if run_with_pr_timeout "review-dispatch" "$pr_url" "$head_sha" \
     bash "$SCRIPT_DIR/review-pr.sh" "$@"; then
     state_write "$owner" "$repo_name" "$pr_number" "$head_sha" 0
-    printf 'ok\n' >"$CYCLE_OUTCOME_DIR/${repo_name}-${pr_number}"
+    printf 'ok\n' >"$CYCLE_OUTCOME_DIR/${owner}-${repo_name}-${pr_number}"
   else
     log_err "review failed for $pr_url: state untouched, will retry next tick"
-    printf 'fail\n' >"$CYCLE_OUTCOME_DIR/${repo_name}-${pr_number}"
+    printf 'fail\n' >"$CYCLE_OUTCOME_DIR/${owner}-${repo_name}-${pr_number}"
   fi
   return 0
 }
