@@ -8,8 +8,8 @@
 # Output: [{parent_finding:{...}, operator_reply:{...}}] for each unaddressed reply.
 #
 # Extracted from reply-pr.sh so the selection is unit-testable
-# (tests/test_detect_replies.py); the inline-but-untested form let the `_Fixed:_`
-# self-reply bug (#153) ship.
+# (tests/test_detect_replies.py); the inline-but-untested form let the #153
+# self-reply bug ship (a daemon reply ack mistaken for an Operator reply).
 
 . as $all
 # Operator-reply IDs we have already acked, read from prior Reply sentinels
