@@ -194,3 +194,12 @@ def test_max_parallel_rejects_below_one(tmp_path: Path):
     with pytest.raises(ConfigError) as exc:
         load_config.load(tmp_path)
     assert exc.value.category == "config-invalid"
+
+
+def test_max_parallel_rejects_far_above_ceiling(tmp_path: Path):
+    # 1000 concurrent `claude -p` is a typo, not intent. Asserts the ceiling
+    # rejects an absurd value without pinning the exact cap the validator picks.
+    _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\nMAX_PARALLEL=1000\n")
+    with pytest.raises(ConfigError) as exc:
+        load_config.load(tmp_path)
+    assert exc.value.category == "config-invalid"

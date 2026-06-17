@@ -20,6 +20,10 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
 ENV_LINE_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 
+# A generous guard against a typo'd MAX_PARALLEL, not a tuning knob: well above
+# the advised 2-3 so it never blocks legit use, low enough to catch 30/50/100.
+MAX_PARALLEL_CEILING = 16
+
 
 class ConfigError(Exception):
     """Categorised config-load failure for ADR 0005 routing."""
@@ -102,6 +106,11 @@ class DaemonConfig(BaseModel):
     def _check_max_parallel(cls, v: int) -> int:
         if v < 1:
             raise ValueError(f"MAX_PARALLEL must be >= 1 (got {v})")
+        if v > MAX_PARALLEL_CEILING:
+            raise ValueError(
+                f"MAX_PARALLEL must be <= {MAX_PARALLEL_CEILING} (got {v}); "
+                "each unit is a concurrent claude review"
+            )
         return v
 
 
