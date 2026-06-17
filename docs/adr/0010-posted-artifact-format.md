@@ -1,7 +1,7 @@
 # ADR 0010: Posted-artifact format — Review footer vs Provenance tag
 
 Date: 2026-06-08
-Status: Accepted
+Status: Accepted. The #132 Amended note's "Reply review body" bullet is superseded by ADR 0019 (#159): reply acks now post detached, so no Reply review wrapper or disposition summary exists to carry a Provenance tag. The other artifact formats stand.
 
 ## Context
 

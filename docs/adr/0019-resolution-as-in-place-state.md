@@ -1,7 +1,7 @@
 # ADR 0019: Thread resolution recorded as in-place state, not threaded notes
 
 Date: 2026-06-16
-Status: Accepted. Supersedes ADR 0017's `_Fixed:_` note (safety layer 2); the rest of ADR 0017 stands.
+Status: Accepted. Supersedes ADR 0017's `_Fixed:_` note (safety layer 2; the rest of ADR 0017 stands) and #38's per-tick Reply review for reply acks, now posted detached.
 
 ## Context
 
@@ -25,7 +25,7 @@ Resolution status is recorded as a **Resolution stamp**: a one-line status edite
 
 2. **Commit-driven resolves silently.** On a positive per-thread judgment the daemon writes the stamp (naming the resolving commit) and resolves the thread. It posts no threaded note and opens no summary review. This supersedes ADR 0017's note-then-resolve (Decision point 3).
 
-3. **Reply-driven keeps its threaded ack.** An Operator reply is a human message, so the daemon answers it with a threaded Reply ack, batched under the per-tick Reply review for one notification (#38). On a resolving Verdict (`confirmed`/`withdrawn`) it also writes the stamp. The ack stays an event because a conversation is one; only the resolution *status* moves to state.
+3. **Reply-driven posts a detached threaded ack.** An Operator reply is a human message, so the daemon answers it with a threaded ack: one reply POST per ack, opening no review. On a resolving Verdict (`confirmed`/`withdrawn`) it also writes the stamp. The ack stays an event because a conversation is one; only the resolution *status* moves to state. This retires #38's per-tick Reply review. That review batched acks into one notification, but once resolution moves to the stamp it has nothing left to carry, so it would wrap each tick's acks in an empty-bodied review object purely to batch. The detached ack trades that standing empty review for at most N notifications on a reply-burst, which is rare (a first-review reply pass) and cheap for the Operator, who authored the PR and already follows it.
 
 4. **Stamp and ack are orthogonal.** The stamp is gated on resolution and lives on the Finding comment (silent edit). The ack is gated on an Operator reply and lives as a threaded reply (notifies). They never duplicate: a commit-only fix writes a stamp and no ack; a reply writes an ack and, if resolving, the same single stamp. The #113 case becomes one stamp plus one ack.
 
@@ -37,12 +37,14 @@ Layer 2 changes from a notifying note to a silent stamp, and dropping the notifi
 
 ## Boundary
 
-This ADR changes how a resolution is *recorded and surfaced*, not when one happens. Candidate selection, the per-thread judgment, the Verdict vocabulary, the reply-driven trigger conditions (#75), and `voice.py`'s rules are unchanged. The empty `COMMENTED` review observed on #113 is a separate implementation defect (an opened wrapper with nothing to post), not decided here.
+This ADR changes how a resolution is *recorded and surfaced*, not when one happens. Candidate selection, the per-thread judgment, the Verdict vocabulary, the reply-driven trigger conditions (#75), and `voice.py`'s rules are unchanged. The empty `COMMENTED` review seen on #113 is moot for the reply path once acks post detached: no wrapper opens, so there is no empty review to leak. The findings review is out of scope and unchanged: it stays one batched COMMENT review because batching findings into a review that already carries a body costs no empty object, the asymmetry that justifies detaching only the bodiless ack.
 
 ## Consequences
 
 - The double-ack (#159) cannot recur: resolution status has one slot per Finding, so no pairing of drivers can write two notes.
-- The two "conversation resolved" summary reviews collapse to one: commit-driven opens no review at all, leaving only the reply path's Reply review (#38), and only when a reply landed.
+- Both drivers now open no review: commit-driven stamps silently, reply-driven posts detached acks. The per-tick Reply review (#38) and its disposition summary are retired; with resolution carried by the stamp, the review had nothing left to carry but an empty body.
+- A reply-burst now notifies once per ack rather than once per tick. Accepted: the burst is a rare first-review reply pass, and a standing empty review on every reply-tick is the worse cost for the subscribed PR author.
 - Commit-driven resolution becomes silent. The trade is fewer notifications for a trace the Operator reads at their own pre-merge review rather than on a per-resolution ping.
 - `_Fixed:_` as a threaded note is retired; CONTEXT.md gains the **Resolution stamp** term, the thread-level twin of the Status comment.
 - A future driver (a third resolution signal) inherits the single-slot stamp for free, with no new cross-driver sentinel.
+- Known residual: the single slot is convergent but its cross-process write is not atomic. The commit driver (under the per-PR lock) and the reply driver (no lock) can read-modify-write the same Finding comment in overlapping ticks, so a stamp can land last-writer-wins on the rationale line. The idempotent append still prevents a double stamp; only which rationale survives is racy, and both rationales record the same close. Tightening this (lock the reply pass, or unify the two write transports) is deferred to a follow-up, weighed against the cost of serializing the reply pass behind a review for a benign race.
