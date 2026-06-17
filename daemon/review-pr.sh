@@ -68,6 +68,11 @@ BASE_OWNER="${BASH_REMATCH[1]}"
 BASE_REPO="${BASH_REMATCH[2]}"
 PR_NUMBER="${BASH_REMATCH[3]}"
 
+# Bind every log line below to this PR so parallel reviews are attributable in
+# the interleaved daemon output (the plain [pr-review-agent] prefix is for
+# cycle-level lines in poll.sh/run.sh).
+log_set_pr_context "$BASE_REPO" "$PR_NUMBER"
+
 # Set after `gh pr view`; leave blank so log_failure pre-view still has the
 # placeholder field populated.
 HEAD_OID=""
@@ -205,8 +210,6 @@ resolution() {
   return 0
 }
 
-log_info "PR ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}"
-
 meta="$(gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,author)"
 HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
 HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
@@ -302,6 +305,10 @@ EXTRACT_ERR="$SCRATCH/.pr-review-extract.err"
 EDIT_ERR="$SCRATCH/.pr-review-edit.err"
 ANCHOR_OUT="$SCRATCH/.pr-review-anchor.out"
 POST_ERR="$SCRATCH/.pr-review-post.err"
+# create-review.sh echoes the full gh-api review JSON on success. Capture it here
+# rather than let it leak to the operator's terminal; the review id is parsed out
+# for a one-line success log.
+POST_OUT="$SCRATCH/.pr-review-post.out"
 
 log_step "fetching diff"
 # When --last-sha is set, scope the diff to changes since the prior review's
@@ -454,7 +461,7 @@ if [[ $OWN_PR -eq 1 ]]; then
 else
   log_step "posting Pending review"
 fi
-if ! bash "$SCRIPT_DIR/create-review.sh" "${post_args[@]}" 2>"$POST_ERR"; then
+if ! bash "$SCRIPT_DIR/create-review.sh" "${post_args[@]}" >"$POST_OUT" 2>"$POST_ERR"; then
   cat "$POST_ERR" >&2
   category="$(extract_category "$POST_ERR")"
   reason="gh api POST failed"
@@ -463,6 +470,14 @@ if ! bash "$SCRIPT_DIR/create-review.sh" "${post_args[@]}" 2>"$POST_ERR"; then
   fi
   log_failure "$category" "$PR_URL" "$HEAD_OID" "$reason"
   exit 1
+fi
+# Report the landed review by id instead of dumping the raw JSON. A parse miss
+# (unexpected shape) degrades to no id, never an error — the review did land.
+review_id="$(jq -r '.id // empty' "$POST_OUT" 2>/dev/null || true)"
+if [[ $OWN_PR -eq 1 ]]; then
+  log_ok "submitted COMMENT review${review_id:+ #$review_id}"
+else
+  log_ok "posted Pending review${review_id:+ #$review_id}"
 fi
 
 # The review landed: edit the status comment in place into its terminal state

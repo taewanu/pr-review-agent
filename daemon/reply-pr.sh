@@ -65,10 +65,14 @@ OWNER="${BASH_REMATCH[1]}"
 REPO="${BASH_REMATCH[2]}"
 PR_NUMBER="${BASH_REMATCH[3]}"
 
+# Attribute every reply-path line to this PR, so its lines stay readable amid
+# the interleaved review-path lines of other PRs in the same cycle.
+log_set_pr_context "$REPO" "$PR_NUMBER"
+
 GITHUB_USER="$(gh api user --jq '.login')"
 HEAD_OID=""
 
-log_info "checking for unaddressed replies: $PR_URL"
+log_info "checking for unaddressed replies"
 
 # List all inline review comments on the PR. --paginate handles >30 comments.
 # https://docs.github.com/en/rest/pulls/comments
