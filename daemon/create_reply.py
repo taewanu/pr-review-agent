@@ -20,28 +20,23 @@ must win before we mark the reply processed. fix_claim and answered questions
 (#74) keep their sentinel in the text reply. Parent Finding bodies come from
 --threads (the same JSON the reply agent consumed), so the PATCH needs no GET.
 
-Body-bearing replies post under ONE pending COMMENTED review per tick (#38)
-instead of N detached `/replies` comments, so the operator gets a single GitHub
-notification. The body now travels via GraphQL `-f body=<raw>` rather than REST
-`--input -`, but gh JSON-encodes the variable, so the bytes still survive intact
-(the round-trip test pins both transports). A reply with no thread id (degraded
-reviewThreads read, or a thread past the first-100 page) falls back to the
-detached REST `/replies` POST so it still lands. The wrapper review body is a
-single hidden marker (renders empty, and lets a stale wrapper be told apart from
-a Finding-bearing draft before deletion); a visible summary is deferred to #11.
+Body-bearing replies post detached: one `/replies` POST per reply (#159, ADR
+0019), so each ack threads under its Finding with no review wrapper. The body
+travels via REST `--input -`; the round-trip test pins the bytes intact. A
+reply-tick with N body-bearing replies sends N notifications, accepted as a rare
+first-review burst over the standing empty review object the superseded #38
+wrapper left on every tick.
 
 A settled verdict (`confirmed` / `withdrawn`) also resolves its GitHub review
-thread via GraphQL after the review submits (#75), using the thread id
-reply-pr.sh joined into --threads. Best-effort: a failed resolve is logged,
-never retried.
+thread via GraphQL once its reply posts (#75), using the thread id reply-pr.sh
+joined into --threads. Best-effort: a failed resolve is logged, never retried.
 
 On failure, stderr carries a `category=<x>` line (no-fence, parse-error,
 schema-invalid) so reply-pr.sh's log_failure mapping is unchanged.
 
 Usage:
   python3 create_reply.py --owner O --repo R --number N --raw RAWFILE \
-    [--threads THREADSFILE] [--pr-node-id NODEID] \
-    [--existing-pending-review-id ID] [--dry-run]
+    [--threads THREADSFILE] [--dry-run]
 """
 
 from __future__ import annotations
@@ -56,7 +51,8 @@ from pathlib import Path
 # daemon/ is not a package and this script is run by path, so add its own dir to
 # the import path before importing the shared voice rules (ADR 0010).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import batch_review  # noqa: E402
+import links  # noqa: E402
+import resolution  # noqa: E402
 import voice  # noqa: E402
 
 REQUIRED = ("in_reply_to_id", "addressed_comment_id", "bucket")
@@ -88,12 +84,6 @@ STAMP_RATIONALE = {
     "confirmed": "confirmed fixed by the author",
     "withdrawn": "withdrawn by the author as a false positive",
 }
-
-# The batched-review GraphQL leaves, the wrapper marker, and the blob-link helper
-# now live in batch_review (#125), shared with resolve_threads so neither imports
-# the other. REPLY_REVIEW_MARKER kept here as the path-local name for the wrapper
-# marker's one producer (this module's reply acks); the wire string is identical.
-REPLY_REVIEW_MARKER = batch_review.WRAPPER_MARKER
 
 # Ack reaction per bucket. GitHub's reaction set is fixed to
 # +1/-1/laugh/confused/heart/hooray/rocket/eyes, so the design note's 🙏 is not
@@ -202,7 +192,7 @@ def link_for(args: argparse.Namespace, reply: dict) -> str | None:
     fields plus the head repo and head sha. None when nothing to anchor. The link
     targets the head repo (where `head_sha` lives), falling back to the base
     owner/repo when not supplied so same-repo PRs and older callers still link."""
-    return batch_review.build_blob_link(
+    return links.build_blob_link(
         args.head_owner or args.owner,
         args.head_repo or args.repo,
         args.head_sha,
@@ -285,38 +275,6 @@ def patch_finding(owner: str, repo: str, finding_id: str, body: str) -> tuple[in
     return proc.returncode, proc.stderr
 
 
-def disposition_summary(open_count: int, resolved: int) -> str:
-    """One-line disposition rollup for the Reply review body (#11).
-
-    Leads with the conversations still needing the author (open: pushback +
-    stands), then the resolved ones (confirmed + withdrawn). "conversation" is
-    GitHub's user-facing name for a review thread (the "Resolve conversation"
-    control); the API-layer "thread" stays in the code. Built deterministically
-    so the count never drifts and the line clears the voice summary rules by
-    construction. Called only with at least one landed reply, so open + resolved
-    is never zero."""
-
-    def conversations(n: int) -> str:
-        return "1 conversation" if n == 1 else f"{n} conversations"
-
-    if open_count and resolved:
-        return f"{conversations(open_count)} still open, {resolved} resolved."
-    if open_count:
-        return f"{conversations(open_count)} still open."
-    if resolved == 1:
-        return "1 conversation resolved."
-    return f"All {conversations(resolved)} resolved."
-
-
-def reply_review_body(open_count: int, resolved: int) -> str:
-    """The Reply review's COMMENT body: the disposition summary, the Provenance
-    tag, then the hidden reply-review marker. The Reply review body is a posted
-    artifact, not a Finding Review body, so it carries the tag like every other
-    (ADR 0010 §2, #132). The marker stays last so the daemon can tell its own
-    stale wrapper from a Finding draft before deleting one."""
-    return f"{disposition_summary(open_count, resolved)}\n\n{MARKER}\n\n{REPLY_REVIEW_MARKER}"
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Post threaded reply acks for reply-pr.sh (#36).")
     parser.add_argument("--owner", required=True)
@@ -342,21 +300,6 @@ def main() -> int:
         "--threads",
         help="threads JSON the reply agent consumed; supplies parent Finding "
         "bodies for the non-claim Reply-sentinel PATCH",
-    )
-    parser.add_argument(
-        "--pr-node-id",
-        default="",
-        help="PR GraphQL node id; body-bearing replies batch under one pending "
-        "COMMENTED review against it (#38). Empty -> every reply falls back to a "
-        "detached REST reply (the pre-#38 path), so a degraded reviewThreads read "
-        "still posts.",
-    )
-    parser.add_argument(
-        "--existing-pending-review-id",
-        default="",
-        help="a viewer pending review already on the PR (a prior tick that failed "
-        "to submit); deleted before opening this tick's review so the create is not "
-        "blocked and orphan comments do not re-trigger duplicate replies (#38)",
     )
     parser.add_argument(
         "--dry-run",
@@ -414,17 +357,12 @@ def main() -> int:
             }
             if r.get("body"):
                 entry["in_reply_to_id"] = in_reply_to_id
-                # "review" -> wrapped in the one pending COMMENTED review (#38);
-                # "detached" -> a standalone REST reply (degraded read / no thread id).
-                entry["via"] = (
-                    "review" if args.pr_node_id and thread_ids.get(in_reply_to_id) else "detached"
-                )
                 entry["reply_payload"] = {
                     "body": build_body(r["body"], addressed_id, link_for(args, r))
                 }
                 if r.get("mode") in RESOLVE_MODES:
                     entry["resolve_thread_id"] = thread_ids.get(in_reply_to_id)
-                    entry["resolution_stamp"] = batch_review.build_resolution_stamp(
+                    entry["resolution_stamp"] = resolution.build_stamp(
                         STAMP_RATIONALE[r["mode"]], None
                     )
             else:
@@ -463,8 +401,8 @@ def main() -> int:
         if base is None:
             print(f"no parent body for finding {fid}; skipping stamp", file=sys.stderr)
         else:
-            stamp = batch_review.build_resolution_stamp(STAMP_RATIONALE[reply["mode"]], None)
-            new_body = batch_review.append_stamp(base, stamp)
+            stamp = resolution.build_stamp(STAMP_RATIONALE[reply["mode"]], None)
+            new_body = resolution.append_stamp(base, stamp)
             if new_body is not None:  # None -> already stamped (a re-run): no second edit
                 rc, err = patch_finding(args.owner, args.repo, fid, new_body)
                 if rc == 0:
@@ -477,7 +415,7 @@ def main() -> int:
                     )
         tid = thread_ids.get(fid)
         if tid:
-            rrc, rerr = batch_review.resolve_thread(tid)
+            rrc, rerr = resolution.resolve_thread(tid)
             if rrc == 0:
                 resolve_ok += 1
             else:
@@ -487,65 +425,29 @@ def main() -> int:
         else:
             print(f"no thread id for finding {fid}; skipping resolve", file=sys.stderr)
 
-    # Partition body-bearing replies: batch under one pending review when we have
-    # a PR node id AND the reply's thread id (#38); otherwise fall back to a
-    # detached REST reply — a degraded reviewThreads read (no pr node id) or a
-    # thread past the first-100 page (no thread id). acknowledgments carry no body
-    # and post no text reply, so they sit out the batch entirely.
-    batched: list[dict] = []
-    fallback: list[dict] = []
+    # --- Post each body-bearing reply detached: one /replies POST per ack, no
+    # review wrapper (#159, ADR 0019). acknowledgments carry no body and post no
+    # text reply, so they sit this loop out and are handled by the reaction +
+    # sentinel loop below.
     for r in replies:
         if not r.get("body"):
             continue
-        if args.pr_node_id and thread_ids.get(str(r["in_reply_to_id"])):
-            batched.append(r)
-        else:
-            fallback.append(r)
-
-    # --- Batch: one COMMENTED review (empty body) wraps every batchable reply via
-    # batch_review.submit, so the operator gets a single notification for the tick
-    # (#38). A failed add or submit lands no reply (and no sentinel) on the affected
-    # thread, so the next cycle retries it — the poster's best-effort contract.
-    if batched:
-        items = [
-            batch_review.BatchItem(
-                thread_ids[str(r["in_reply_to_id"])],
-                build_body(r["body"], str(r["addressed_comment_id"]), link_for(args, r)),
-                tag=r,
-            )
-            for r in batched
-        ]
-
-        def reply_wrapper_body(landed: list[batch_review.BatchItem]) -> str:
-            resolved = sum(1 for it in landed if it.tag.get("mode") in RESOLVE_MODES)
-            return reply_review_body(len(landed) - resolved, resolved)
-
-        added = batch_review.submit(
-            items,
-            pr_node_id=args.pr_node_id,
-            review_body=reply_wrapper_body,
-            existing_review_id=args.existing_pending_review_id,
-        )
-        text_ok += len(added)
-        # Resolve only after submit — replies (and their sentinels) are not live
-        # until the review is submitted.
-        for it in added:
-            if it.tag.get("mode") in RESOLVE_MODES:
-                do_resolve(it.tag)
-
-    # --- Fallback: a detached REST reply for any non-batchable body reply. Same
-    # path the daemon used before #38; resolution stays inline since these post
-    # immediately (no pending-review barrier).
-    for r in fallback:
-        in_reply_to_id = str(r["in_reply_to_id"])
+        # Resolve only after the POST lands (rc == 0): a thread must not collapse
+        # off an ack that never posted. A failed POST logs and the loop continues,
+        # so one bad reply never skips the rest of the burst.
         full_body = build_body(r["body"], str(r["addressed_comment_id"]), link_for(args, r))
-        rc, err = create_reply(args.owner, args.repo, args.number, in_reply_to_id, full_body)
+        rc, err = create_reply(
+            args.owner, args.repo, args.number, str(r["in_reply_to_id"]), full_body
+        )
         if rc == 0:
             text_ok += 1
             if r.get("mode") in RESOLVE_MODES:
                 do_resolve(r)
         else:
-            print(f"reply POST failed for comment {in_reply_to_id}: {err.strip()}", file=sys.stderr)
+            print(
+                f"reply POST failed for comment {r['in_reply_to_id']}: {err.strip()}",
+                file=sys.stderr,
+            )
 
     # --- Reactions + bodiless sentinel PATCH: every reply, independent of the
     # text-reply path above. The reaction is idempotent; an acknowledgment then

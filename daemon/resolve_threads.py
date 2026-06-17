@@ -30,11 +30,11 @@ Pure selection/format entry points (unit-tested without gh):
   parse_verdict: the Fix-check agent's {fixed, rationale}. Any parse or schema
     failure returns fixed=False, so a malformed judgment leaves the thread open.
 
-  build_resolution_stamp / append_stamp: the stamp text (voice-gated before the
-    edit) and the idempotent append onto the Finding comment's existing body.
+  build_stamp / append_stamp: the stamp text (voice-gated before the edit) and the
+    idempotent append onto the Finding comment's existing body.
 
 The `act` subcommand stamps each resolved Finding's comment in place via
-batch_review.update_review_comment and resolves both the freshly-stamped and the
+resolution.update_review_comment and resolves both the freshly-stamped and the
 retry threads. The stamp is a silent edit (no notification): the trace is kept, the
 notification dropped as redundant with the Operator's own pre-merge review (ADR 0019).
 """
@@ -47,15 +47,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # daemon/ is not a package and this script is run by path, so add its own dir to
-# the import path before importing the shared posting toolkit, the blob-link
+# the import path before importing the shared resolution toolkit, the blob-link
 # helper, and the voice rules.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import batch_review  # noqa: E402
+import resolution  # noqa: E402
 import voice  # noqa: E402
-from batch_review import (  # noqa: E402
+from links import build_blob_link  # noqa: E402
+from resolution import (  # noqa: E402
     append_stamp,
-    build_blob_link,
-    build_resolution_stamp,
+    build_stamp,
 )
 
 DIFF_GIT_RE = re.compile(r"^diff --git a/(?P<old>.+) b/(?P<new>.+)$")
@@ -250,7 +250,7 @@ def _vet_notes(
                 "thread_id": tid,
                 "comment_id": n.get("comment_id"),
                 "body": n.get("finding_body") or "",
-                "stamp": build_resolution_stamp(rationale, link),
+                "stamp": build_stamp(rationale, link),
             }
         )
     return postable, skipped
@@ -292,7 +292,7 @@ def post_and_resolve(
             # Already stamped (re-run): skip the edit, still resolve.
             stamped_threads.append(tid)
             continue
-        urc, uerr = batch_review.update_review_comment(note["comment_id"], new_body)
+        urc, uerr = resolution.update_review_comment(note["comment_id"], new_body)
         if urc == 0:
             stamped_threads.append(tid)
         else:
@@ -300,7 +300,7 @@ def post_and_resolve(
 
     resolved_threads = []
     for tid in stamped_threads + [r["thread_id"] for r in retry]:
-        rrc, rerr = batch_review.resolve_thread(tid)
+        rrc, rerr = resolution.resolve_thread(tid)
         if rrc == 0:
             resolved_threads.append(tid)
         else:

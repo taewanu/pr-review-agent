@@ -24,10 +24,10 @@ select_candidates = resolve_threads.select_candidates
 select_retry_threads = resolve_threads.select_retry_threads
 parse_verdict = resolve_threads.parse_verdict
 MARKER = resolve_threads.PROVENANCE_MARKER
-# The stamp vocabulary moved to the shared batch_review leaf (#159); reach it through
+# The stamp vocabulary lives in the shared resolution leaf (#159); reach it through
 # the module resolve_threads already imported.
-batch_review = resolve_threads.batch_review
-RESOLVED_SENTINEL = batch_review.RESOLUTION_SENTINEL
+resolution = resolve_threads.resolution
+RESOLVED_SENTINEL = resolution.RESOLUTION_SENTINEL
 
 
 # ---------- IncrementDiff.parse / touched (OLD side) ----------
@@ -327,7 +327,7 @@ def test_resolution_stamp_shape():
     # The stamp is appended to the Finding's own comment, so it carries no
     # Provenance marker (the host comment already has one). One visible line
     # (lead + commit-anchored link + rationale), then the hidden dedup sentinel.
-    stamp = batch_review.build_resolution_stamp(
+    stamp = resolution.build_stamp(
         "loop now breaks on a cap", "[`abc1234:L10`](https://x/blob/abc/a#L10)"
     )
     assert MARKER not in stamp
@@ -340,7 +340,7 @@ def test_resolution_stamp_shape():
 
 def test_resolution_stamp_without_link():
     # No head sha or no line -> the lead drops its "in" clause, rationale stays.
-    stamp = batch_review.build_resolution_stamp("defect gone after the rewrite", None)
+    stamp = resolution.build_stamp("defect gone after the rewrite", None)
     assert stamp.split("\n\n") == [
         "✅ _Resolved_: defect gone after the rewrite",
         RESOLVED_SENTINEL,

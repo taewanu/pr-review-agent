@@ -5,20 +5,18 @@ pipeline. #36 collapses it to one Python process so the body bytes survive end
 to end. #55 adds a per-thread Ack reaction. #79 embeds a Reply sentinel in the
 parent Finding for non-claim threads so they dedup. #74 turns the `question`
 bucket into a body-bearing answer (`stands`/`withdrawn`) that posts a text reply
-like fix_claim, leaving `acknowledgment` as the only PATCH-dedup bucket. #38
-wraps body-bearing replies in one pending COMMENTED review per tick (GraphQL
-create -> add-per-thread -> submit) instead of N detached `/replies`, falling
-back to the detached REST path for any reply without a thread id. These tests pin
-all of it: a body carrying `\n`, `\t`, `\\`, a backticked regex `` `\n[^\n]` ``
-and non-ASCII must reach `gh` byte-for-byte over BOTH transports (REST stdin and
-the `-f body=` GraphQL arg), each bucket must POST its reaction, a body-bearing
-bucket carries its sentinel in the reply, and an acknowledgment PATCHes the
-parent Finding only once its reaction lands.
+like fix_claim, leaving `acknowledgment` as the only PATCH-dedup bucket. #159
+posts each body-bearing reply detached (one `/replies` POST per ack, no review
+wrapper); a settled verdict then stamps the Finding and resolves its thread.
+These tests pin all of it: a body carrying `\n`, `\t`, `\\`, a backticked regex
+`` `\n[^\n]` `` and non-ASCII must reach `gh` byte-for-byte over REST stdin, each
+bucket must POST its reaction, a body-bearing bucket carries its sentinel in the
+reply, and an acknowledgment PATCHes the parent Finding only once its reaction
+lands.
 
 `gh` is stubbed via a tmpdir on PATH (mirrors test_status_comment). The stub
-records each call's argv and stdin as a NUL-delimited record (a batched body
-carries newlines on argv, so a newline separator would desync the two logs) and
-feeds a canned id back for the CreatePendingReview mutation.
+records each call's argv and stdin as a NUL-delimited record (a reply body
+carries newlines on stdin, so a newline separator would desync the two logs).
 """
 
 from __future__ import annotations
@@ -33,8 +31,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CREATE_REPLY = REPO_ROOT / "daemon" / "create_reply.py"
 
-# Import create_reply as a module so its pure helpers (disposition_summary) can be
-# unit-tested directly, alongside the subprocess _run integration tests below.
+# Import create_reply as a module so its constants (MARKER, the resolution
+# sentinel) are reachable directly, alongside the subprocess _run tests below.
 import importlib.util as _ilu  # noqa: E402
 
 _spec = _ilu.spec_from_file_location("create_reply", CREATE_REPLY)
@@ -63,12 +61,6 @@ def _raw(replies: list[dict]) -> str:
     return "agent preamble\n```json\n" + json.dumps({"replies": replies}) + "\n```\ntrailing prose"
 
 
-# Canned CreatePendingReview response so create_reply.py can read the new review id
-# off the stub (#38). Returned for any `gh` call whose argv contains the mutation
-# operation name.
-_CREATE_REVIEW_STDOUT = '{"data":{"addPullRequestReview":{"pullRequestReview":{"id":"PRR_stub"}}}}'
-
-
 def _run(
     raw: str,
     *,
@@ -79,8 +71,6 @@ def _run(
     head_sha: str | None = None,
     head_owner: str | None = None,
     head_repo: str | None = None,
-    pr_node_id: str | None = "PR_node",
-    existing_pending_review_id: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, list[tuple[str, str]]]:
     """Run create_reply.py with a per-call-recording `gh` stub. Returns
     (result, calls) where calls is a list of (argv, stdin) tuples in order.
@@ -89,14 +79,10 @@ def _run(
     `head_owner`/`head_repo` override the blob link's repo (the fork on a
     cross-repo PR); --owner/--repo stay the base repo for the API calls.
 
-    `pr_node_id` (default present) is passed as --pr-node-id so a body reply with
-    a thread id batches under one pending COMMENTED review (#38); set it to None
-    to model a degraded reviewThreads read that forces the detached REST path. The
-    stub feeds a canned id back for the CreatePendingReview mutation so add/submit
-    have a review to attach to. `fail_ops` makes the stub exit 1 only for `gh`
-    calls whose argv contains one of the given substrings (e.g. a GraphQL
-    operation name), so a best-effort resolve failure can be tested without also
-    failing the create/add/submit."""
+    `fail_ops` makes the stub exit 1 only for `gh` calls whose argv contains one
+    of the given substrings (e.g. a GraphQL operation name or an endpoint), so a
+    best-effort resolve failure can be tested without also failing the reply
+    POST."""
     fail_ops = fail_ops or []
     with tempfile.TemporaryDirectory() as tmp:
         tmpd = Path(tmp)
@@ -106,15 +92,14 @@ def _run(
         argv_log = tmpd / "gh_argv.txt"
         stub = tmpd / "gh"
         # NUL-delimited record per invocation in each log, so argv[i] pairs with
-        # stdin[i] even when an arg carries newlines: the batch path (#38) passes
-        # the reply body via `-f body=<raw>` on argv (not stdin), and that body
-        # contains `\n`, so a newline record separator would desync the two logs.
+        # stdin[i] even when a record carries newlines: a reply body posts via REST
+        # `--input -` on stdin and contains `\n`, so a newline record separator
+        # would desync the two logs.
         lines = [
             "#!/usr/bin/env bash",
             f'printf "%s\\0" "$*" >> "{argv_log}"',
             f'cat >> "{stdin_log}"',
             f'printf "\\0" >> "{stdin_log}"',
-            f"case \"$*\" in *CreatePendingReview*) printf '%s' '{_CREATE_REVIEW_STDOUT}' ;; esac",
         ]
         if fail_ops:
             clauses = " ".join(f'*"{op}"*) exit 1 ;;' for op in fail_ops)
@@ -146,10 +131,6 @@ def _run(
             args += ["--head-owner", head_owner]
         if head_repo is not None:
             args += ["--head-repo", head_repo]
-        if pr_node_id is not None:
-            args += ["--pr-node-id", pr_node_id]
-        if existing_pending_review_id is not None:
-            args += ["--existing-pending-review-id", existing_pending_review_id]
         if dry_run:
             args.append("--dry-run")
         result = subprocess.run(args, capture_output=True, text=True, env=env)
@@ -468,19 +449,19 @@ def _idx(calls: list[tuple[str, str]], needle: str) -> int:
     return next(i for i, c in enumerate(calls) if needle in c[0])
 
 
-def test_confirmed_resolves_thread_after_review_submits():
-    # Under the review wrapper (#38) the reply is an AddReply under the pending
-    # review, not a detached /replies POST; resolution still runs, but only after
-    # the review submits (the replies and their sentinels are not live until then).
+def test_confirmed_resolves_thread_after_reply_posts():
+    # The reply posts detached (one /replies POST, no review wrapper, #159);
+    # resolution runs only after that POST lands, so a thread never collapses off
+    # an ack that never went live.
     result, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_abc"))
     assert result.returncode == 0, result.stderr
-    assert _find(calls, "AddReply") is not None, "the reply batches under the review"
-    assert _find(calls, "/replies") is None, "no detached reply when batched"
+    reply = _find(calls, "pulls/999/comments/111/replies")
+    assert reply is not None, "the reply posts detached"
     resolve = _resolve_call(calls)
     assert resolve is not None, "confirmed must resolve the thread"
     assert "threadId=PRRT_abc" in resolve[0]
-    assert _idx(calls, "resolveReviewThread") > _idx(calls, "SubmitReview"), (
-        "resolve only after the review submits"
+    assert _idx(calls, "resolveReviewThread") > _idx(calls, "/replies"), (
+        "resolve only after the reply posts"
     )
 
 
@@ -521,21 +502,21 @@ def test_confirmed_without_thread_id_skips_resolve_but_still_replies():
 
 
 def test_resolve_failure_is_best_effort_exit_zero():
-    # The review submits (create/add/submit succeed) but only the resolve mutation
-    # fails. The run still exits 0: resolution is cosmetic and never retried.
+    # The reply posts (and stamps) fine but only the resolve mutation fails. The
+    # run still exits 0: resolution is cosmetic and never retried.
     result, calls = _run(
         _raw([_reply()]),
         fail_ops=["resolveReviewThread"],
         threads=_threads("111", "F", thread_id="PRRT_x"),
     )
     assert result.returncode == 0, result.stderr
-    assert _find(calls, "AddReply") is not None, "reply still batches"
+    assert _find(calls, "/replies") is not None, "reply still posts"
     assert _resolve_call(calls) is not None, "resolve was attempted"
 
 
 # ---------- #159 / ADR 0019: a resolving reply also stamps the Finding comment ----------
 
-RESOLVED_SENTINEL = create_reply.batch_review.RESOLUTION_SENTINEL
+RESOLVED_SENTINEL = create_reply.resolution.RESOLUTION_SENTINEL
 
 
 def _patch_body(calls: list[tuple[str, str]]) -> str | None:
@@ -587,19 +568,17 @@ def test_non_resolving_verdict_leaves_no_stamp():
     assert _find(calls, "--method PATCH") is None, "a non-resolving verdict leaves no stamp"
 
 
-def test_resolve_skipped_when_review_create_fails():
-    # If the pending-review create fails, nothing lands and the next cycle retries;
-    # the thread must not be resolved off a reply that never posted.
+def test_resolve_skipped_when_reply_post_fails():
+    # If the reply POST fails, nothing lands and the next cycle retries; the thread
+    # must not be resolved off a reply that never posted.
     _, calls = _run(_raw([_reply()]), gh_exit=1, threads=_threads("111", "F", thread_id="PRRT_x"))
-    assert _resolve_call(calls) is None, "no resolve when the review never opened"
+    assert _resolve_call(calls) is None, "no resolve when the reply never posted"
 
 
-# --- Review-wrapper batching (#38) ------------------------------------------
-# Body-bearing replies post under ONE pending COMMENTED review per tick so the
-# operator gets a single notification, instead of N detached /replies comments.
-# Threading is preserved: each AddReply targets its parent thread id. A reply
-# with no thread id (degraded read / no pr node id) falls back to a detached
-# /replies POST so it still lands.
+# --- Detached posting (#159) ------------------------------------------------
+# Each body-bearing reply posts detached: one /replies POST per ack, no review
+# wrapper. A reply-tick with N replies sends N notifications; the #38 wrapper that
+# once batched them into one is retired (ADR 0019).
 
 
 def _multi_threads(*specs: tuple[str, str, str]) -> list[dict]:
@@ -615,13 +594,9 @@ def _multi_threads(*specs: tuple[str, str, str]) -> list[dict]:
     ]
 
 
-def _addreply_body(rec: str) -> str:
-    """The reply body carried on an AddReply call's argv (`-f body=<raw>`), which
-    is the last `-f` arg so it runs to the end of the record."""
-    return rec.split("body=", 1)[1]
-
-
-def test_batch_wraps_replies_in_one_review_no_detached_posts():
+def test_each_reply_posts_detached_no_review_wrapper():
+    # Two body-bearing replies in one tick: each posts as its own /replies POST,
+    # and none of the #38 wrapper machinery (create/add/submit) is touched.
     a = _reply(in_reply_to_id="111", addressed_comment_id="11", body="**Confirmed.** a")
     b = _reply(in_reply_to_id="222", addressed_comment_id="22", body="**Confirmed.** b")
     result, calls = _run(
@@ -629,163 +604,20 @@ def test_batch_wraps_replies_in_one_review_no_detached_posts():
         threads=_multi_threads(("111", "Fa", "PRRT_a"), ("222", "Fb", "PRRT_b")),
     )
     assert result.returncode == 0, result.stderr
-    assert len([c for c in calls if "CreatePendingReview" in c[0]]) == 1, "one review per tick"
-    assert len([c for c in calls if "SubmitReview" in c[0]]) == 1, "one submit per tick"
-    adds = [c for c in calls if "AddReply" in c[0]]
-    assert len(adds) == 2, "each reply attaches to its own thread under the review"
-    assert _find(calls, "thread=PRRT_a") is not None
-    assert _find(calls, "thread=PRRT_b") is not None
-    assert _find(calls, "/replies") is None, "nothing posts as a detached reply"
+    assert _find(calls, "pulls/999/comments/111/replies") is not None, "reply a posts detached"
+    assert _find(calls, "pulls/999/comments/222/replies") is not None, "reply b posts detached"
+    for op in ("CreatePendingReview", "AddReply", "SubmitReview"):
+        assert _find(calls, op) is None, f"no review-wrapper machinery ({op})"
 
 
-def test_batch_submits_as_comment_with_disposition_body():
-    # #38 wraps the tick's replies in one COMMENT review; #11 fills its body with
-    # the disposition summary, then the Provenance tag (#132), then the hidden
-    # marker (the body was empty under #38 alone). A single confirmed reply rolls
-    # up to "1 conversation resolved."
+def test_detached_reply_carries_sentinel_and_marker_byte_for_byte():
+    # Dedup + provenance ride in the detached body; the nasty payload round-trips
+    # over REST stdin intact.
     _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
-    submit = _find(calls, "SubmitReview")
-    assert submit is not None
-    assert "event: COMMENT" in submit[0], "wrapper review submits as COMMENT"
-    body = submit[0].split("query=", 1)[1]
-    assert "1 conversation resolved." in body, "the submit body carries the disposition summary"
-    assert "pr-review-agent:reply-review" in body, "the hidden marker stays in the body"
-
-
-def test_batch_reply_body_round_trips_through_graphql_arg():
-    # The body now travels via `-f body=<raw>` on argv, a new transport vs the REST
-    # stdin path. It must still reach gh byte-for-byte: `\n`, tab, backslash, a
-    # backticked regex and non-ASCII.
-    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
-    add = _find(calls, "AddReply")
-    assert add is not None
-    assert _addreply_body(add[0]) == EXPECTED_BODY
-
-
-def test_null_thread_id_falls_back_to_detached_reply():
-    batched = _reply(in_reply_to_id="111", addressed_comment_id="11", body="**Confirmed.** a")
-    stray = _reply(in_reply_to_id="222", addressed_comment_id="22", body="**Confirmed.** b")
-    result, calls = _run(
-        _raw([batched, stray]),
-        # only 111 has a thread id; 222's reviewThreads entry was not mapped
-        threads=_multi_threads(("111", "Fa", "PRRT_a")) + _threads("222", "Fb"),
-    )
-    assert result.returncode == 0, result.stderr
-    assert _find(calls, "thread=PRRT_a") is not None, "the mapped reply batches"
-    detached = _find(calls, "pulls/999/comments/222/replies")
-    assert detached is not None, "the unmapped reply posts detached so it still lands"
-
-
-def test_no_pr_node_id_forces_detached_even_with_thread_id():
-    # A fully degraded reviewThreads read leaves no pr node id, so batching is off
-    # and every reply posts detached (the pre-#38 path) — still threaded, just N
-    # notifications.
-    result, calls = _run(
-        _raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"), pr_node_id=None
-    )
-    assert result.returncode == 0, result.stderr
-    assert _find(calls, "CreatePendingReview") is None, "no review without a pr node id"
-    assert _find(calls, "pulls/999/comments/111/replies") is not None, "posts detached instead"
-
-
-def test_stale_pending_review_deleted_before_create():
-    result, calls = _run(
-        _raw([_reply()]),
-        threads=_threads("111", "F", thread_id="PRRT_x"),
-        existing_pending_review_id="PRR_stale",
-    )
-    assert result.returncode == 0, result.stderr
-    delete = _find(calls, "DeletePendingReview")
-    assert delete is not None, "a stale pending review is discarded first"
-    assert "review=PRR_stale" in delete[0]
-    assert _idx(calls, "DeletePendingReview") < _idx(calls, "CreatePendingReview"), (
-        "delete the stale review before opening this tick's review"
-    )
-
-
-def test_no_stale_pending_review_no_delete():
-    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
-    assert _find(calls, "DeletePendingReview") is None, "nothing to delete when none was passed"
-
-
-def test_wrapper_review_tagged_with_reply_review_marker():
-    # The wrapper body carries the hidden marker reply-pr.sh filters on, so only a
-    # reply wrapper is ever deleted — never a Finding-bearing draft (the bug the
-    # daemon flagged on #95).
-    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
-    create = _find(calls, "CreatePendingReview")
-    assert create is not None
-    assert "pr-review-agent:reply-review" in create[0], "wrapper body carries the discriminator"
-
-
-def test_submit_failure_defers_and_skips_resolve():
-    # The review fails to submit: the replies never go live, so the thread is not
-    # resolved and the run still exits 0 (next cycle retries the whole batch).
-    result, calls = _run(
-        _raw([_reply()]),
-        fail_ops=["SubmitReview"],
-        threads=_threads("111", "F", thread_id="PRRT_x"),
-    )
-    assert result.returncode == 0, result.stderr
-    assert _find(calls, "AddReply") is not None, "the add was attempted"
-    assert _resolve_call(calls) is None, "no resolve when the review did not submit"
-    assert "review submit failed" in result.stderr
-
-
-def test_all_adds_fail_discards_empty_review_without_submit():
-    # Every AddReply fails, so there is nothing to submit; the empty pending review
-    # is discarded rather than submitted (an empty COMMENTED review is rejected).
-    result, calls = _run(
-        _raw([_reply()]),
-        fail_ops=["AddReply"],
-        threads=_threads("111", "F", thread_id="PRRT_x"),
-    )
-    assert result.returncode == 0, result.stderr
-    assert _find(calls, "SubmitReview") is None, "never submit an empty review"
-    assert _find(calls, "DeletePendingReview") is not None, "discard the empty review"
-
-
-def test_acknowledgment_stays_out_of_the_batch():
-    # An acknowledgment carries no body, so it never joins the review wrapper: it
-    # still gets its reaction + parent-Finding sentinel PATCH, and a co-occurring
-    # fix_claim is the only thing batched.
-    ack = {"in_reply_to_id": "111", "addressed_comment_id": "11", "bucket": "acknowledgment"}
-    fix = _reply(in_reply_to_id="222", addressed_comment_id="22", body="**Confirmed.** x")
-    result, calls = _run(
-        _raw([ack, fix]),
-        threads=_multi_threads(("111", "Fa", "PRRT_a"), ("222", "Fb", "PRRT_b")),
-    )
-    assert result.returncode == 0, result.stderr
-    adds = [c for c in calls if "AddReply" in c[0]]
-    assert len(adds) == 1 and _find(calls, "thread=PRRT_b") is not None, (
-        "only the fix_claim batches"
-    )
-    assert _find(calls, "thread=PRRT_a") is None, "the acknowledgment is not added to the review"
-    assert _find(calls, "--method PATCH") is not None, (
-        "the acknowledgment still PATCHes its sentinel"
-    )
-
-
-def test_batched_reply_keeps_sentinel_and_marker():
-    # Dedup + provenance must survive the move into the review wrapper.
-    _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
-    body = _addreply_body(_find(calls, "AddReply")[0])
-    assert "<!-- pr-review-agent:reply:222 -->" in body, "reply sentinel rides in the batched body"
-    assert "🤖 _pr-review-agent_" in body, "provenance marker rides in the batched body"
-
-
-def test_dry_run_marks_batched_reply_via_review():
-    result, _ = _run(
-        _raw([_reply()]), dry_run=True, threads=_threads("111", "F", thread_id="PRRT_d")
-    )
-    entry = json.loads(result.stdout)["plan"][0]
-    assert entry["via"] == "review"
-
-
-def test_dry_run_marks_unmapped_reply_via_detached():
-    result, _ = _run(_raw([_reply()]), dry_run=True, threads=_threads("111", "F"))
-    entry = json.loads(result.stdout)["plan"][0]
-    assert entry["via"] == "detached"
+    body = _reply_body(calls)
+    assert body == EXPECTED_BODY
+    assert "<!-- pr-review-agent:reply:222 -->" in body, "reply sentinel rides in the body"
+    assert "🤖 _pr-review-agent_" in body, "provenance marker rides in the body"
 
 
 def test_dry_run_confirmed_includes_resolve_thread_id_and_stamp():
@@ -977,105 +809,3 @@ def test_bulleted_reply_body_passes_the_voice_gate():
     result, calls = _run(_raw([_reply(body=body)]))
     assert result.returncode == 0, result.stderr
     assert _find(calls, "/replies") is not None
-
-
-# --- Disposition summary (#11): the one-line rollup that fills the Reply review
-# body. Leads with conversations still open (pushback/stands), then resolved
-# (confirmed/withdrawn). Deterministic, so it never miscounts and passes voice.
-
-
-def test_disposition_summary_open_and_resolved():
-    assert create_reply.disposition_summary(1, 2) == "1 conversation still open, 2 resolved."
-    assert create_reply.disposition_summary(2, 1) == "2 conversations still open, 1 resolved."
-
-
-def test_disposition_summary_open_only():
-    assert create_reply.disposition_summary(2, 0) == "2 conversations still open."
-    assert create_reply.disposition_summary(1, 0) == "1 conversation still open."
-
-
-def test_disposition_summary_all_resolved():
-    assert create_reply.disposition_summary(0, 3) == "All 3 conversations resolved."
-    assert create_reply.disposition_summary(0, 1) == "1 conversation resolved."
-
-
-def test_disposition_summary_passes_the_voice_gate():
-    # The summary is a summary-class field: plain prose, no leading bold, no
-    # forbidden opener, no em dash. Lock every branch against the voice rules.
-    for open_count, resolved in [(1, 2), (2, 1), (2, 0), (1, 0), (0, 3), (0, 1)]:
-        line = create_reply.disposition_summary(open_count, resolved)
-        violations = create_reply.voice.check_text(
-            line,
-            prefixes=create_reply.voice.FORBIDDEN_SUMMARY_PREFIXES,
-            label="reply-review summary",
-        )
-        assert violations == [], (line, violations)
-
-
-def test_reply_review_body_carries_provenance_tag():
-    # The Reply review body is a posted artifact, not a Finding Review body, so
-    # it carries the Provenance tag like every other one (ADR 0010 §2, #132).
-    # Anatomy: disposition summary, then the tag, then the hidden marker last.
-    body = create_reply.reply_review_body(1, 1)
-    assert body == (
-        "1 conversation still open, 1 resolved.\n\n"
-        f"{create_reply.MARKER}\n\n{create_reply.REPLY_REVIEW_MARKER}"
-    )
-    assert body.index(create_reply.MARKER) < body.index(create_reply.REPLY_REVIEW_MARKER)
-
-
-def _submit_call(calls: list[tuple[str, str]]) -> tuple[str, str] | None:
-    return _find(calls, "SubmitReview")
-
-
-def test_reply_review_body_leads_with_open_then_resolved():
-    # One confirmed (resolves) and one pushback (stays open), both batched under
-    # the wrapper review. The submit body leads with the open count, then the
-    # resolved count, and keeps the hidden marker.
-    replies = [
-        _reply(in_reply_to_id="111", addressed_comment_id="222", mode="confirmed"),
-        _reply(in_reply_to_id="333", addressed_comment_id="444", mode="pushback"),
-    ]
-    threads = _threads("111", "F", thread_id="PRRT_a") + _threads("333", "G", thread_id="PRRT_b")
-    result, calls = _run(_raw(replies), threads=threads)
-    assert result.returncode == 0, result.stderr
-    submit = _submit_call(calls)
-    assert submit is not None, "the wrapper review submits"
-    assert "1 conversation still open, 1 resolved." in submit[0]
-    assert create_reply.MARKER in submit[0], "the wrapper body carries the Provenance tag (#132)"
-    assert "pr-review-agent:reply-review" in submit[0], "the hidden marker stays in the body"
-
-
-def test_reply_review_body_all_resolved():
-    replies = [
-        _reply(in_reply_to_id="111", addressed_comment_id="222", mode="confirmed"),
-        _question(in_reply_to_id="333", addressed_comment_id="444", mode="withdrawn"),
-    ]
-    threads = _threads("111", "F", thread_id="PRRT_a") + _threads("333", "G", thread_id="PRRT_b")
-    _, calls = _run(_raw(replies), threads=threads)
-    submit = _submit_call(calls)
-    assert submit is not None
-    assert "All 2 conversations resolved." in submit[0]
-
-
-def test_disposition_excludes_reaction_only_acknowledgment():
-    # An acknowledgment is reaction-only, not wrapped in the review, so it never
-    # enters the count: only the one confirmed reply is summarized.
-    replies = [
-        _reply(in_reply_to_id="111", addressed_comment_id="222", mode="confirmed"),
-        {"in_reply_to_id": "333", "addressed_comment_id": "444", "bucket": "acknowledgment"},
-    ]
-    threads = _threads("111", "F", thread_id="PRRT_a") + _threads("333", "G", thread_id="PRRT_b")
-    _, calls = _run(_raw(replies), threads=threads)
-    submit = _submit_call(calls)
-    assert submit is not None
-    assert "1 conversation resolved." in submit[0]
-
-
-def test_reply_wrapper_marker_pinned_in_reply_pr_sh():
-    # reply-pr.sh discards a stale wrapper by matching this marker substring inline;
-    # a drift from batch_review.WRAPPER_MARKER would silently break that cleanup. (The
-    # old find_stale_wrapper helper carried this pin; it was retired with #159.)
-    reply_pr = (REPO_ROOT / "daemon" / "reply-pr.sh").read_text()
-    assert "pr-review-agent:reply-review" in create_reply.batch_review.WRAPPER_MARKER
-    assert "pr-review-agent:reply-review" in reply_pr
