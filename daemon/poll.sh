@@ -22,7 +22,44 @@ if ! gh auth status >/dev/null 2>&1; then
 fi
 
 CONFIG_ERR="$(mktemp -t pr-review-poll-config.XXXXXX)"
-trap 'rm -f "$CONFIG_ERR"' EXIT
+# Per-cycle outcome dir: each background dispatch drops an ok/fail marker so the
+# end-of-cycle summary tallies reviews without re-querying GitHub.
+CYCLE_OUTCOME_DIR="$(mktemp -d -t pr-review-cycle.XXXXXX)"
+trap 'rm -f "$CONFIG_ERR"; rm -rf "$CYCLE_OUTCOME_DIR"' EXIT
+
+# Idle-cycle collapse. A cycle is idle when it touches no PR (every watched repo
+# has no open, eligible PR). When the prior cycle was idle, suppress this cycle's
+# preamble (_LOG_QUIET) and, on a TTY, redraw one "idle (×N)" line in place rather
+# than reprint the whole block each interval. The streak persists across cycles —
+# each is a fresh poll.sh process — in the state dir.
+IDLE_FILE="$(_state_dir)/idle.count"
+PRIOR_IDLE=0
+if [[ -r "$IDLE_FILE" ]]; then
+  read -r PRIOR_IDLE <"$IDLE_FILE" 2>/dev/null || PRIOR_IDLE=0
+fi
+[[ "$PRIOR_IDLE" =~ ^[0-9]+$ ]] || PRIOR_IDLE=0
+CYCLE_TTY=0
+if [[ -t 2 ]]; then
+  CYCLE_TTY=1
+fi
+if [[ "$PRIOR_IDLE" -ge 1 ]]; then
+  _LOG_QUIET=1
+fi
+CYCLE_DID_WORK=0
+
+# Finalize a dangling in-place "idle (×N)" line (TTY, no trailing newline left by
+# the prior cycle) with one newline before the first fresh output, so real lines
+# don't graft onto it. Self-guards, so callers can invoke it unconditionally.
+IDLE_LINE_PENDING=0
+if [[ "$_LOG_QUIET" -eq 1 && "$CYCLE_TTY" -eq 1 ]]; then
+  IDLE_LINE_PENDING=1
+fi
+flush_idle_line() {
+  if [[ "$IDLE_LINE_PENDING" -eq 1 ]]; then
+    printf '\n' >&2
+    IDLE_LINE_PENDING=0
+  fi
+}
 
 log_step "loading config"
 if ! CONFIG="$(python3 "$SCRIPT_DIR/load_config.py" "$REPO_ROOT" 2>"$CONFIG_ERR")"; then
@@ -63,8 +100,10 @@ dispatch_review() {
   if run_with_pr_timeout "review-dispatch" "$pr_url" "$head_sha" \
     bash "$SCRIPT_DIR/review-pr.sh" "$@"; then
     state_write "$owner" "$repo_name" "$pr_number" "$head_sha" 0
+    printf 'ok\n' >"$CYCLE_OUTCOME_DIR/${repo_name}-${pr_number}"
   else
     log_err "review failed for $pr_url: state untouched, will retry next tick"
+    printf 'fail\n' >"$CYCLE_OUTCOME_DIR/${repo_name}-${pr_number}"
   fi
   return 0
 }
@@ -123,6 +162,13 @@ for repo in "${REPOS[@]}"; do
       fi
     fi
 
+    # First eligible PR of the cycle: this cycle is not idle. Reset the quiet gate
+    # so the work below (and the end-of-cycle tally) prints, and finalize any
+    # in-place idle line before the per-PR output starts.
+    CYCLE_DID_WORK=1
+    _LOG_QUIET=0
+    flush_idle_line
+
     # Reply handling runs every tick regardless of dedup — operators reply
     # independent of HEAD changes. reply-pr.sh exits 0 cheaply when nothing
     # to ack (one gh api call, no scratch clone).
@@ -172,8 +218,42 @@ for repo in "${REPOS[@]}"; do
   done < <(jq -c '.[]' <<<"$prs_json")
 done
 
-# Drain reviews still running at the end of the tick before reporting done, so
+# Drain reviews still running at the end of the cycle before reporting done, so
 # their state writes land and a slow review can't bleed into the next cycle.
 wait
 
-log_step "tick done"
+if [[ "$CYCLE_DID_WORK" -eq 1 ]]; then
+  # The cycle reviewed something: clear the idle streak and close with a tally
+  # from the per-dispatch outcome markers instead of a bare "done". The grep is
+  # guarded (|| true) so an empty outcome dir can't trip `set -e` via pipefail,
+  # and branches use `if`, not `[[ ]] &&`, so a false test never exits under it.
+  rm -f "$IDLE_FILE" 2>/dev/null || true
+  ok_n=$({ grep -lx ok "$CYCLE_OUTCOME_DIR"/* 2>/dev/null || true; } | wc -l | tr -d ' ')
+  fail_n=$({ grep -lx fail "$CYCLE_OUTCOME_DIR"/* 2>/dev/null || true; } | wc -l | tr -d ' ')
+  reviewed_n=$((ok_n + fail_n))
+  repo_n=${#REPOS[@]}
+  repo_noun="repos"
+  if [[ "$repo_n" -eq 1 ]]; then
+    repo_noun="repo"
+  fi
+  cycle_summary="cycle done · ${repo_n} ${repo_noun}"
+  if [[ "$reviewed_n" -gt 0 ]]; then
+    cycle_summary="${cycle_summary} · ${reviewed_n} reviewed"
+    if [[ "$fail_n" -gt 0 ]]; then
+      cycle_summary="${cycle_summary} · ${fail_n} failed"
+    fi
+  fi
+  log_step "$cycle_summary"
+else
+  # Idle cycle: bump the streak. The first idle (prior streak 0) still showed the
+  # full preamble, so close it with one normal line; consecutive idles were quiet,
+  # so redraw a single "(×N)" line in place on a TTY, or stay silent in a log file.
+  NEW_IDLE=$((PRIOR_IDLE + 1))
+  mkdir -p "$(_state_dir)"
+  printf '%s\n' "$NEW_IDLE" >"$IDLE_FILE" 2>/dev/null || true
+  if [[ "$PRIOR_IDLE" -lt 1 ]]; then
+    log_step "cycle done · no open PRs"
+  elif [[ "$CYCLE_TTY" -eq 1 ]]; then
+    printf '\r\033[K[pr-review-agent] ◷ idle · no open PRs (×%d)' "$NEW_IDLE" >&2
+  fi
+fi

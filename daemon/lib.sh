@@ -1,19 +1,60 @@
 # shellcheck shell=bash
 # lib.sh — shared helpers sourced by other daemon scripts. Not executable on its own.
 
+# Per-PR log context. When set, log_* carry the coloured repo#pr prefix instead
+# of [pr-review-agent], so interleaved parallel lines are attributable.
+# review-pr.sh / reply-pr.sh each process one PR and set it; poll.sh / run.sh
+# leave it unset, keeping the plain prefix for cycle-level lines.
+_LOG_PR_REPO=""
+_LOG_PR_NUM=""
+
+# Cycle-level quiet gate. When set to 1, the plain-prefix path of log_info/log_step
+# is suppressed, so a run of idle polling cycles doesn't reprint the same preamble
+# (poll.sh sets it when the prior cycle was idle). Per-PR context lines and
+# log_err/log_failure are never gated: identity and problems always surface.
+_LOG_QUIET=0
+
+# log_set_pr_context <repo-name> <pr-number>
+log_set_pr_context() {
+  _LOG_PR_REPO="$1"
+  _LOG_PR_NUM="$2"
+}
+
 log_info() {
-  printf '[pr-review-agent] %s\n' "$*" >&2
+  if [[ -n "$_LOG_PR_REPO" ]]; then
+    log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*"
+  elif [[ "$_LOG_QUIET" != "1" ]]; then
+    printf '[pr-review-agent] %s\n' "$*" >&2
+  fi
 }
 
 log_err() {
-  printf '[pr-review-agent] ERROR: %s\n' "$*" >&2
+  if [[ -n "$_LOG_PR_REPO" ]]; then
+    log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_FAIL" "$*"
+  else
+    printf '[pr-review-agent] ERROR: %s\n' "$*" >&2
+  fi
 }
 
-# log_step <message>
-# $SECONDS is per-process — call only from the orchestrator (review-pr.sh), not
-# from sub-scripts whose clocks start at 0.
+# log_step <message> — a phase line with elapsed. $SECONDS is the calling
+# process's own clock: in review-pr.sh that is the per-PR review time (each PR
+# runs in its own process), in poll.sh/run.sh the cycle clock.
 log_step() {
-  printf '[pr-review-agent] %s (+%ds)\n' "$*" "${SECONDS}" >&2
+  if [[ -n "$_LOG_PR_REPO" ]]; then
+    log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*" "$SECONDS"
+  elif [[ "$_LOG_QUIET" != "1" ]]; then
+    printf '[pr-review-agent] %s (+%ds)\n' "$*" "${SECONDS}" >&2
+  fi
+}
+
+# log_ok <message> — a success phase line (✓ in per-PR mode). Same elapsed rule
+# as log_step.
+log_ok() {
+  if [[ -n "$_LOG_PR_REPO" ]]; then
+    log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_OK" "$*" "$SECONDS"
+  else
+    printf '[pr-review-agent] %s (+%ds)\n' "$*" "${SECONDS}" >&2
+  fi
 }
 
 # log_failure <category> <pr-url> <head-sha> <reason>
@@ -22,6 +63,80 @@ log_failure() {
   local category="$1" url="$2" sha="$3" reason="$4"
   printf '[pr-review-agent] failure: %s pr=%s sha=%s reason=%s\n' \
     "$category" "$url" "$sha" "$reason" >&2
+}
+
+# --- Output styling ----------------------------------------------------------
+# The daemon log has two render targets: a colour TTY (an operator watching a
+# foreground run) and a plaintext file (.daemon.log, and the ADR 0005 failure
+# scraper). Colour and glyphs decorate; identity always lives in the line TEXT,
+# so a colour-stripped reader loses nothing. Styling is emitted only when stderr
+# is a TTY and NO_COLOR is unset; PR_LOG_COLOR=always|never forces it for tests.
+_log_color_enabled() {
+  case "${PR_LOG_COLOR:-auto}" in
+    always) return 0 ;;
+    never) return 1 ;;
+    *) [[ -t 2 && -z "${NO_COLOR:-}" ]] ;;
+  esac
+}
+
+# _sgr <code...> — emit an ANSI SGR sequence (e.g. `_sgr 1 36`) when colour is
+# on, nothing when off. Pair every styling call with `_sgr 0` to reset.
+_sgr() {
+  _log_color_enabled || return 0
+  local IFS=';'
+  printf '\033[%sm' "$*"
+}
+
+# Per-PR prefix palette. Excludes red (31, reserved for the ✗ failure glyph) and
+# green (32, reserved for ✓ success) so a PR colour never reads as a status.
+# Bright variants extend the set before it wraps.
+_LOG_PR_PALETTE=(36 35 33 34 96 95 94 93)
+
+# Status glyphs. Plain Unicode, not colour, so they survive a piped log; colour,
+# when on, is layered around them by the caller.
+LOG_GLYPH_STEP='•'
+LOG_GLYPH_OK='✓'
+LOG_GLYPH_FAIL='✗'
+
+# pr_color_index <key> — map a per-PR key (e.g. "repo#pr") to an index into
+# _LOG_PR_PALETTE, in [0, ${#_LOG_PR_PALETTE[@]}); picks the PR prefix colour.
+# Hashing keeps a PR's colour stable across cycles; with 8 buckets two PRs in
+# flight can collide, tolerable because the repo#pr text disambiguates anyway.
+pr_color_index() {
+  local n=${#_LOG_PR_PALETTE[@]}
+  local sum
+  sum=$(cksum <<<"$1" | cut -d' ' -f1)
+  printf '%s' "$((sum % n))"
+}
+
+# pr_prefix <repo-name> <pr-number> — render the "repo#pr" identity prefix,
+# coloured by pr_color_index when colour is on, plain when off. The TEXT is
+# identical in both modes; only the surrounding SGR differs, so a colourless log
+# still disambiguates every line.
+pr_prefix() {
+  local repo="$1" pr="$2" tag idx
+  tag="${repo}#${pr}"
+  idx="$(pr_color_index "$tag")"
+  _sgr "${_LOG_PR_PALETTE[idx]}"
+  printf '%s' "$tag"
+  _sgr 0
+}
+
+# log_pr <repo-name> <pr-number> <glyph> <message> [elapsed-seconds]
+# Emit one styled per-PR line: "  repo#pr  <glyph> message   +Ns". The coloured
+# prefix tells interleaved parallel lines apart; the elapsed suffix is dimmed and
+# omitted when empty.
+log_pr() {
+  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}"
+  {
+    printf '  %s  %s %s' "$(pr_prefix "$repo" "$pr")" "$glyph" "$msg"
+    if [[ -n "$elapsed" ]]; then
+      _sgr 2
+      printf '   +%ss' "$elapsed"
+      _sgr 0
+    fi
+    printf '\n'
+  } >&2
 }
 
 # Exit status the shell reports when a process is killed by SIGALRM (128 + 14).
