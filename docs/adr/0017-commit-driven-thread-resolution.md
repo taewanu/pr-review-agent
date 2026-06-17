@@ -1,7 +1,7 @@
 # ADR 0017: Commit-driven thread resolution
 
 Date: 2026-06-13
-Status: Accepted
+Status: Accepted. The `_Fixed:_` note (Decision point 3, safety layer 2) is superseded by ADR 0019 (#159), which records the resolution as an in-place Resolution stamp instead. The rest of this ADR (candidate-by-incremental-diff, the safe-biased per-thread judgment, best-effort resolve) stands.
 
 ## Context
 

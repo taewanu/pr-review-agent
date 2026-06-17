@@ -1,38 +1,42 @@
 #!/usr/bin/env python3
-"""Commit-driven thread resolution: select, judge, then note-and-resolve (#125, ADR 0017).
+"""Commit-driven thread resolution: select, judge, then stamp the Finding and resolve.
+
+Originated as note-and-resolve (#125, ADR 0017); the resolution model is now an
+in-place stamp on the Finding's own comment (ADR 0019, #159).
 
 The review path runs this on each new HEAD SHA to find prior Findings a commit
-may have fixed without any Operator reply, post a `_Fixed:_` note, and resolve the
-thread. Safe-biased throughout: any uncertainty leaves the thread open, since a
-wrongly-closed live Finding is the dangerous failure and a wrongly-left-open fixed
-one is recoverable by a hand click (ADR 0017).
+may have fixed without any Operator reply, stamp the Finding's comment resolved,
+and resolve the thread. Safe-biased throughout: any uncertainty leaves the thread
+open, since a wrongly-closed live Finding is the dangerous failure and a
+wrongly-left-open fixed one is recoverable by a hand click (ADR 0017).
 
 Pure selection/format entry points (unit-tested without gh):
 
-  select_candidates: an open, daemon-owned thread, not yet carrying a `_Fixed:_`
-    note, whose Finding line this increment's diff touched. The line tested is the
+  select_candidates: an open, daemon-owned thread, not yet carrying a resolution
+    stamp, whose Finding line this increment's diff touched. The line tested is the
     thread's `originalLine` (its coordinate in the commit the Finding was posted
     against), matched against the OLD side of `git diff LAST_SHA..HEAD`. GitHub's
     GraphQL `line` is null exactly when a thread goes outdated, which is precisely
     when its code changed (the case we must catch), so `line` is unusable here and
-    `originalLine` is the only surviving coordinate. An open, un-noted Finding's
+    `originalLine` is the only surviving coordinate. An open, un-stamped Finding's
     code is untouched since it was posted (a prior increment would have judged it
     otherwise), so `originalLine` stays a valid old-side coordinate across ticks.
 
   select_retry_threads: an open, daemon-owned thread that already carries a
-    `_Fixed:_` note. The note landed but its resolve dropped (rate-limit); this
-    re-resolves it with no re-judgment and no second note (ADR 0017 §4). The
-    has_fix_note exclusion in select_candidates is what keeps the two disjoint.
+    resolution stamp. The stamp landed but its resolve dropped (rate-limit); this
+    re-resolves it with no re-judgment and no second stamp (ADR 0017 §4). The
+    has_resolution_stamp exclusion in select_candidates is what keeps the two disjoint.
 
   parse_verdict: the Fix-check agent's {fixed, rationale}. Any parse or schema
     failure returns fixed=False, so a malformed judgment leaves the thread open.
 
-  build_fix_note_body: the `_Fixed:_` note text, voice-gated before posting.
+  build_stamp / append_stamp: the stamp text (voice-gated before the edit) and the
+    idempotent append onto the Finding comment's existing body.
 
-The `act` subcommand posts the notes (batched under one COMMENT review, #38) via
-batch_review.submit and resolves both the freshly-noted and the retry threads. A
-note is voice-gated, carries the Provenance tag, and follows the #106 reply-lead
-format (italic colon-lead, no trailing period).
+The `act` subcommand stamps each resolved Finding's comment in place via
+resolution.update_review_comment and resolves both the freshly-stamped and the
+retry threads. The stamp is a silent edit (no notification): the trace is kept, the
+notification dropped as redundant with the Operator's own pre-merge review (ADR 0019).
 """
 
 import argparse
@@ -43,12 +47,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # daemon/ is not a package and this script is run by path, so add its own dir to
-# the import path before importing the shared posting toolkit, the blob-link
+# the import path before importing the shared resolution toolkit, the blob-link
 # helper, and the voice rules.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import batch_review  # noqa: E402
+import resolution  # noqa: E402
 import voice  # noqa: E402
-from batch_review import build_blob_link  # noqa: E402
+from links import build_blob_link  # noqa: E402
+from resolution import (  # noqa: E402
+    append_stamp,
+    build_stamp,
+)
 
 DIFF_GIT_RE = re.compile(r"^diff --git a/(?P<old>.+) b/(?P<new>.+)$")
 # Old-side range of a hunk: `@@ -<start>,<count> +... @@`. Count defaults to 1
@@ -61,20 +69,6 @@ HUNK_OLD_RE = re.compile(r"^@@ -(?P<start>\d+)(?:,(?P<count>\d+))? \+\d+(?:,\d+)
 # Operator's own manual review comment, so only the daemon's own threads can
 # become resolution candidates.
 PROVENANCE_MARKER = "🤖 _pr-review-agent_"
-
-# Italic colon-lead of the commit-driven note (#106 format, ADR 0017 §3). A new
-# lead distinct from the four reply Verdicts, which all answer an Operator reply;
-# this one answers a commit and has none.
-FIX_NOTE_LEAD = "_Fixed:_"
-
-# Hidden dedup marker on the `_Fixed:_` note (ADR 0017 §4). Distinct from the
-# Reply sentinel (create_reply.SENTINEL): that keys on an Operator reply comment
-# id a commit-driven note has none of, and #39 reply-detection scans its
-# namespace. A thread carrying this marker is past judgment: select_candidates
-# skips it (no second note) and select_retry_threads re-resolves it (resolve
-# only). lib.sh's fetch_open_review_threads pins this same literal to compute
-# `has_fix_note`; test_resolve_threads pins the two identical.
-FIX_NOTE_SENTINEL = "<!-- pr-review-agent:fixed -->"
 
 
 @dataclass
@@ -133,8 +127,8 @@ def select_candidates(
       - open (not already resolved on GitHub),
       - daemon-owned (root comment authored by the operator AND carrying the
         Provenance marker, so an Operator's own manual comment never qualifies),
-      - not yet noted (no `_Fixed:_` note), so a thread judged fixed on an earlier
-        tick is never re-judged or re-noted; it goes to select_retry_threads,
+      - not yet stamped (no resolution stamp), so a thread judged fixed on an earlier
+        tick is never re-judged or re-stamped; it goes to select_retry_threads,
       - touched: its `original_line` (creation-side coordinate) falls inside an
         old-side hunk of this increment's diff.
 
@@ -142,7 +136,7 @@ def select_candidates(
     The review path sets it on a force-push or rebase, where the increment diff
     can't be computed and the Findings' creation-side lines no longer share a
     coordinate space with the full PR diff (ADR 0017 §1's "full PR diff" scope).
-    The has_fix_note exclusion holds there too, so all_open never re-notes a thread.
+    The has_resolution_stamp exclusion holds there too, so all_open never re-notes a thread.
     """
     candidates: list[dict] = []
     for t in threads:
@@ -153,7 +147,7 @@ def select_candidates(
         body = t.get("root_body") or ""
         if PROVENANCE_MARKER not in body:
             continue
-        if t.get("has_fix_note"):
+        if t.get("has_resolution_stamp"):
             continue
         path = t.get("path") or ""
         line = t.get("original_line")
@@ -167,6 +161,7 @@ def select_candidates(
         candidates.append(
             {
                 "thread_id": t["thread_id"],
+                "comment_id": t.get("root_comment_id"),
                 "path": path,
                 "line": line,
                 "finding_body": body,
@@ -176,13 +171,13 @@ def select_candidates(
 
 
 def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
-    """Open, daemon-owned threads already carrying a `_Fixed:_` note (ADR 0017 §4).
+    """Open, daemon-owned threads already carrying a resolution stamp (ADR 0017 §4).
 
-    These are the stuck-open state: the note landed on an earlier tick but the
+    These are the stuck-open state: the stamp landed on an earlier tick but the
     resolve mutation dropped under rate-limit. They re-resolve here with no
-    re-judgment and no second note; the note is the work, the resolve is the
-    retry. Disjoint from select_candidates by construction: a noted thread is
-    excluded there (has_fix_note) and selected here. No diff filter, since after a
+    re-judgment and no second stamp; the stamp is the work, the resolve is the
+    retry. Disjoint from select_candidates by construction: a stamped thread is
+    excluded there (has_resolution_stamp) and selected here. No diff filter, since after a
     fix the Finding's `original_line` no longer shares a coordinate space with the
     new increment's diff, so candidacy by diff would never re-catch it.
     """
@@ -194,36 +189,10 @@ def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
             continue
         if PROVENANCE_MARKER not in (t.get("root_body") or ""):
             continue
-        if not t.get("has_fix_note"):
+        if not t.get("has_resolution_stamp"):
             continue
         retry.append({"thread_id": t["thread_id"]})
     return retry
-
-
-def build_fix_note_body(rationale: str, link: str | None) -> str:
-    """Assemble the `_Fixed:_` note body (ADR 0017 §3, #106 layout): italic
-    colon-lead, the blob-at-HEAD link on the lead line, the one-line rationale
-    below, then the Provenance marker and the fix-note sentinel footer.
-
-    Location lives in the link, so the rationale never repeats the file and line.
-    `link` is None when there is nothing to anchor (no head sha or no line); the
-    lead then stands alone. Voice-gating runs on the rationale before this is
-    called, not here."""
-    head = f"{FIX_NOTE_LEAD} {link}" if link else FIX_NOTE_LEAD
-    return "\n\n".join([head, rationale, PROVENANCE_MARKER, FIX_NOTE_SENTINEL])
-
-
-def fix_review_body(resolved: int) -> str:
-    """Build the batched COMMENT review body wrapping the tick's `_Fixed:_` notes
-    (#38): the count first, then the Provenance tag, then the hidden WRAPPER_MARKER.
-
-    Sharing batch_review.WRAPPER_MARKER is deliberate: it makes a crashed-pending
-    fix-note wrapper discardable by the same stale-wrapper cleanup the reply path
-    uses, so a fix-note crash can't wedge either path on GitHub's
-    one-pending-review-per-viewer limit. Called only with resolved >= 1."""
-    noun = "conversation" if resolved == 1 else "conversations"
-    summary = f"{resolved} {noun} resolved as fixed by a later commit."
-    return f"{summary}\n\n{PROVENANCE_MARKER}\n\n{batch_review.WRAPPER_MARKER}"
 
 
 def parse_verdict(raw: str) -> dict:
@@ -249,15 +218,17 @@ def parse_verdict(raw: str) -> dict:
 
 def _vet_notes(
     notes: list[dict], head_owner: str, head_repo: str, head_sha: str
-) -> tuple[list[tuple[str, str]], list[str]]:
-    """Build and voice-gate each note, returning (postable, skipped).
+) -> tuple[list[dict], list[str]]:
+    """Build and voice-gate each note's Resolution stamp, returning (postable, skipped).
 
-    `postable` is (thread_id, body) for notes that pass; `skipped` is a log line
-    per note whose rationale violates the voice rules. A voice failure leaves that
-    thread open (safe bias) rather than posting an off-voice note or resolving
-    silently. The lexical gate runs on the agent's rationale (not the whole body),
-    so the fixed `_Fixed:_` lead and the marker footer never trip it."""
-    postable: list[tuple[str, str]] = []
+    `postable` is a dict per note that passes, carrying everything the edit needs:
+    `thread_id`, `comment_id` (the Finding's root comment node id, the edit target),
+    `body` (its current body, to append the stamp below), and `stamp`. `skipped` is a
+    log line per note whose rationale violates the voice rules. A voice failure leaves
+    that thread open (safe bias) rather than editing an off-voice stamp or resolving
+    silently. The lexical gate runs on the agent's rationale (not the whole stamp), so
+    the fixed lead and the sentinel never trip it."""
+    postable: list[dict] = []
     skipped: list[str] = []
     for n in notes:
         tid = n["thread_id"]
@@ -266,15 +237,22 @@ def _vet_notes(
             rationale,
             prefixes=voice.FORBIDDEN_PREFIXES,
             check_bullets=True,
-            label=f"fix-note {tid}",
+            label=f"resolution stamp {tid}",
         )
         if not rationale:
-            violations.append(f"fix-note {tid} has an empty rationale")
+            violations.append(f"resolution stamp {tid} has an empty rationale")
         if violations:
             skipped.append("; ".join(violations))
             continue
         link = build_blob_link(head_owner, head_repo, head_sha, n.get("path"), n.get("line"))
-        postable.append((tid, build_fix_note_body(rationale, link)))
+        postable.append(
+            {
+                "thread_id": tid,
+                "comment_id": n.get("comment_id"),
+                "body": n.get("finding_body") or "",
+                "stamp": build_stamp(rationale, link),
+            }
+        )
     return postable, skipped
 
 
@@ -282,47 +260,54 @@ def post_and_resolve(
     notes: list[dict],
     retry: list[dict],
     *,
-    pr_node_id: str,
     head_owner: str,
     head_repo: str,
     head_sha: str,
-    existing_review_id: str = "",
 ) -> dict:
-    """Post the `_Fixed:_` notes under one batched COMMENT review (#38), then
-    resolve every thread that now carries a note plus every retry thread.
+    """Stamp each resolved Finding's comment in place, then resolve its thread plus
+    every retry thread (#159, ADR 0019).
 
-    Note-then-resolve order and best-effort throughout (ADR 0017 §4): the note is
+    Stamp-then-resolve order and best-effort throughout (ADR 0017 §4): the stamp is
     the audit trace and must land first, so a thread is only resolved after its
-    note is live (the review submitted). batch_review.submit returns only the notes
-    that landed, so a create/add/submit failure leaves its thread open and unnoted
-    and a later tick retries it; the resolve loop then runs over the landed notes
-    plus the retry threads. Resolve is idempotent, so a retry thread re-resolves
-    harmlessly. The batch ladder lives in batch_review.submit, shared with the reply
-    path so the two can no longer drift; only the resolve set differs (here it is
-    every landed note plus every retry thread)."""
+    comment edit succeeds. append_stamp returns None when the comment is already
+    stamped (a re-run), in which case the edit is skipped but the thread is still
+    resolved (the stuck-open case the retry path also handles). An update failure
+    leaves the thread open and unstamped for a later tick. Resolve is idempotent, so
+    a retry thread re-resolves harmlessly. No batched review here, unlike the reply
+    path: the stamp is a silent in-place edit, not a notifying comment (ADR 0019)."""
     postable, skipped = _vet_notes(notes, head_owner, head_repo, head_sha)
     for line in skipped:
-        print(f"fix-note voice violation, leaving open: {line}", file=sys.stderr)
+        print(f"resolution-stamp voice violation, leaving open: {line}", file=sys.stderr)
 
-    items = [batch_review.BatchItem(tid, body, tag=tid) for tid, body in postable]
-    added = batch_review.submit(
-        items,
-        pr_node_id=pr_node_id,
-        review_body=lambda landed: fix_review_body(len(landed)),
-        existing_review_id=existing_review_id,
-    )
-    noted_threads = [it.thread_id for it in added]
+    stamped_threads = []
+    for note in postable:
+        tid = note["thread_id"]
+        if not note["comment_id"]:
+            # No edit target (a degraded fetch returned no root comment id): leave
+            # open rather than fire a doomed null-id mutation, same as a missing tid.
+            print(f"no comment id for thread {tid}; skipping stamp", file=sys.stderr)
+            continue
+        new_body = append_stamp(note["body"], note["stamp"])
+        if new_body is None:
+            # Already stamped (re-run): skip the edit, still resolve.
+            stamped_threads.append(tid)
+            continue
+        urc, uerr = resolution.update_review_comment(note["comment_id"], new_body)
+        if urc == 0:
+            stamped_threads.append(tid)
+        else:
+            print(f"comment stamp update failed for thread {tid}: {uerr.strip()}", file=sys.stderr)
 
     resolved_threads = []
-    for tid in noted_threads + [r["thread_id"] for r in retry]:
-        rrc, rerr = batch_review.resolve_thread(tid)
+    for tid in stamped_threads + [r["thread_id"] for r in retry]:
+        rrc, rerr = resolution.resolve_thread(tid)
         if rrc == 0:
             resolved_threads.append(tid)
         else:
             print(f"resolveReviewThread failed for thread {tid}: {rerr.strip()}", file=sys.stderr)
 
     return {
-        "noted": noted_threads,
+        "stamped": stamped_threads,
         "resolved": resolved_threads,
         "retried": [r["thread_id"] for r in retry],
         "skipped": len(skipped),
@@ -350,8 +335,8 @@ def _cmd_act(args: argparse.Namespace) -> int:
     if args.dry_run:
         postable, skipped = _vet_notes(notes, args.head_owner, args.head_repo, args.head_sha)
         plan = {
-            "would_note": [{"thread_id": tid, "body": body} for tid, body in postable],
-            "would_resolve": [tid for tid, _ in postable] + [r["thread_id"] for r in retry],
+            "would_stamp": [{"thread_id": p["thread_id"], "stamp": p["stamp"]} for p in postable],
+            "would_resolve": [p["thread_id"] for p in postable] + [r["thread_id"] for r in retry],
             "skipped": skipped,
         }
         print(json.dumps(plan, ensure_ascii=False))
@@ -360,14 +345,12 @@ def _cmd_act(args: argparse.Namespace) -> int:
     result = post_and_resolve(
         notes,
         retry,
-        pr_node_id=args.pr_node_id,
         head_owner=args.head_owner,
         head_repo=args.head_repo,
         head_sha=args.head_sha,
-        existing_review_id=args.existing_pending_review_id,
     )
     print(
-        f"resolution: {len(result['noted'])} noted, {len(result['resolved'])} resolved "
+        f"resolution: {len(result['stamped'])} stamped, {len(result['resolved'])} resolved "
         f"({len(result['retried'])} retried), {result['skipped']} skipped",
         file=sys.stderr,
     )
@@ -397,29 +380,25 @@ def main() -> int:
     )
     p_select.set_defaults(func=_cmd_select)
 
-    p_retry = sub.add_parser("select-retry", help="emit open threads already carrying a fix-note")
+    p_retry = sub.add_parser(
+        "select-retry", help="emit open threads already carrying a resolution stamp"
+    )
     p_retry.add_argument("--threads", type=Path, required=True, help="open-threads JSON array")
     p_retry.add_argument("--operator", required=True, help="daemon's gh login")
     p_retry.set_defaults(func=_cmd_select_retry)
 
-    p_act = sub.add_parser("act", help="post fix-notes (batched) and resolve noted + retry threads")
+    p_act = sub.add_parser("act", help="stamp resolved Findings in place and resolve their threads")
     p_act.add_argument(
-        "--notes", type=Path, help="JSON array of {thread_id, path, line, rationale}"
+        "--notes",
+        type=Path,
+        help="JSON array of {thread_id, comment_id, finding_body, path, line, rationale}",
     )
     p_act.add_argument("--retry", type=Path, help="JSON array of {thread_id} to resolve only")
-    p_act.add_argument("--pr-node-id", default="", help="PR GraphQL node id for the batched review")
     p_act.add_argument("--head-owner", default="", help="head repo owner for the blob link")
     p_act.add_argument("--head-repo", default="", help="head repo name for the blob link")
-    p_act.add_argument("--head-sha", default="", help="PR HEAD sha the note's blob link points at")
+    p_act.add_argument("--head-sha", default="", help="PR HEAD sha the stamp's blob link points at")
     p_act.add_argument(
-        "--existing-pending-review-id",
-        default="",
-        help="a viewer pending fix-note wrapper left by a prior tick that failed to "
-        "submit; discarded before opening this tick's review so the create is not "
-        "blocked by GitHub's one-pending-per-viewer rule (#125)",
-    )
-    p_act.add_argument(
-        "--dry-run", action="store_true", help="print the note bodies and resolves, call no gh"
+        "--dry-run", action="store_true", help="print the stamps and resolves, call no gh"
     )
     p_act.set_defaults(func=_cmd_act)
 

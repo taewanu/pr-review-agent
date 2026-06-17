@@ -374,28 +374,24 @@ bundle_operator_agents() {
 
 # fetch_open_review_threads <owner> <repo> <pr-number>
 # Emits a JSON array of the PR's review threads shaped for resolve_threads.py:
-#   [{thread_id, is_resolved, root_author, root_body, path, original_line,
-#     original_start_line, has_fix_note}]
+#   [{thread_id, is_resolved, root_author, root_body, root_comment_id, path,
+#     original_line, original_start_line, has_resolution_stamp}]
 # The root (oldest) comment is the Finding; resolve_threads.py filters to the
 # open, daemon-owned ones. `originalLine`, not `line`: GitHub nulls `line` exactly
 # when a thread goes outdated (its anchored code changed), the case commit-driven
 # resolution must catch, so the creation-side coordinate is the only one that
-# survives (#125, ADR 0017). `has_fix_note` is true when a *daemon* comment in the
-# thread carries the `_Fixed:_` note's hidden sentinel, so an already-noted thread
-# skips re-judgment and routes to resolve-only retry (ADR 0017 §4). A comment
-# counts only when it carries BOTH the Provenance tag and the sentinel, so an
-# Operator quoting the sentinel into a reply cannot trip it; both literals mirror
-# resolve_threads (PROVENANCE_MARKER and FIX_NOTE_SENTINEL), pinned by
-# test_resolve_threads. Fetches comments(first:100) so a note posted as a later
-# reply is visible (the sentinel is on the note, not the root). A thread past 100
-# comments reads as un-noted: it is re-judged, and if its earlier resolve had
-# dropped it could take a second note (one extra notification), the recoverable
-# side. Best-effort: prints `[]` and returns non-zero on query failure, so the
-# caller degrades to "no candidates".
+# survives (#125, ADR 0017). `has_resolution_stamp` is true when the root comment
+# carries the stamp's hidden sentinel (ADR 0019), so an already-stamped thread
+# skips re-judgment and routes to resolve-only retry (ADR 0017 §4); the literal
+# mirrors resolve_threads (RESOLUTION_SENTINEL), pinned by test_resolve_threads.
+# `root_comment_id` is the root comment's node id, the target of the in-place stamp
+# edit. Fetches comments(first:1): the stamp lives on the root comment (not a later
+# reply), so the rest of the thread need not be read. Best-effort: prints `[]` and
+# returns non-zero on query failure, so the caller degrades to "no candidates".
 fetch_open_review_threads() {
   local owner="$1" repo="$2" pr="$3"
   local resp
-  # $owner/$repo/$pr are GraphQL variables, not shell vars — keep them literal.
+  # $owner/$repo/$pr are GraphQL variables, not shell vars; keep them literal.
   # shellcheck disable=SC2016
   if ! resp="$(gh api graphql \
     -f query='query($owner:String!,$repo:String!,$pr:Int!){
@@ -404,7 +400,7 @@ fetch_open_review_threads() {
           reviewThreads(first:100){
             nodes{
               id isResolved path originalLine originalStartLine
-              comments(first:100){ nodes{ author{ login } body } }
+              comments(first:1){ nodes{ id author{ login } body } }
             }
           }
         }
@@ -419,42 +415,12 @@ fetch_open_review_threads() {
         is_resolved: .isResolved,
         root_author: (.comments.nodes[0].author.login // null),
         root_body: (.comments.nodes[0].body // ""),
+        root_comment_id: (.comments.nodes[0].id // null),
         path: .path,
         original_line: .originalLine,
         original_start_line: .originalStartLine,
-        has_fix_note: ([.comments.nodes[].body // "" | (contains("🤖 _pr-review-agent_") and contains("<!-- pr-review-agent:fixed -->"))] | any)
+        has_resolution_stamp: ((.comments.nodes[0].body // "") | contains("<!-- pr-review-agent:resolved -->"))
       }]' <<<"$resp"
-}
-
-# find_stale_wrapper_review <owner> <repo> <pr-number> <operator>
-# Echoes the node id of a stale wrapper review to discard: a PENDING review by
-# <operator> whose body carries the wrapper marker (batch_review.WRAPPER_MARKER,
-# the same literal reply-pr.sh matches). Empty when none. The marker is the gate
-# that keeps this from ever deleting a Finding-bearing Pending review (the ADR
-# 0008 safety gate) or a human reviewer's draft, so the review path's resolution
-# stage can clear a crashed fix-note wrapper without touching anything else (#125,
-# #38). test_find_stale_wrapper pins the marker identical across the three sites.
-# Best-effort: prints nothing and returns 0 on query failure, so the caller just
-# skips the discard and lets create fail loudly if the wrapper really still blocks.
-find_stale_wrapper_review() {
-  local owner="$1" repo="$2" pr="$3" operator="$4"
-  local resp
-  # $owner/$repo/$pr are GraphQL variables, not shell vars — keep them literal.
-  # shellcheck disable=SC2016
-  if ! resp="$(gh api graphql \
-    -f query='query($owner:String!,$repo:String!,$pr:Int!){
-      repository(owner:$owner,name:$repo){
-        pullRequest(number:$pr){
-          reviews(first:50,states:[PENDING]){ nodes{ id author{ login } body } }
-        }
-      }
-    }' -f owner="$owner" -f repo="$repo" -F pr="$pr" 2>/dev/null)"; then
-    return 0
-  fi
-  jq -r --arg me "$operator" '
-    (.data.repository.pullRequest.reviews.nodes // [])
-    | map(select(.author.login == $me and ((.body // "") | contains("pr-review-agent:reply-review"))))
-    | .[0].id // empty' <<<"$resp"
 }
 
 # derive_project_identity <repo-root>

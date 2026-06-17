@@ -100,29 +100,29 @@ extract_category() {
   [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
 }
 
-# resolution — commit-driven thread resolution (#125, ADR 0017). Finds prior open,
-# daemon-owned Findings whose flagged line this increment touched and are not yet
-# noted, asks the fix-check agent whether each defect is gone at HEAD, and on a fix
-# posts a `_Fixed:_` note then resolves the thread. Also re-resolves any thread
-# already carrying a note whose earlier resolve dropped under rate-limit (retry,
-# §4). Reads run-scoped globals (SCRATCH at HEAD, DIFF_FILE, OPERATOR, diff_scoped,
-# PR_NODE_ID, HEAD_*). Best-effort: the review has already landed when it runs, so
-# every failure is logged and returns 0 rather than failing the PR-tick.
+# resolution: commit-driven thread resolution (#125, ADR 0017; stamp model ADR 0019).
+# Finds prior open, daemon-owned Findings whose flagged line this increment touched and
+# are not yet stamped, asks the fix-check agent whether each defect is gone at HEAD, and
+# on a fix stamps the Finding's comment resolved in place then resolves the thread. Also
+# re-resolves any thread already carrying a stamp whose earlier resolve dropped under
+# rate-limit (retry, §4). Reads run-scoped globals (SCRATCH at HEAD, DIFF_FILE, OPERATOR,
+# diff_scoped, HEAD_*). Best-effort: the review has already landed when it runs, so every
+# failure is logged and returns 0 rather than failing the PR-tick.
 resolution() {
   local threads_file candidates_file retry_file notes_file notes_jsonl finding_file judge_raw
   threads_file="$SCRATCH/.pr-review-threads.json"
   candidates_file="$SCRATCH/.pr-review-candidates.json"
   retry_file="$SCRATCH/.pr-review-retry.json"
-  notes_file="$SCRATCH/.pr-review-fix-notes.json"
-  notes_jsonl="$SCRATCH/.pr-review-fix-notes.jsonl"
+  notes_file="$SCRATCH/.pr-review-stamps.json"
+  notes_jsonl="$SCRATCH/.pr-review-stamps.jsonl"
 
   if ! fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$threads_file"; then
     log_info "reviewThreads query failed; skipping resolution"
     return 0
   fi
 
-  # Threads already carrying a `_Fixed:_` note whose resolve dropped earlier:
-  # re-resolve only, no re-judgment and no second note (ADR 0017 §4).
+  # Threads already carrying a resolution stamp whose resolve dropped earlier:
+  # re-resolve only, no re-judgment and no second stamp (ADR 0017 §4, ADR 0019).
   if ! python3 "$SCRIPT_DIR/resolve_threads.py" select-retry \
     --threads "$threads_file" --operator "$OPERATOR" >"$retry_file"; then
     printf '[]' >"$retry_file"
@@ -175,9 +175,11 @@ resolution() {
       rationale="$(jq -r '.rationale' <<<"$verdict")"
       if [[ "$fixed" == "true" ]]; then
         log_info "fix detected ${path}:${line} (${tid}): ${rationale}"
-        jq -nc --arg tid "$tid" --arg path "$path" --argjson line "$line" \
-          --arg rationale "$rationale" \
-          '{thread_id:$tid, path:$path, line:$line, rationale:$rationale}' >>"$notes_jsonl"
+        # Pull comment_id (the in-place edit target) and finding_body straight from
+        # the candidate, so the multi-line body never round-trips through a shell var.
+        jq -c --argjson i "$i" --arg rationale "$rationale" \
+          '.[$i] | {thread_id, comment_id, path, line, finding_body, rationale: $rationale}' \
+          "$candidates_file" >>"$notes_jsonl"
       else
         log_info "left open ${path}:${line} (${tid}): ${rationale}"
       fi
@@ -193,20 +195,13 @@ resolution() {
     return 0
   fi
 
-  log_info "posting ${notes_n} fix-note(s), retrying ${retry_n} resolve(s)"
-  # Discard a stale fix-note wrapper a prior tick left unsubmitted, so this tick's
-  # create is not blocked by GitHub's one-pending-per-viewer rule (#125, #38).
-  # Only when we open a review (notes to post); a retry-only tick opens none.
-  # Best-effort: empty when there is none or on query failure.
-  local existing_wrapper=""
-  if [[ "$notes_n" -gt 0 ]]; then
-    existing_wrapper="$(find_stale_wrapper_review "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
-  fi
+  log_info "stamping ${notes_n} resolved finding(s), retrying ${retry_n} resolve(s)"
+  # The commit-driven path edits the Finding comment in place (ADR 0019); it opens no
+  # review, so no pending-wrapper to pass or pre-clean (unlike the reply path).
   python3 "$SCRIPT_DIR/resolve_threads.py" act \
     --notes "$notes_file" --retry "$retry_file" \
-    --pr-node-id "$PR_NODE_ID" --existing-pending-review-id "$existing_wrapper" \
     --head-owner "$HEAD_REPO_OWNER" --head-repo "$HEAD_REPO_NAME" --head-sha "$HEAD_OID" ||
-    log_info "fix-note posting failed (non-fatal)"
+    log_info "resolution stamping failed (non-fatal)"
   return 0
 }
 
@@ -218,9 +213,6 @@ HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
 HEAD_OID="$(jq -r '.headRefOid // empty' <<<"$meta")"
 PR_AUTHOR="$(jq -r '.author.login // empty' <<<"$meta")"
-# PR GraphQL node id for the batched fix-note review (#38). Empty -> resolution
-# skips posting and leaves threads open (safe bias); never fails the tick.
-PR_NODE_ID="$(jq -r '.id // empty' <<<"$meta")"
 if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HEAD_OID" ]]; then
   log_err "gh pr view returned incomplete metadata for $PR_URL (closed PR with deleted fork?)"
   exit 1
