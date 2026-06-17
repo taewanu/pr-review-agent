@@ -347,7 +347,32 @@ def test_resolution_stamp_without_link():
     ]
 
 
-# ---------- Slice B: voice gating leaves a thread open ----------
+# ---------- degrade_rationale: voice-clean stamp text, resolve never blocked ----------
+
+
+def test_degrade_rationale_keeps_clean_verbatim():
+    # A voice-clean rationale is kept word-for-word, with no degrade notice.
+    text, notice = resolve_threads.degrade_rationale("loop now breaks on the cap")
+    assert text == "loop now breaks on the cap"
+    assert notice is None
+
+
+def test_degrade_rationale_replaces_off_voice_with_fallback():
+    # The dogfood case (#168): a forbidden opener is degraded to the fallback, not
+    # dropped, and the notice names the violation for the trace.
+    text, notice = resolve_threads.degrade_rationale("The outcome marker now leads with owner")
+    assert text == resolve_threads.FALLBACK_RATIONALE
+    assert notice is not None and "forbidden prefix" in notice
+
+
+def test_degrade_rationale_empty_uses_fallback():
+    # Empty or whitespace-only input has no words to keep, so it falls back too.
+    text, notice = resolve_threads.degrade_rationale("   ")
+    assert text == resolve_threads.FALLBACK_RATIONALE
+    assert notice is not None
+
+
+# ---------- act dry-run plan: stamps, resolves, and degrade notices ----------
 
 
 def _act_dry_run(notes: list[dict], retry: list[dict]) -> dict:
@@ -396,26 +421,32 @@ def test_act_dry_run_plan_stamps_and_resolves():
     assert [n["thread_id"] for n in plan["would_stamp"]] == ["PRRT_a"]
     # Both the freshly-stamped thread and the retry thread are resolved.
     assert plan["would_resolve"] == ["PRRT_a", "PRRT_b"]
-    assert plan["skipped"] == []
+    # A clean rationale is kept verbatim, so nothing is degraded.
+    assert plan["degraded"] == []
 
 
-def test_act_dry_run_voice_violation_leaves_open():
-    # An em dash in the rationale fails the voice gate, so the stamp is not built and
-    # the thread is left open (safe bias): it is neither stamped nor resolved.
+def test_act_dry_run_voice_violation_degrades_and_resolves():
+    # An em dash in the rationale fails the voice gate. The resolve must not hinge on
+    # the wording (#168): the stamp is built with the fallback rationale and the thread
+    # is resolved. The degraded notice names the violation for the trace.
     plan = _act_dry_run(
         [{"thread_id": "PRRT_bad", "path": "a.py", "line": 10, "rationale": "fixed — see below"}],
         [],
     )
-    assert plan["would_stamp"] == []
-    assert plan["would_resolve"] == []
-    assert len(plan["skipped"]) == 1 and "em dash" in plan["skipped"][0]
+    assert [n["thread_id"] for n in plan["would_stamp"]] == ["PRRT_bad"]
+    assert plan["would_resolve"] == ["PRRT_bad"]
+    assert len(plan["degraded"]) == 1 and "em dash" in plan["degraded"][0]
 
 
-def test_act_dry_run_empty_rationale_leaves_open():
+def test_act_dry_run_empty_rationale_degrades_and_resolves():
+    # An empty rationale would leave the stamp lead with a dangling colon, so it too is
+    # degraded to the fallback rather than blocking the resolve.
     plan = _act_dry_run(
         [{"thread_id": "PRRT_x", "path": "a.py", "line": 10, "rationale": "  "}], []
     )
-    assert plan["would_stamp"] == [] and plan["would_resolve"] == []
+    assert [n["thread_id"] for n in plan["would_stamp"]] == ["PRRT_x"]
+    assert plan["would_resolve"] == ["PRRT_x"]
+    assert len(plan["degraded"]) == 1
 
 
 # ---------- act stamps the Finding comment and resolves, through a gh stub ----------
@@ -499,6 +530,51 @@ def test_act_stamps_comment_then_resolves():
     resolves = [c for c in calls if "resolveReviewThread" in c]
     assert any("PRRT_a" in c for c in resolves)
     assert any("PRRT_b" in c for c in resolves)
+
+
+def test_act_off_voice_rationale_still_resolves():
+    # The #168 bug: a positive fix verdict whose one-line rationale opens with a
+    # forbidden prefix ("The ") used to drop the note and leave the thread open,
+    # blocking merge. The resolve must no longer hinge on the stamp's wording: the
+    # comment is stamped and the thread resolved regardless.
+    result, calls = _run_act(
+        [
+            {
+                "thread_id": "PRRT_a",
+                "comment_id": "RC_a",
+                "finding_body": f"Unbounded loop.\n\n{MARKER}",
+                "path": "a.py",
+                "line": 10,
+                "rationale": "The outcome marker filename now leads with owner",
+            }
+        ],
+        [],
+    )
+    assert result.returncode == 0, result.stderr
+    assert any("UpdateComment" in c and "RC_a" in c for c in calls), "the stamp lands"
+    assert any("resolveReviewThread" in c and "PRRT_a" in c for c in calls), "the thread resolves"
+
+
+def test_act_off_voice_stamp_carries_clean_fallback():
+    # The degraded stamp is voice-clean: it carries the fallback rationale, and the
+    # agent's off-voice wording never reaches the edited comment body.
+    result, calls = _run_act(
+        [
+            {
+                "thread_id": "PRRT_a",
+                "comment_id": "RC_a",
+                "finding_body": f"Unbounded loop.\n\n{MARKER}",
+                "path": "a.py",
+                "line": 10,
+                "rationale": "The outcome marker filename now leads with owner",
+            }
+        ],
+        [],
+    )
+    assert result.returncode == 0, result.stderr
+    update = next(c for c in calls if "UpdateComment" in c)
+    assert resolve_threads.FALLBACK_RATIONALE in update
+    assert "The outcome marker filename" not in update
 
 
 def test_act_resolve_only_for_retry_with_no_notes():

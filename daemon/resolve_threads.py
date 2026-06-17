@@ -30,8 +30,12 @@ Pure selection/format entry points (unit-tested without gh):
   parse_verdict: the Fix-check agent's {fixed, rationale}. Any parse or schema
     failure returns fixed=False, so a malformed judgment leaves the thread open.
 
-  build_stamp / append_stamp: the stamp text (voice-gated before the edit) and the
-    idempotent append onto the Finding comment's existing body.
+  degrade_rationale: the rationale a stamp will carry, voice-cleaned. A positive fix
+    verdict resolves regardless of wording (#168), so an off-voice rationale is degraded
+    to a clean stand-in, never dropped; the resolve is gated on the judgment alone.
+
+  build_stamp / append_stamp: the stamp text (built from the voice-clean rationale) and
+    the idempotent append onto the Finding comment's existing body.
 
 The `act` subcommand stamps each resolved Finding's comment in place via
 resolution.update_review_comment and resolves both the freshly-stamped and the
@@ -216,34 +220,64 @@ def parse_verdict(raw: str) -> dict:
     return {"fixed": fixed, "rationale": rationale.strip()}
 
 
+# A voice-clean stand-in for a fix rationale that trips the voice gate (#168). The
+# stamp is a silent in-place edit (ADR 0019), so losing the agent's exact wording on
+# the rare miss costs little; the resolve must proceed either way, and the daemon's
+# own PR text stays voice-clean (ADR 0010).
+FALLBACK_RATIONALE = "fix verified against the updated code"
+
+
+def _rationale_violations(rationale: str) -> list[str]:
+    """Voice violations of a one-line fix rationale: the same gate the stamp's visible
+    text must pass (forbidden opener, em dash, task ref, bullet count). Empty after
+    the caller's strip counts as a violation, since an empty rationale leaves the stamp
+    lead with a dangling colon."""
+    if not rationale:
+        return ["empty rationale"]
+    return voice.check_text(
+        rationale,
+        prefixes=voice.FORBIDDEN_PREFIXES,
+        check_bullets=True,
+        label="resolution stamp",
+    )
+
+
+def degrade_rationale(rationale: str) -> tuple[str, str | None]:
+    """Return a voice-clean rationale for the stamp, plus a notice of what changed.
+
+    A positive fix verdict must resolve regardless of the stamp's wording (#168), so a
+    rationale that trips the voice gate is rewritten rather than dropped. Returns
+    (rationale_to_use, notice): `notice` is None when the input was already clean (the
+    agent's words are kept verbatim), else a one-line description of the rewrite for the
+    foreground trace. `_rationale_violations` is the gate; FALLBACK_RATIONALE the clean
+    stand-in."""
+    rationale = rationale.strip()
+    violations = _rationale_violations(rationale)
+    if not violations:
+        return rationale, None
+    return FALLBACK_RATIONALE, f"rationale rewritten to fallback ({'; '.join(violations)})"
+
+
 def _vet_notes(
     notes: list[dict], head_owner: str, head_repo: str, head_sha: str
 ) -> tuple[list[dict], list[str]]:
-    """Build and voice-gate each note's Resolution stamp, returning (postable, skipped).
+    """Build each note's voice-clean Resolution stamp, returning (postable, degraded).
 
-    `postable` is a dict per note that passes, carrying everything the edit needs:
-    `thread_id`, `comment_id` (the Finding's root comment node id, the edit target),
-    `body` (its current body, to append the stamp below), and `stamp`. `skipped` is a
-    log line per note whose rationale violates the voice rules. A voice failure leaves
-    that thread open (safe bias) rather than editing an off-voice stamp or resolving
-    silently. The lexical gate runs on the agent's rationale (not the whole stamp), so
-    the fixed lead and the sentinel never trip it."""
+    Every note becomes postable: a positive fix verdict must resolve (ADR 0019, #168),
+    so the stamp's wording can never block it. A rationale that trips the voice gate is
+    degraded (degrade_rationale) to a clean stand-in rather than dropped. `postable`
+    carries the edit target per note (`thread_id`, `comment_id` the Finding's root
+    comment node id, `body` its current body to append below, and the built `stamp`);
+    `degraded` is a log line per note whose rationale was rewritten. The gate runs on the
+    agent's rationale (not the whole stamp), so the fixed lead and the sentinel never
+    trip it."""
     postable: list[dict] = []
-    skipped: list[str] = []
+    degraded: list[str] = []
     for n in notes:
         tid = n["thread_id"]
-        rationale = (n.get("rationale") or "").strip()
-        violations = voice.check_text(
-            rationale,
-            prefixes=voice.FORBIDDEN_PREFIXES,
-            check_bullets=True,
-            label=f"resolution stamp {tid}",
-        )
-        if not rationale:
-            violations.append(f"resolution stamp {tid} has an empty rationale")
-        if violations:
-            skipped.append("; ".join(violations))
-            continue
+        rationale, notice = degrade_rationale(n.get("rationale") or "")
+        if notice:
+            degraded.append(f"resolution stamp {tid}: {notice}")
         link = build_blob_link(head_owner, head_repo, head_sha, n.get("path"), n.get("line"))
         postable.append(
             {
@@ -253,7 +287,7 @@ def _vet_notes(
                 "stamp": build_stamp(rationale, link),
             }
         )
-    return postable, skipped
+    return postable, degraded
 
 
 def post_and_resolve(
@@ -275,9 +309,9 @@ def post_and_resolve(
     leaves the thread open and unstamped for a later tick. Resolve is idempotent, so
     a retry thread re-resolves harmlessly. No batched review here, unlike the reply
     path: the stamp is a silent in-place edit, not a notifying comment (ADR 0019)."""
-    postable, skipped = _vet_notes(notes, head_owner, head_repo, head_sha)
-    for line in skipped:
-        print(f"resolution-stamp voice violation, leaving open: {line}", file=sys.stderr)
+    postable, degraded = _vet_notes(notes, head_owner, head_repo, head_sha)
+    for line in degraded:
+        print(f"resolution-stamp degraded: {line}", file=sys.stderr)
 
     stamped_threads = []
     for note in postable:
@@ -310,7 +344,7 @@ def post_and_resolve(
         "stamped": stamped_threads,
         "resolved": resolved_threads,
         "retried": [r["thread_id"] for r in retry],
-        "skipped": len(skipped),
+        "degraded": len(degraded),
     }
 
 
@@ -333,11 +367,11 @@ def _cmd_act(args: argparse.Namespace) -> int:
     retry = json.loads(args.retry.read_text()) if args.retry else []
 
     if args.dry_run:
-        postable, skipped = _vet_notes(notes, args.head_owner, args.head_repo, args.head_sha)
+        postable, degraded = _vet_notes(notes, args.head_owner, args.head_repo, args.head_sha)
         plan = {
             "would_stamp": [{"thread_id": p["thread_id"], "stamp": p["stamp"]} for p in postable],
             "would_resolve": [p["thread_id"] for p in postable] + [r["thread_id"] for r in retry],
-            "skipped": skipped,
+            "degraded": degraded,
         }
         print(json.dumps(plan, ensure_ascii=False))
         return 0
@@ -351,7 +385,7 @@ def _cmd_act(args: argparse.Namespace) -> int:
     )
     print(
         f"resolution: {len(result['stamped'])} stamped, {len(result['resolved'])} resolved "
-        f"({len(result['retried'])} retried), {result['skipped']} skipped",
+        f"({len(result['retried'])} retried), {result['degraded']} degraded",
         file=sys.stderr,
     )
     return 0

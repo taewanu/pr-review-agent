@@ -38,7 +38,7 @@ Judge one question: **is the specific defect this Finding raised gone at HEAD?**
 
 ## Rationale
 
-Write one plain sentence describing what at HEAD resolves the defect (for a fix) or what still shows it (for not-fixed). It becomes the body of the daemon's `_Fixed:_` note, so describe what the file shows, not intent, and name the symbol or shape rather than narrating line numbers (the daemon links the location). Lead with the point; no em dash; no trailing period.
+Write one plain sentence describing what at HEAD resolves the defect (for a fix) or what still shows it (for not-fixed). It becomes the daemon's Resolution stamp on the Finding's own comment (ADR 0019), so describe what the file shows, not intent, and name the symbol or shape rather than narrating line numbers (the daemon links the location). Lead with the point, but never open with a forbidden prefix (`The`, `This`, `It`, `Worth`, `Suggest`, `Please`, `Consider`, `Maybe`): rephrase to start on the symbol or the change. No em dash; no trailing period.
 
 Examples:
 
@@ -53,7 +53,7 @@ Same voice as `review-agent-default`: confident, conversational, clear, concise,
 
 ## Hard constraints
 
-- **Shared voice rules**: no em dash, no forbidden opener, no task-scoped ref. Defined in `review-agent-default` (§Prose style, §Hard constraints) and hard-enforced post-hoc by `daemon/voice.py` on the note the daemon posts; a violation fails the batch, so honor them: periods and commas instead of em dashes, no `Slice N` / `Phase N` / `Story #N` / `PRD N` (ADR / RFC / ISO numbers are fine).
+- **Shared voice rules**: no em dash, no forbidden opener, no task-scoped ref. Defined in `review-agent-default` (§Prose style, §Hard constraints) and checked post-hoc by `daemon/voice.py`. A violating rationale does not block the resolve: the daemon degrades it to a generic stand-in and still resolves the thread (ADR 0019, #168), so the cost of a violation is your specific evidence being dropped from the stamp. Honor the rules to keep your own wording: periods and commas instead of em dashes, no `Slice N` / `Phase N` / `Story #N` / `PRD N` (ADR / RFC / ISO numbers are fine).
 - **Judge one Finding.** This invocation gets exactly one Finding; emit exactly one verdict.
 - **No prose after the fence.** Anything after the closing ` ``` ` is ignored by the pipeline.
 - **Evidence, never intent.** "`foo()` still present at the call site" is fine; "you forgot to..." is not.
