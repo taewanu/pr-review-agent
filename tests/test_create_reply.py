@@ -173,12 +173,21 @@ def _find(calls: list[tuple[str, str]], needle: str) -> tuple[str, str] | None:
     return next((c for c in calls if needle in c[0]), None)
 
 
-def _threads(finding_id: str, body: str, thread_id: str | None = None) -> list[dict]:
+def _threads(
+    finding_id: str,
+    body: str,
+    thread_id: str | None = None,
+    comment_node_id: str | None = None,
+) -> list[dict]:
     """A minimal --threads payload carrying one parent Finding body, keyed by
     the comment id a non-claim reply's `in_reply_to_id` points at. `thread_id`
     is the GraphQL review-thread node id reply-pr.sh joins in for resolution
-    (#75); omit it to model a thread the reviewThreads map could not resolve."""
+    (#75); `comment_node_id` is the Finding comment's own GraphQL node id, joined
+    in for the GraphQL resolution stamp (#163). Omit either to model a thread the
+    reviewThreads map could not resolve."""
     pf = {"comment_id": finding_id, "body": body}
+    if comment_node_id is not None:
+        pf["comment_node_id"] = comment_node_id
     thread: dict = {
         "parent_finding": pf,
         "operator_reply": {"comment_id": "222", "body": "..."},
@@ -507,7 +516,7 @@ def test_resolve_failure_is_best_effort_exit_zero():
     result, calls = _run(
         _raw([_reply()]),
         fail_ops=["resolveReviewThread"],
-        threads=_threads("111", "F", thread_id="PRRT_x"),
+        threads=_threads("111", "F", thread_id="PRRT_x", comment_node_id="PRRC_x"),
     )
     assert result.returncode == 0, result.stderr
     assert _find(calls, "/replies") is not None, "reply still posts"
@@ -515,64 +524,98 @@ def test_resolve_failure_is_best_effort_exit_zero():
 
 
 # ---------- #159 / ADR 0019: a resolving reply also stamps the Finding comment ----------
+# #163: the stamp is written via the same GraphQL updatePullRequestReviewComment
+# mutation the commit-driven path uses, keyed on the Finding comment's node id
+# (joined in by reply-pr.sh). The bodiless sentinel PATCH stays on REST, so the
+# stamp call is detected by the mutation name, never by `--method PATCH`.
 
 RESOLVED_SENTINEL = create_reply.resolution.RESOLUTION_SENTINEL
+FINDING_NODE_ID = "PRRC_kwDOcomment111"
 
 
-def _patch_body(calls: list[tuple[str, str]]) -> str | None:
-    patch = _find(calls, "--method PATCH")
-    return json.loads(patch[1])["body"] if patch is not None else None
+def _stamp_call(calls: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """The GraphQL resolution-stamp write. The body rides in argv (`-f body=…`),
+    not stdin, so callers assert against the argv record."""
+    return _find(calls, "updatePullRequestReviewComment")
 
 
-def test_confirmed_stamps_the_finding_in_place():
+def test_confirmed_stamps_the_finding_via_graphql_node_id():
     # A confirmed verdict resolves the thread AND edits the Finding's own comment to
-    # append the single resolution stamp (ADR 0019), on top of the threaded ack.
+    # append the single resolution stamp (ADR 0019), on top of the threaded ack. The
+    # stamp goes through GraphQL keyed on the comment node id (#163), unified with
+    # the commit-driven path — never a REST PATCH.
     result, calls = _run(
         _raw([_reply()]),
-        threads=_threads("111", f"Unbounded loop.\n\n{create_reply.MARKER}", thread_id="PRRT_c"),
+        threads=_threads(
+            "111",
+            f"Unbounded loop.\n\n{create_reply.MARKER}",
+            thread_id="PRRT_c",
+            comment_node_id=FINDING_NODE_ID,
+        ),
     )
     assert result.returncode == 0, result.stderr
     assert _resolve_call(calls) is not None, "confirmed resolves the thread"
-    patch = _find(calls, "--method PATCH")
-    assert patch is not None and "pulls/comments/111" in patch[0], "the Finding comment is stamped"
-    body = _patch_body(calls)
-    assert "✅ _Resolved_: confirmed fixed by the author" in body
-    assert body.endswith(RESOLVED_SENTINEL)
+    stamp = _stamp_call(calls)
+    assert stamp is not None, "the Finding comment is stamped via GraphQL"
+    assert f"commentId={FINDING_NODE_ID}" in stamp[0], "stamp is keyed on the comment node id"
+    assert "✅ _Resolved_: confirmed fixed by the author" in stamp[0]
+    assert RESOLVED_SENTINEL in stamp[0]
     # The edit appends below the original body, never clobbers it.
-    assert body.startswith("Unbounded loop.")
+    assert "Unbounded loop." in stamp[0]
+    assert _find(calls, "--method PATCH") is None, "the stamp is GraphQL, not a REST PATCH"
 
 
 def test_withdrawn_stamp_carries_its_own_rationale():
     result, calls = _run(
         _raw([_question(mode="withdrawn")]),
-        threads=_threads("111", "Off-by-one.", thread_id="PRRT_w"),
+        threads=_threads("111", "Off-by-one.", thread_id="PRRT_w", comment_node_id=FINDING_NODE_ID),
     )
     assert result.returncode == 0, result.stderr
-    body = _patch_body(calls)
-    assert body is not None and "withdrawn by the author as a false positive" in body
+    stamp = _stamp_call(calls)
+    assert stamp is not None and "withdrawn by the author as a false positive" in stamp[0]
+
+
+def test_confirmed_without_node_id_skips_stamp_but_still_resolves():
+    # Degraded reviewThreads query: the thread id mapped but the comment node id did
+    # not. The stamp is skipped (best-effort, like the no-thread-id resolve skip), yet
+    # the reply still posts and the thread still resolves.
+    result, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_n"))
+    assert result.returncode == 0, result.stderr
+    assert _find(calls, "/replies") is not None, "the reply still posts"
+    assert _resolve_call(calls) is not None, "the thread still resolves"
+    assert _stamp_call(calls) is None, "no node id -> the stamp is skipped"
 
 
 def test_resolving_reply_does_not_re_stamp_an_already_stamped_finding():
     # Re-run safety: the Finding comment already carries a stamp (its earlier resolve
     # had dropped), so append_stamp returns None and no second edit is made.
     already = f"Off-by-one.\n\n✅ _Resolved_: confirmed fixed by the author\n\n{RESOLVED_SENTINEL}"
-    _, calls = _run(_raw([_reply()]), threads=_threads("111", already, thread_id="PRRT_c"))
-    assert _find(calls, "--method PATCH") is None, "an already-stamped Finding is not re-edited"
+    _, calls = _run(
+        _raw([_reply()]),
+        threads=_threads("111", already, thread_id="PRRT_c", comment_node_id=FINDING_NODE_ID),
+    )
+    assert _stamp_call(calls) is None, "an already-stamped Finding is not re-edited"
 
 
 def test_non_resolving_verdict_leaves_no_stamp():
     # pushback keeps the Finding live, so no resolution stamp is written.
     _, calls = _run(
-        _raw([_reply(mode="pushback")]), threads=_threads("111", "F", thread_id="PRRT_p")
+        _raw([_reply(mode="pushback")]),
+        threads=_threads("111", "F", thread_id="PRRT_p", comment_node_id=FINDING_NODE_ID),
     )
-    assert _find(calls, "--method PATCH") is None, "a non-resolving verdict leaves no stamp"
+    assert _stamp_call(calls) is None, "a non-resolving verdict leaves no stamp"
 
 
 def test_resolve_skipped_when_reply_post_fails():
     # If the reply POST fails, nothing lands and the next cycle retries; the thread
     # must not be resolved off a reply that never posted.
-    _, calls = _run(_raw([_reply()]), gh_exit=1, threads=_threads("111", "F", thread_id="PRRT_x"))
+    _, calls = _run(
+        _raw([_reply()]),
+        gh_exit=1,
+        threads=_threads("111", "F", thread_id="PRRT_x", comment_node_id=FINDING_NODE_ID),
+    )
     assert _resolve_call(calls) is None, "no resolve when the reply never posted"
+    assert _stamp_call(calls) is None, "no stamp when the reply never posted"
 
 
 # --- Detached posting (#159) ------------------------------------------------
