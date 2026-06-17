@@ -62,7 +62,7 @@ The background job is invisible and bound to this checkout's working tree, so ke
 
 Two files at the repo root:
 
-- **`.env`** (required): repos, GitHub user, poll interval, opt-out label, optional Slack webhook. See `templates/.env.example`.
+- **`.env`** (required): repos, GitHub user, poll interval, review concurrency, opt-out label, optional Slack webhook. See `templates/.env.example`.
 - **`.pr-review.yaml`** (optional): language, agents, path filters, per-path instructions, max findings. See `templates/.pr-review.example.yaml`.
 
 V1 only reviews PRs in repos where you've checked in the `.claude/agents/` and `.claude/commands/` files (forks of this repo have them by default). See [ADR 0004](docs/adr/0004-own-pr-review-default.md).
