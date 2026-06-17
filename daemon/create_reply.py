@@ -262,7 +262,13 @@ def patch_finding(owner: str, repo: str, finding_id: str, body: str) -> tuple[in
     non-claim thread. The sentinel rides in a comment we own (the parent
     Finding), invisible in rendered markdown, so the next polling cycle's
     detection skips the reply. Same idiom as lib.sh's status-comment edit; body
-    is the full replacement, so callers pass the captured body plus footer."""
+    is the full replacement, so callers pass the captured body plus footer.
+
+    Keyed on the REST numeric comment id, so this stays usable even on a cycle
+    where the reviewThreads GraphQL read failed and no node id was mapped. The
+    resolution stamp moved to the GraphQL write (resolution.update_review_comment,
+    #163) to share one transport with the commit path; the sentinel stays here on
+    REST so acknowledgment dedup never depends on that read succeeding."""
     payload = json.dumps({"body": body})
     endpoint = f"repos/{owner}/{repo}/pulls/comments/{finding_id}"
     proc = subprocess.run(
@@ -319,11 +325,13 @@ def main() -> int:
     # Parent Finding bodies keyed by comment id (== a reply's in_reply_to_id),
     # so a non-claim PATCH appends the sentinel to the captured body with no GET.
     # thread_ids carries the GraphQL review-thread node id reply-pr.sh joined in
-    # (#75), keyed the same way, so a settled verdict resolves its thread. A
-    # thread whose id could not be mapped (degraded reviewThreads query) is
-    # absent here and skips resolution.
+    # (#75) and finding_node_ids the Finding comment's own node id (#163), both
+    # keyed the same way: a settled verdict resolves its thread and stamps its
+    # Finding via GraphQL. A thread whose ids could not be mapped (degraded
+    # reviewThreads query) is absent here and skips resolution.
     finding_bodies: dict[str, str] = {}
     thread_ids: dict[str, str] = {}
+    finding_node_ids: dict[str, str] = {}
     if args.threads:
         for t in json.loads(Path(args.threads).read_text()):
             pf = t.get("parent_finding") or {}
@@ -332,6 +340,8 @@ def main() -> int:
                 finding_bodies[str(cid)] = pf.get("body") or ""
                 if t.get("thread_id"):
                     thread_ids[str(cid)] = t["thread_id"]
+                if pf.get("comment_node_id"):
+                    finding_node_ids[str(cid)] = pf["comment_node_id"]
 
     replies = data["replies"]
     fix = sum(1 for r in replies if r["bucket"] == "fix_claim")
@@ -391,26 +401,31 @@ def main() -> int:
         """Stamp the settled Finding's comment resolved, then resolve its thread (#75,
         ADR 0019). Stamp-then-resolve matches the commit-driven order, so the trace
         lands before the thread collapses; both are best-effort and independent (a
-        missing parent body skips the stamp, a missing thread id skips the resolve).
-        The resolve is not gated on the stamp: the threaded ack already records the
-        outcome, and a stamped-but-open thread is re-resolved by the commit path's
-        retry."""
+        missing parent body or node id skips the stamp, a missing thread id skips the
+        resolve). The resolve is not gated on the stamp: the threaded ack already
+        records the outcome, and a stamped-but-open thread is re-resolved by the commit
+        path's retry. The stamp goes through the same GraphQL mutation the commit path
+        uses, keyed on the Finding comment's node id (#163), so a single transport
+        owns the stamp write across both resolution drivers."""
         nonlocal resolve_ok, stamp_ok
         fid = str(reply["in_reply_to_id"])
         base = finding_work.get(fid)
+        node_id = finding_node_ids.get(fid)
         if base is None:
             print(f"no parent body for finding {fid}; skipping stamp", file=sys.stderr)
+        elif node_id is None:
+            print(f"no comment node id for finding {fid}; skipping stamp", file=sys.stderr)
         else:
             stamp = resolution.build_stamp(STAMP_RATIONALE[reply["mode"]], None)
             new_body = resolution.append_stamp(base, stamp)
             if new_body is not None:  # None -> already stamped (a re-run): no second edit
-                rc, err = patch_finding(args.owner, args.repo, fid, new_body)
+                rc, err = resolution.update_review_comment(node_id, new_body)
                 if rc == 0:
                     finding_work[fid] = new_body
                     stamp_ok += 1
                 else:
                     print(
-                        f"resolution-stamp PATCH failed for finding {fid}: {err.strip()}",
+                        f"resolution-stamp update failed for finding {fid}: {err.strip()}",
                         file=sys.stderr,
                     )
         tid = thread_ids.get(fid)

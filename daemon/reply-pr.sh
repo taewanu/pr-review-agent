@@ -94,12 +94,13 @@ fi
 
 log_info "$THREAD_COUNT unaddressed reply thread(s)"
 
-# One GraphQL read maps each Reply thread's PRRT_ node id back from its comment
-# databaseIds (the Finding the operator replied to is the thread root, so
-# parent_finding.comment_id appears in that map), so a settled verdict can resolve
-# its thread (#75). Best-effort: on failure (or a thread past the first-100 page)
-# thread_id stays empty and create_reply.py posts the ack but skips resolution,
-# rather than failing the reply.
+# One GraphQL read maps each Reply thread's comment databaseIds to two node ids:
+# the thread's PRRT_ id (so a settled verdict can resolve its thread, #75) and
+# each comment's own id (so the resolution stamp writes via the same GraphQL
+# mutation the commit path uses, #163). The Finding the operator replied to is the
+# thread root, so parent_finding.comment_id appears in both maps. Best-effort: on
+# failure (or a thread past the first-100 page) both stay empty and create_reply.py
+# posts the ack but skips resolution and the stamp, rather than failing the reply.
 gql_err="$(mktemp -t pr-review-reply-gql.XXXXXX)"
 # $owner/$repo/$pr are GraphQL variables, not shell vars; keep them literal.
 # shellcheck disable=SC2016
@@ -108,7 +109,7 @@ if gql_response="$(gh api graphql \
     repository(owner:$owner,name:$repo){
       pullRequest(number:$pr){
         reviewThreads(first:100){
-          nodes{ id comments(first:50){ nodes{ databaseId } } }
+          nodes{ id comments(first:50){ nodes{ databaseId id } } }
         }
       }
     }
@@ -116,8 +117,13 @@ if gql_response="$(gh api graphql \
   thread_map="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[]
          | .id as $tid | .comments.nodes[]
          | {key: (.databaseId | tostring), value: $tid}] | from_entries' <<<"$gql_response")"
-  THREADS_JSON="$(jq --argjson map "$thread_map" \
-    'map(.thread_id = ($map[.parent_finding.comment_id] // null))' <<<"$THREADS_JSON")"
+  comment_node_map="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+         | .comments.nodes[]
+         | {key: (.databaseId | tostring), value: .id}] | from_entries' <<<"$gql_response")"
+  THREADS_JSON="$(jq --argjson map "$thread_map" --argjson cmap "$comment_node_map" \
+    'map(.thread_id = ($map[.parent_finding.comment_id] // null)
+       | .parent_finding.comment_node_id = ($cmap[.parent_finding.comment_id] // null))' \
+    <<<"$THREADS_JSON")"
 else
   log_err "reviewThreads query failed; thread resolution skipped this cycle: $(<"$gql_err")"
 fi
