@@ -209,6 +209,56 @@ def test_all_open_still_enforces_open_and_ownership():
     assert [c["thread_id"] for c in out] == ["PRRT_keep"]
 
 
+# ---------- untouched_cap broadening (#172) ----------
+
+
+def test_untouched_excluded_by_default():
+    # Default untouched_cap=0 reproduces the old touched-only behavior: a fix that
+    # landed off the flagged line is never judged.
+    assert select_candidates([_thread(original_line=99)], DIFF, "operator") == []
+
+
+def test_untouched_cap_admits_off_line_fix():
+    # #172 regression (sounds-abroad#119 shape): the Finding sits at an untouched
+    # line, but the increment edited its file elsewhere. cap >= 1 now judges it.
+    out = select_candidates([_thread(original_line=99)], DIFF, "operator", untouched_cap=1)
+    assert [c["thread_id"] for c in out] == ["PRRT_1"]
+
+
+def test_touched_judged_even_when_cap_admits_untouched():
+    threads = [
+        _thread(thread_id="PRRT_touched", original_line=10),
+        _thread(thread_id="PRRT_untouched", original_line=99),
+    ]
+    out = select_candidates(threads, DIFF, "operator", untouched_cap=1)
+    assert {c["thread_id"] for c in out} == {"PRRT_touched", "PRRT_untouched"}
+
+
+def test_untouched_in_touched_file_ordered_first():
+    # Both lines untouched; the cap of 1 must keep the thread whose file the
+    # increment opened (the stronger fixed signal), not the unrelated one, and the
+    # input order (unrelated first) must not decide it.
+    threads = [
+        _thread(thread_id="PRRT_other_file", path="daemon/other.sh", original_line=99),
+        _thread(thread_id="PRRT_same_file", path="daemon/lib.sh", original_line=99),
+    ]
+    out = select_candidates(threads, DIFF, "operator", untouched_cap=1)
+    assert [c["thread_id"] for c in out] == ["PRRT_same_file"]
+
+
+def test_untouched_cap_truncates_overflow():
+    threads = [_thread(thread_id=f"PRRT_{i}", original_line=99) for i in range(4)]
+    out = select_candidates(threads, DIFF, "operator", untouched_cap=2)
+    assert [c["thread_id"] for c in out] == ["PRRT_0", "PRRT_1"]
+
+
+def test_all_open_lifts_the_cap():
+    # Force-push path: cap=0, yet all_open judges every open untouched thread.
+    threads = [_thread(thread_id=f"PRRT_{i}", original_line=99) for i in range(3)]
+    out = select_candidates(threads, DIFF, "operator", all_open=True, untouched_cap=0)
+    assert len(out) == 3
+
+
 # ---------- parse_verdict (safe-biased) ----------
 
 

@@ -1,7 +1,7 @@
 # ADR 0017: Commit-driven thread resolution
 
 Date: 2026-06-13
-Status: Accepted. The `_Fixed:_` note (Decision point 3, safety layer 2) is superseded by ADR 0019 (#159), which records the resolution as an in-place Resolution stamp instead. The rest of this ADR (candidate-by-incremental-diff, the safe-biased per-thread judgment, best-effort resolve) stands.
+Status: Accepted, with two amendments. The `_Fixed:_` note (Decision point 3, safety layer 2) is superseded by ADR 0019 (#159), which records the resolution as an in-place Resolution stamp instead. Candidate selection (Decision point 1) is widened by #172: the incremental-diff filter still always judges touched threads, but also judges up to a bounded number of untouched ones, retiring the flagged-line false-negative the original Boundary accepted. The safe-biased per-thread judgment and best-effort resolve stand.
 
 ## Context
 
@@ -21,7 +21,9 @@ The core risk shapes the whole design: auto-resolving a still-live Finding. A la
 
 Add a commit-driven thread-resolution stage on the review path (it runs on a new HEAD SHA, where a commit-borne fix appears), built from three safety layers over a best-effort failure model.
 
-1. **Candidate by incremental diff.** A candidate is an open, daemon-owned review thread whose anchor line falls inside the current increment's diff (`last_reviewed_sha..HEAD`; the full PR diff on force-push or rebase). Tying candidacy to *this* increment, rather than to GitHub's sticky "outdated" flag, makes the stage idempotent: a fixing commit judges each thread it touched exactly once, and an unfixed thread is re-judged only when a later commit touches it again. It needs no new persistence — the review path already computes this diff.
+1. **Candidate by incremental diff, widened past the flagged line (#172).** A candidate is an open, daemon-owned review thread not yet stamped. A thread whose anchor line falls inside the current increment's diff (`last_reviewed_sha..HEAD`; the full PR diff on force-push or rebase) is always judged. Tying that to *this* increment, rather than to GitHub's sticky "outdated" flag, makes the touched case idempotent: a fixing commit judges each thread it touched exactly once, and an unfixed thread is re-judged only when a later commit touches it again. It needs no new persistence, since the review path already computes this diff.
+
+   Beyond the touched threads, up to `RESOLVE_UNTOUCHED_CAP` threads the increment did not touch are also judged, ordered so threads whose *file* the increment opened come first. This catches a fix landing away from the flagged line (a missing test added in a new file), the false-negative #119 hit in practice. The "re-judge every open thread" option was first rejected for paying an agent call on untouched Findings; the cap is what bounds that cost, turning an unbounded re-judgment into a small, file-prioritized budget per tick.
 
 2. **Per-candidate judgment, safe-biased (safety layer 1).** For each candidate, a dedicated agent re-reads the Finding's location at HEAD on a fresh context and judges whether *that specific defect* is gone, returning a one-line rationale. It is separate from the Editor to keep that contract clean and to isolate and parallelize per-thread judgments. The judgment defaults to leave-open under any uncertainty, so errors fall toward the harmless side.
 
@@ -33,11 +35,11 @@ Add a commit-driven thread-resolution stage on the review path (it runs on a new
 
 ## Boundary
 
-This ADR decides commit-driven resolution only. It does not change the reply-driven path (#75), the Verdict vocabulary, the per-cycle disposition summary (#11, which stays reply-driven), or `voice.py`'s rules. It adds no cumulative per-PR counter (out of scope per #125). It accepts the flagged-line false-negative: a fix that lands away from the Finding's own line never makes its thread a candidate, so that thread stays open for the Operator to close by hand.
+This ADR decides commit-driven resolution only. It does not change the reply-driven path (#75), the Verdict vocabulary, the per-cycle disposition summary (#11, which stays reply-driven), or `voice.py`'s rules. It adds no cumulative per-PR counter (out of scope per #125). The flagged-line false-negative the first cut accepted (a fix landing away from the Finding's own line) is retired by #172's bounded broadening; a fix beyond the cap, or in a file the increment never opened, still falls back to a hand close.
 
 ## Consequences
 
 - A Finding fixed by a commit no longer blocks the merge or clutters the PR; the Operator gets the same hands-off resolution as the reply-driven path, with an audit note in place of a Verdict ack.
-- Each new SHA spends one judgment agent call per thread whose code changed in that increment, and zero on a no-op SHA. The incremental-diff filter bounds the cost.
+- Each new SHA spends one judgment agent call per touched thread, plus up to `RESOLVE_UNTOUCHED_CAP` for untouched open threads (#172). A SHA with open threads is therefore no longer free; the cap bounds that floor, and the file-touched-first ordering spends the budget on the likeliest fixes.
 - The stage runs under the Operator user token (ADR 0003), which can call `resolveReviewThread`. A future GitHub App pivot (v0.3.0) would gain the Checks API and could reshape the resolution surface; this design stays token-only and does not depend on it.
 - "Thread resolution" now carries two drivers — reply-driven (a Verdict) and commit-driven (a fix detected at HEAD, no reply) — recorded in CONTEXT.md.
