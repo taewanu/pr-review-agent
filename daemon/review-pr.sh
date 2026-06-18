@@ -134,12 +134,16 @@ resolution() {
   fi
 
   # Candidates to judge: open daemon threads, not yet noted, whose flagged line
-  # this increment touched. On a force-push/rebase the increment diff couldn't be
-  # computed (diff_scoped=0), so DIFF_FILE is the full PR diff, whose old side is
-  # the base branch, not the coordinate space the Findings' creation-side lines
-  # live in; take every open daemon thread there (ADR 0017 §1) rather than
-  # line-filter against the wrong side.
-  local select_args=(--threads "$threads_file" --diff "$DIFF_FILE" --operator "$OPERATOR")
+  # this increment touched, plus up to RESOLVE_UNTOUCHED_CAP threads whose fix may
+  # have landed away from the flagged line (#172, e.g. a missing test added in a
+  # new file). On a force-push/rebase the increment diff couldn't be computed
+  # (diff_scoped=0), so DIFF_FILE is the full PR diff, whose old side is the base
+  # branch, not the coordinate space the Findings' creation-side lines live in;
+  # take every open daemon thread there (ADR 0017 §1) rather than line-filter
+  # against the wrong side.
+  local untouched_cap="${RESOLVE_UNTOUCHED_CAP:-5}"
+  local select_args=(--threads "$threads_file" --diff "$DIFF_FILE" --operator "$OPERATOR"
+    --untouched-cap "$untouched_cap")
   if [[ $diff_scoped -eq 0 ]]; then
     select_args+=(--all-open)
   fi

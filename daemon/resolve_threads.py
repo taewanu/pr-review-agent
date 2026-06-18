@@ -12,12 +12,15 @@ wrongly-left-open fixed one is recoverable by a hand click (ADR 0017).
 
 Pure selection/format entry points (unit-tested without gh):
 
-  select_candidates: an open, daemon-owned thread, not yet carrying a resolution
-    stamp, whose Finding line this increment's diff touched. The line tested is the
-    thread's `originalLine` (its coordinate in the commit the Finding was posted
-    against), matched against the OLD side of `git diff LAST_SHA..HEAD`. GitHub's
-    GraphQL `line` is null exactly when a thread goes outdated, which is precisely
-    when its code changed (the case we must catch), so `line` is unusable here and
+  select_candidates: open, daemon-owned threads, not yet carrying a resolution
+    stamp, that a commit may have fixed. A thread whose Finding line this increment's
+    diff touched is always judged; up to `untouched_cap` threads whose line it did
+    not touch are judged too, since a fix can land away from the flagged line (#172,
+    e.g. a missing test added in a new file). The line tested is the thread's
+    `originalLine` (its coordinate in the commit the Finding was posted against),
+    matched against the OLD side of `git diff LAST_SHA..HEAD`. GitHub's GraphQL
+    `line` is null exactly when a thread goes outdated, which is precisely when its
+    code changed (the case we must catch), so `line` is unusable here and
     `originalLine` is the only surviving coordinate. An open, un-stamped Finding's
     code is untouched since it was posted (a prior increment would have judged it
     otherwise), so `originalLine` stays a valid old-side coordinate across ticks.
@@ -123,26 +126,35 @@ class IncrementDiff:
 
 
 def select_candidates(
-    threads: list[dict], diff: IncrementDiff, operator: str, all_open: bool = False
+    threads: list[dict],
+    diff: IncrementDiff,
+    operator: str,
+    all_open: bool = False,
+    untouched_cap: int = 0,
 ) -> list[dict]:
-    """Open, daemon-owned threads whose Finding line this increment touched.
+    """Open, daemon-owned threads of prior Findings the new HEAD might have fixed.
 
-    A candidate is the thread of a prior Finding the new HEAD might have fixed:
-      - open (not already resolved on GitHub),
-      - daemon-owned (root comment authored by the operator AND carrying the
-        Provenance marker, so an Operator's own manual comment never qualifies),
-      - not yet stamped (no resolution stamp), so a thread judged fixed on an earlier
-        tick is never re-judged or re-stamped; it goes to select_retry_threads,
-      - touched: its `original_line` (creation-side coordinate) falls inside an
-        old-side hunk of this increment's diff.
+    Every candidate is open (not resolved on GitHub), daemon-owned (root comment
+    authored by the operator AND carrying the Provenance marker, so an Operator's
+    own manual comment never qualifies), and not yet stamped (a thread judged fixed
+    on an earlier tick goes to select_retry_threads, never re-judged here).
 
-    `all_open` drops the touched test and takes every open, daemon-owned thread.
-    The review path sets it on a force-push or rebase, where the increment diff
-    can't be computed and the Findings' creation-side lines no longer share a
-    coordinate space with the full PR diff (ADR 0017 §1's "full PR diff" scope).
-    The has_resolution_stamp exclusion holds there too, so all_open never re-notes a thread.
+    Among those, a Finding is `touched` when its `original_line` (creation-side
+    coordinate) falls inside an old-side hunk of this increment's diff. Touched
+    threads are always judged: the increment changed the exact line the Finding
+    sits on, the strongest "maybe fixed" signal.
+
+    `untouched` threads are the #172 broadening: a fix can land away from the
+    flagged line (a missing test added in a new file, a guard added elsewhere), so
+    the touched test alone misses a whole class. We judge up to `untouched_cap` of
+    them, the cost guard bounding the extra fix-check calls per tick.
+
+    `all_open` lifts the cap and judges every open thread. The review path sets it
+    on a force-push or rebase, where the increment diff can't be computed and the
+    touched/untouched split is meaningless (ADR 0017 §1's "full PR diff" scope).
     """
-    candidates: list[dict] = []
+    touched: list[dict] = []
+    untouched: list[dict] = []
     for t in threads:
         if t.get("is_resolved"):
             continue
@@ -160,18 +172,35 @@ def select_candidates(
         start_line = t.get("original_start_line")
         if not isinstance(start_line, int):
             start_line = None
-        if not all_open and not diff.touched(path, line, start_line):
-            continue
-        candidates.append(
-            {
-                "thread_id": t["thread_id"],
-                "comment_id": t.get("root_comment_id"),
-                "path": path,
-                "line": line,
-                "finding_body": body,
-            }
+        entry = {
+            "thread_id": t["thread_id"],
+            "comment_id": t.get("root_comment_id"),
+            "path": path,
+            "line": line,
+            "finding_body": body,
+        }
+        if diff.touched(path, line, start_line):
+            touched.append(entry)
+        else:
+            untouched.append(entry)
+
+    effective_cap = len(untouched) if all_open else untouched_cap
+    # Judge file-touched threads first: a fix landing elsewhere in the Finding's
+    # own file is likelier than one in a file this increment never opened. Then
+    # truncate to the cost budget.
+    chosen_untouched: list[dict] = sorted(untouched, key=lambda e: e["path"] not in diff.ranges)[
+        :effective_cap
+    ]
+
+    dropped = len(untouched) - len(chosen_untouched)
+    if dropped > 0:
+        print(
+            f"resolution candidates: {len(touched)} touched + "
+            f"{len(chosen_untouched)} untouched judged, {dropped} untouched capped "
+            f"(untouched_cap={untouched_cap})",
+            file=sys.stderr,
         )
-    return candidates
+    return touched + chosen_untouched
 
 
 def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
@@ -351,7 +380,9 @@ def post_and_resolve(
 def _cmd_select(args: argparse.Namespace) -> int:
     threads = json.loads(args.threads.read_text())
     diff = IncrementDiff.parse(args.diff.read_text())
-    candidates = select_candidates(threads, diff, args.operator, all_open=args.all_open)
+    candidates = select_candidates(
+        threads, diff, args.operator, all_open=args.all_open, untouched_cap=args.untouched_cap
+    )
     print(json.dumps(candidates, ensure_ascii=False))
     return 0
 
@@ -411,6 +442,12 @@ def main() -> int:
         "--all-open",
         action="store_true",
         help="take every open daemon thread, skipping the diff filter (force-push/rebase)",
+    )
+    p_select.add_argument(
+        "--untouched-cap",
+        type=int,
+        default=0,
+        help="max untouched threads to also judge per tick (#172 broadening; 0 = touched only)",
     )
     p_select.set_defaults(func=_cmd_select)
 
