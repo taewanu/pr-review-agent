@@ -1,7 +1,7 @@
 # ADR 0012: Version-first release naming
 
 Date: 2026-06-10
-Status: Accepted
+Status: Accepted (amended 2026-06-18)
 
 ## Context
 
@@ -30,3 +30,11 @@ From the next release on, the semver is the release's only name.
 - Git history carries two naming eras: `git tag` lists `phase-*` then `v*`. The roadmap's release table is the durable map for the first era.
 - CONTEXT.md's Version and Phase glossary entries are rewritten to match: Version gains the semver axis, Phase is marked historical.
 - If GitHub Releases are adopted later, `v0.A.B` tags sort and resolve naturally with default tooling (`gh release create v0.2.2 --generate-notes`).
+
+## Amendment (2026-06-18): GitHub Releases hold the detailed record
+
+GitHub Releases were adopted at `v0.2.2`, so the hedged "if adopted later" above is now settled, and two practices drifted from the original Decision. This amendment records the corrected convention.
+
+- The **GitHub Release body is the deep, per-issue record** of a shipped version: what broke, why, the fix, the ADR, the squash SHA. The roadmap (#88) keeps only a lean index per version (a theme line, the issue list, a link to the Release), so the two surfaces differ by depth rather than duplicating.
+- The Release body is organized `## Added` / `## Fixed` / `## Changed` / `## Trip-ups`. `Changed` extends the original three-section format for refactors and hygiene that add no capability and fix no bug.
+- The tag stays **annotated** (`git tag -a`, as the Decision already requires). Cut the tag first, then `gh release create v0.A.B --verify-tag` consumes it; `gh release create` on a missing tag mints a lightweight ref, which is how `v0.2.2`'s tag regressed.
