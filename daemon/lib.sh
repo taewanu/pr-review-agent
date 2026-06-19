@@ -488,9 +488,13 @@ bundle_operator_agents() {
 }
 
 # fetch_open_review_threads <owner> <repo> <pr-number>
-# Emits a JSON array of the PR's review threads shaped for resolve_threads.py:
-#   [{thread_id, is_resolved, root_author, root_body, root_comment_id, path,
-#     original_line, original_start_line, has_resolution_stamp}]
+# Emits a JSON array of the PR's review threads shaped for resolve_threads.py
+# and findings_index.py:
+#   [{thread_id, is_resolved, root_author, root_body, root_comment_id,
+#     root_comment_url, path, original_line, original_start_line,
+#     has_resolution_stamp}]
+# `root_comment_url` is the root comment's web URL, the per-entry link target for
+# the Status comment's findings index (ADR 0020); resolve_threads.py ignores it.
 # The root (oldest) comment is the Finding; resolve_threads.py filters to the
 # open, daemon-owned ones. `originalLine`, not `line`: GitHub nulls `line` exactly
 # when a thread goes outdated (its anchored code changed), the case commit-driven
@@ -515,7 +519,7 @@ fetch_open_review_threads() {
           reviewThreads(first:100){
             nodes{
               id isResolved path originalLine originalStartLine
-              comments(first:1){ nodes{ id author{ login } body } }
+              comments(first:1){ nodes{ id url author{ login } body } }
             }
           }
         }
@@ -531,6 +535,7 @@ fetch_open_review_threads() {
         root_author: (.comments.nodes[0].author.login // null),
         root_body: (.comments.nodes[0].body // ""),
         root_comment_id: (.comments.nodes[0].id // null),
+        root_comment_url: (.comments.nodes[0].url // null),
         path: .path,
         original_line: .originalLine,
         original_start_line: .originalStartLine,
@@ -606,13 +611,14 @@ status_scope_link() {
   fi
 }
 
-# render_status_comment <head-line> <scope-label> <file-count> <files>
-# Assembles the status-comment body (#60): header, diff scope (commit range +
-# file list, folded in <details> so a wide PR stays compact), and the marker
-# find_status_comment keys on. Scope only — never the review findings, which
-# would duplicate the Review object.
+# render_status_comment <head-line> <scope-label> <file-count> <files> [index-block]
+# Assembles the status-comment body (#60): header, the optional findings index
+# (ADR 0020), the diff scope (commit range + file list, folded in <details> so a
+# wide PR stays compact), and the marker find_status_comment keys on. The index is
+# a pointer view (links + state), never finding bodies, so it duplicates nothing in
+# the Review object. Omit the index arg for the pre-review "Reviewing…" render.
 render_status_comment() {
-  local head_line="$1" scope_label="$2" file_count="$3" files="$4"
+  local head_line="$1" scope_label="$2" file_count="$3" files="$4" index_block="${5:-}"
   local noun="files"
   [[ "$file_count" == "1" ]] && noun="file"
   local bullets
@@ -620,9 +626,12 @@ render_status_comment() {
   # `$` is sed's end-of-line, not a shell expansion.
   # shellcheck disable=SC2016
   bullets="$(printf '%s\n' "$files" | sed '/^[[:space:]]*$/d; s/^/- `/; s/$/`/')"
+  local body="$head_line"$'\n\n'"_Scope: ${scope_label}_"
+  [[ -n "$index_block" ]] && body+=$'\n\n'"$index_block"
+  body+=$'\n\n'"<details><summary>${file_count} ${noun}</summary>"$'\n\n'"${bullets}"$'\n\n</details>'
   # Visible Provenance tag (ADR 0010), then the hidden Status marker last.
-  printf '%s\n\n_Scope: %s_\n\n<details><summary>%s %s</summary>\n\n%s\n\n</details>\n\n%s\n\n%s\n' \
-    "$head_line" "$scope_label" "$file_count" "$noun" "$bullets" "$PROVENANCE_TAG" "$STATUS_COMMENT_MARKER"
+  body+=$'\n\n'"${PROVENANCE_TAG}"$'\n\n'"${STATUS_COMMENT_MARKER}"
+  printf '%s\n' "$body"
 }
 
 # diff_paths <unified-diff-file>
