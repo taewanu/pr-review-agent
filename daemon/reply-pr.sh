@@ -190,7 +190,9 @@ reply_rc=0
 (
   cd "$SCRATCH"
   run_with_timeout "$REPLY_AGENT_TIMEOUT" \
-    claude -p "/reply-pr $PR_URL --threads $THREADS_BASENAME" >"$RAW_FILE"
+    claude -p "/reply-pr $PR_URL --threads $THREADS_BASENAME" \
+    --output-format stream-json --verbose |
+    python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE"
 ) || reply_rc=$?
 if [[ "$reply_rc" -eq "$TIMEOUT_EXIT" ]]; then
   log_failure "reply-timeout" "$PR_URL" "$HEAD_OID" \
