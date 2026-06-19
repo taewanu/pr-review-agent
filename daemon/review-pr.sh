@@ -172,7 +172,9 @@ resolution() {
       (
         cd "$SCRATCH"
         run_with_timeout "$fix_check_timeout" \
-          claude -p "/judge-fix $PR_URL --finding $(basename "$finding_file")" >"$judge_raw"
+          claude -p "/judge-fix $PR_URL --finding $(basename "$finding_file")" \
+          --output-format stream-json --verbose |
+          python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$judge_raw"
       ) || rc=$?
       if [[ "$rc" -ne 0 || ! -s "$judge_raw" ]]; then
         log_info "fix-check failed for ${path}:${line} (${tid}), rc=${rc}; leaving open"
@@ -382,7 +384,9 @@ review_rc=0
 (
   cd "$SCRATCH"
   run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-    claude -p "/review-pr $PR_URL --diff $NUMBERED_BASENAME" >"$RAW_FILE"
+    claude -p "/review-pr $PR_URL --diff $NUMBERED_BASENAME" \
+    --output-format stream-json --verbose |
+    python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE"
 ) || review_rc=$?
 if [[ "$review_rc" -eq "$TIMEOUT_EXIT" ]]; then
   log_failure "review-timeout" "$PR_URL" "$HEAD_OID" \
@@ -417,7 +421,9 @@ if [[ "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
   (
     cd "$SCRATCH"
     run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
-      claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" >"$EDIT_RAW_FILE"
+      claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" \
+      --output-format stream-json --verbose |
+      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE"
   ) || edit_rc=$?
   if [[ "$edit_rc" -eq "$TIMEOUT_EXIT" ]]; then
     log_failure "edit-timeout" "$PR_URL" "$HEAD_OID" "editor agent exceeded ${EDITOR_AGENT_TIMEOUT}s"

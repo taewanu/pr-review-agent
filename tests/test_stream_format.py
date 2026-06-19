@@ -1,0 +1,175 @@
+"""Tests for daemon/stream_format.py, the live `claude -p` progress view (#176).
+
+The formatter sits in the pipe between the agent and the parser. Two contracts
+matter and are pinned here:
+
+  1. Reconstruction is faithful. The terminal `result` event's `result` field is
+     written verbatim to --raw-out, so extract_json.py / resolve_threads.py /
+     create_reply.py read the same bytes text-mode gave them. A truncated stream
+     (no result event, e.g. a killed-on-timeout agent) leaves --raw-out empty, so
+     the call site's `[[ -s ]]` check still fires.
+  2. Exit-code discipline. The call sites pipe under `set -o pipefail`, so the
+     pipeline can only surface claude's own status (142 on the timeout backstop) if
+     the formatter exits 0. The shell test below pins that end to end.
+
+The render layer is editorial, not load-bearing: tool actions and the agent's prose
+get a line, reasoning/hook/rate-limit noise is dropped.
+"""
+
+from __future__ import annotations
+
+import io
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "daemon"))
+
+import stream_format as sf  # noqa: E402
+
+TIMEOUT_EXIT = 142
+
+
+def _assistant(*blocks: dict) -> dict:
+    return {"type": "assistant", "message": {"content": list(blocks)}}
+
+
+# --- render_event: which events earn a line ---------------------------------
+
+
+def test_tool_use_renders_name_and_key_arg():
+    line = sf.render_event(
+        _assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "a/b.py"}})
+    )
+    assert line == "→ Read: a/b.py"
+
+
+def test_result_renders_closing_summary():
+    line = sf.render_event(
+        {"type": "result", "num_turns": 3, "duration_ms": 8200, "total_cost_usd": 0.1914}
+    )
+    assert line == "done · 3 turns · 8s · $0.191"
+
+
+def test_text_block_is_shown_truncated():
+    line = sf.render_event(_assistant({"type": "text", "text": "  reviewing the diff  "}))
+    assert line == "reviewing the diff"
+
+
+def test_thinking_block_is_skipped():
+    assert sf.render_event(_assistant({"type": "thinking", "thinking": "secret reasoning"})) is None
+
+
+def test_empty_text_block_is_skipped():
+    assert sf.render_event(_assistant({"type": "text", "text": "   "})) is None
+
+
+def test_noise_event_types_are_skipped():
+    for evt in (
+        {"type": "system", "subtype": "init"},
+        {"type": "system", "subtype": "hook_started"},
+        {"type": "user", "message": {"content": [{"type": "tool_result"}]}},
+        {"type": "rate_limit_event"},
+    ):
+        assert sf.render_event(evt) is None
+
+
+def test_multiple_blocks_join_one_per_line():
+    line = sf.render_event(
+        _assistant(
+            {"type": "thinking", "thinking": "x"},
+            {"type": "tool_use", "name": "Grep", "input": {"pattern": "TODO"}},
+            {"type": "text", "text": "found it"},
+        )
+    )
+    assert line == "→ Grep: TODO\nfound it"
+
+
+# --- helpers ----------------------------------------------------------------
+
+
+def test_summarize_tool_first_present_key_wins():
+    # Bash has no file_path, so the loop falls through to command.
+    block = {"name": "Bash", "input": {"command": "gh pr diff 1", "timeout": 5}}
+    assert sf._summarize_tool(block) == "Bash: gh pr diff 1"
+
+
+def test_summarize_tool_unknown_tool_shows_name_only():
+    assert sf._summarize_tool({"name": "MysteryTool", "input": {"foo": "bar"}}) == "MysteryTool"
+
+
+def test_truncate_flattens_and_caps():
+    assert sf._truncate("a\n  b   c") == "a b c"
+    capped = sf._truncate("x" * 200, limit=80)
+    assert len(capped) == 80
+    assert capped.endswith("…")
+
+
+# --- run(): the reconstruction contract -------------------------------------
+
+
+def _ndjson(*events: dict) -> io.StringIO:
+    import json
+
+    return io.StringIO("\n".join(json.dumps(e) for e in events) + "\n")
+
+
+def test_run_writes_result_field_to_raw_out(tmp_path):
+    raw = tmp_path / "raw.txt"
+    fence = '```json\n{"summary": "ok", "comments": []}\n```'
+    rc = sf.run(
+        _ndjson(_assistant({"type": "text", "text": "done"}), {"type": "result", "result": fence}),
+        raw,
+    )
+    assert rc == 0
+    assert raw.read_text() == fence
+
+
+def test_run_truncated_stream_leaves_raw_out_empty(tmp_path):
+    # No result event (agent killed mid-run): raw-out exists but is empty, so the
+    # call site's empty-stdout check fires instead of parsing partial output.
+    raw = tmp_path / "raw.txt"
+    raw.write_text("stale contents from a prior run")
+    rc = sf.run(
+        _ndjson(_assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "x"}})), raw
+    )
+    assert rc == 0
+    assert raw.read_text() == ""
+
+
+def test_run_skips_malformed_lines(tmp_path):
+    raw = tmp_path / "raw.txt"
+    stream = io.StringIO('not json\n\n{"type":"result","result":"clean"}\n')
+    assert sf.run(stream, raw) == 0
+    assert raw.read_text() == "clean"
+
+
+def test_run_ignores_non_string_result(tmp_path):
+    raw = tmp_path / "raw.txt"
+    rc = sf.run(_ndjson({"type": "result", "result": None}), raw)
+    assert rc == 0
+    assert raw.read_text() == ""
+
+
+# --- the pipe-under-pipefail timeout invariant (shell level) ----------------
+
+
+def _piped(snippet: str) -> subprocess.CompletedProcess:
+    lib = REPO_ROOT / "daemon" / "lib.sh"
+    return subprocess.run(
+        ["bash", "-c", f"set -euo pipefail; source {lib}; {snippet}"],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_timeout_propagates_through_formatter_pipe(tmp_path):
+    # A killed agent must surface as 142 through `claude … | stream_format`, not be
+    # masked by the formatter's own exit. pipefail carries the perl-alarm status
+    # because the formatter drains EOF and exits 0.
+    raw = tmp_path / "raw.txt"
+    fmt = REPO_ROOT / "daemon" / "stream_format.py"
+    result = _piped(f"run_with_timeout 1 sleep 10 | python3 {fmt} --raw-out {raw}")
+    assert result.returncode == TIMEOUT_EXIT, result.stderr
+    assert raw.read_text() == ""
