@@ -69,8 +69,8 @@ The per-repo configuration file the daemon reads on each PR-tick. Single file; c
 _Avoid_: REVIEW.md (Anthropic Code Review's pattern uses a separate markdown file; ours bundles prose into the YAML `instructions:` field)
 
 **Status comment**:
-A pr-review-agent-owned issue comment on the PR, edited in place, showing the review scope (#60). One per PR, mutable. Identified by the Status marker so a re-review edits it rather than posting a second. Carries scope only, never findings (those live in the Review object).
-_Avoid_: ACK comment, review (it is not a Review object), status check (a GitHub commit status, unrelated)
+A pr-review-agent-owned issue comment on the PR, edited in place, showing the review scope plus a cumulative findings index (#60, ADR 0020). One per PR, mutable. Identified by the Status marker so a re-review edits it rather than posting a second. The index lists each Finding by location linked to its Inline comment, with the Finding's open/resolved state read from the thread each tick and a `total · open · resolved` rollup; it carries no Finding *body*, which stays in the Review object (one source per fact). The headline shows scope, not a per-SHA finding count. The PR-level twin of the Resolution stamp: both are in-place derived state, the stamp per thread, the index per PR.
+_Avoid_: ACK comment, review (it is not a Review object), status check (a GitHub commit status, unrelated), ledger (the findings index is content of the Status comment, not a separate comment or term; ADR 0020 rejected a dedicated ledger artifact)
 
 **Sentinel**:
 Umbrella term for the hidden HTML-comment markers that drive dedup. A Sentinel is invisible in rendered markdown and lives in a comment body pr-review-agent owns. Two kinds: the Sha sentinel and the Reply sentinel.

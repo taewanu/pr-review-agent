@@ -6,11 +6,14 @@ It is emitted from sites that straddle the bash/Python boundary:
   - create_reply.py: the reply, via its own `MARKER`
   - resolve_threads.py: commit-driven resolution, matching the marker to tell a
     daemon Finding thread from an Operator's own comment, via `PROVENANCE_MARKER`
+  - findings_index.py: the Status comment index, matching the marker to count only
+    daemon Finding threads, via `PROVENANCE_MARKER`
 
 The bash sites share one constant (create-review.sh sources lib.sh), so the
-cross-language copies are create_reply.py's MARKER and resolve_threads.py's
-PROVENANCE_MARKER. This test pins every definition to the same canonical string,
-so a drift in any fails CI instead of shipping two different tags.
+cross-language copies are create_reply.py's MARKER and the PROVENANCE_MARKER in
+resolve_threads.py and findings_index.py. This test pins every definition to the
+same canonical string, so a drift in any fails CI instead of shipping two
+different tags (or, for findings_index, an index that silently matches nothing).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB_SH = REPO_ROOT / "daemon" / "lib.sh"
 CREATE_REPLY = REPO_ROOT / "daemon" / "create_reply.py"
 RESOLVE_THREADS = REPO_ROOT / "daemon" / "resolve_threads.py"
+FINDINGS_INDEX = REPO_ROOT / "daemon" / "findings_index.py"
 
 CANONICAL_TAG = "🤖 _pr-review-agent_"
 
@@ -54,6 +58,10 @@ def _resolve_threads_marker() -> str:
     return _load_constant(RESOLVE_THREADS, "resolve_threads", "PROVENANCE_MARKER")
 
 
+def _findings_index_marker() -> str:
+    return _load_constant(FINDINGS_INDEX, "findings_index", "PROVENANCE_MARKER")
+
+
 def test_lib_sh_tag_matches_canonical():
     assert _lib_sh_provenance_tag() == CANONICAL_TAG
 
@@ -66,6 +74,15 @@ def test_resolve_threads_marker_matches_canonical():
     assert _resolve_threads_marker() == CANONICAL_TAG
 
 
+def test_findings_index_marker_matches_canonical():
+    assert _findings_index_marker() == CANONICAL_TAG
+
+
 def test_bash_and_python_provenance_tags_agree():
     # The drift guard: every independent definition must stay identical.
-    assert _lib_sh_provenance_tag() == _create_reply_marker() == _resolve_threads_marker()
+    assert (
+        _lib_sh_provenance_tag()
+        == _create_reply_marker()
+        == _resolve_threads_marker()
+        == _findings_index_marker()
+    )

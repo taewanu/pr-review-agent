@@ -448,61 +448,87 @@ DROPPED_COMBO="${DROPPED_COMBO:-0}"
 
 jq -r '.summary' "$PAYLOAD_FILE" >"$SUMMARY_FILE"
 
-post_args=(
-  --owner "$BASE_OWNER"
-  --repo "$BASE_REPO"
-  --number "$PR_NUMBER"
-  --head-sha "$HEAD_OID"
-  --head-repo-url "$HEAD_REPO_URL"
-  --summary-file "$SUMMARY_FILE"
-  --anchored "$ANCHORED_FILE"
-  --unanchored "$UNANCHORED_FILE"
-  --dropped-combo "$DROPPED_COMBO"
-)
-if [[ $OWN_PR -eq 1 ]]; then
-  post_args+=(--own-pr)
-  log_step "submitting COMMENT review (own PR)"
-else
-  log_step "posting Pending review"
-fi
-if ! bash "$SCRIPT_DIR/create-review.sh" "${post_args[@]}" >"$POST_OUT" 2>"$POST_ERR"; then
-  cat "$POST_ERR" >&2
-  category="$(extract_category "$POST_ERR")"
-  reason="gh api POST failed"
-  if [[ "$category" == "pending-conflict" ]]; then
-    reason="existing pending review on PR — submit or cancel via UI before re-running"
+# New findings this tick: inline (anchored) plus relocated (unanchored). Zero
+# means the increment raised nothing new, so a posted review would be an empty
+# per-SHA object stacked on the PR (ADR 0020); skip the POST and let the status
+# index below carry the tick's effect (a resolution-only push still flips threads
+# resolved). unanchored_count also feeds the index's "outside the diff" pointer.
+anchored_count="$(jq 'length' "$ANCHORED_FILE")"
+unanchored_count="$(jq 'length' "$UNANCHORED_FILE")"
+new_findings_total=$((anchored_count + unanchored_count))
+
+review_url=""
+if [[ "$new_findings_total" -gt 0 ]]; then
+  post_args=(
+    --owner "$BASE_OWNER"
+    --repo "$BASE_REPO"
+    --number "$PR_NUMBER"
+    --head-sha "$HEAD_OID"
+    --head-repo-url "$HEAD_REPO_URL"
+    --summary-file "$SUMMARY_FILE"
+    --anchored "$ANCHORED_FILE"
+    --unanchored "$UNANCHORED_FILE"
+    --dropped-combo "$DROPPED_COMBO"
+  )
+  if [[ $OWN_PR -eq 1 ]]; then
+    post_args+=(--own-pr)
+    log_step "submitting COMMENT review (own PR)"
+  else
+    log_step "posting Pending review"
   fi
-  log_failure "$category" "$PR_URL" "$HEAD_OID" "$reason"
-  exit 1
-fi
-# Report the landed review by id instead of dumping the raw JSON. A parse miss
-# (unexpected shape) degrades to no id, never an error — the review did land.
-review_id="$(jq -r '.id // empty' "$POST_OUT" 2>/dev/null || true)"
-if [[ $OWN_PR -eq 1 ]]; then
-  log_ok "submitted COMMENT review${review_id:+ #$review_id}"
+  if ! bash "$SCRIPT_DIR/create-review.sh" "${post_args[@]}" >"$POST_OUT" 2>"$POST_ERR"; then
+    cat "$POST_ERR" >&2
+    category="$(extract_category "$POST_ERR")"
+    reason="gh api POST failed"
+    if [[ "$category" == "pending-conflict" ]]; then
+      reason="existing pending review on PR — submit or cancel via UI before re-running"
+    fi
+    log_failure "$category" "$PR_URL" "$HEAD_OID" "$reason"
+    exit 1
+  fi
+  # Report the landed review by id instead of dumping the raw JSON. A parse miss
+  # (unexpected shape) degrades to no id, never an error — the review did land.
+  review_id="$(jq -r '.id // empty' "$POST_OUT" 2>/dev/null || true)"
+  # html_url anchors the status index's "outside the diff" pointer at this review,
+  # the home of any relocated finding (ADR 0005, ADR 0020 Decision 4).
+  review_url="$(jq -r '.html_url // empty' "$POST_OUT" 2>/dev/null || true)"
+  if [[ $OWN_PR -eq 1 ]]; then
+    log_ok "submitted COMMENT review${review_id:+ #$review_id}"
+  else
+    log_ok "posted Pending review${review_id:+ #$review_id}"
+  fi
 else
-  log_ok "posted Pending review${review_id:+ #$review_id}"
+  log_info "no new findings at $HEAD_OID; skipping review object (ADR 0020)"
 fi
 
-# The review landed: edit the status comment in place into its terminal state
-# (#60). N counts every surfaced finding: inline (anchored) plus relocated
-# (unanchored). It is a status figure, not the findings themselves, which stay
-# in the Review object.
-findings_total=$(($(jq 'length' "$ANCHORED_FILE") + $(jq 'length' "$UNANCHORED_FILE")))
-finding_noun="findings"
-[[ "$findings_total" -eq 1 ]] && finding_noun="finding"
-reviewed_body="$(render_status_comment \
-  "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID"): ${findings_total} ${finding_noun}" \
-  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
-edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
-
-# Commit-driven thread resolution (#125, ADR 0017). Runs only on a re-review
-# (LAST_SHA set): a first review has no prior daemon threads to resolve. Placed
-# after the review lands so it is pure best-effort cleanup; resolution returns 0 on
-# any internal failure, but guard the call too so set -e never trips.
+# Commit-driven thread resolution (#125, ADR 0017; stamp model ADR 0019). Runs
+# before the terminal status edit so the findings index below reflects the threads
+# this tick just resolved. Re-review only (LAST_SHA set): a first review has no
+# prior daemon threads. Best-effort; resolution returns 0 on any internal failure,
+# but guard the call too so set -e never trips.
 if [[ -n "$LAST_SHA" ]]; then
   log_step "commit-driven resolution"
   resolution || log_info "resolution skipped (non-fatal)"
 fi
+
+# Edit the status comment into its terminal state (#60) with the cumulative
+# findings index (ADR 0020), read fresh from the PR's threads so it reflects this
+# tick's posts and resolves. The headline carries scope, not a per-SHA count: the
+# index's rollup replaces that count. All best-effort — a failed fetch or render
+# degrades to a headline-and-scope status, never aborts the landed review.
+log_step "rendering status index"
+index_threads_file="$SCRATCH/.pr-review-index-threads.json"
+index_block=""
+if fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$index_threads_file"; then
+  index_block="$(python3 "$SCRIPT_DIR/findings_index.py" \
+    --threads "$index_threads_file" --operator "$OPERATOR" \
+    --unanchored "$unanchored_count" --review-url "$review_url" 2>/dev/null || true)"
+else
+  log_info "thread fetch for status index failed (non-fatal)"
+fi
+reviewed_body="$(render_status_comment \
+  "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" \
+  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block")"
+edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
 
 log_step "done"
