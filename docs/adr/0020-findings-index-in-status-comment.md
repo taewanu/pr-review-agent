@@ -36,6 +36,8 @@ The Status comment carries a **findings index**: the cumulative per-finding stat
 
 5. **No review object on a no-new-findings tick.** When a tick surfaces zero new findings (anchored and unanchored both zero), the daemon skips the review POST. The Status comment still updates, so a resolution-only push reflects the newly-resolved threads in the index without stacking an empty review. A tick with at least one new finding posts the review as before.
 
+6. **A clean review still shows a verdict.** When a tick surfaces zero findings and the PR has no finding threads at all, Decisions 3 and 5 would together leave the Status comment with no verdict: scope and file list only, indistinguishable from a no-op the agent never ran (sounds-abroad#122). The index slot instead carries a `No findings` rollup, and quotes the review's summary below it when one is present. The summary is a scope-level verdict over the whole PR, not a finding body, so it sits inside the boundary by Decision 1's logic: it restates no per-finding content the Inline comment owns, and is re-derived from the current tick's review rather than stored, so it cannot drift.
+
 ## Boundary
 
 This changes how findings are *surfaced and aggregated*, not how they are detected, judged, or resolved. Candidate selection, the per-thread judgment, the Verdict vocabulary, the Resolution stamp, and `voice.py` are unchanged. The Review object remains the authoritative surface for finding *content*; the index is a pointer to it. Where the cumulative state should live once the delivery model changes (#134; a GitHub App could open Checks API surfaces) is deferred to that decision; this ADR commits only to the issue-comment surface available today.
@@ -46,4 +48,5 @@ This changes how findings are *surfaced and aggregated*, not how they are detect
 - Empty per-SHA review objects (sounds-abroad#119, pull/175) stop: a no-new-findings tick posts no review. This pairs with #172, which makes resolution-only SHAs common.
 - The index is rebuilt each tick from `fetch_open_review_threads`, which already returns every thread (open and resolved) with the fields the index needs; the query gains one field, the root comment's `url`, for the per-entry link.
 - ADR 0019's "Status = scope, never findings" is relaxed to "scope plus a findings *index* (links, state, counts), never finding *bodies*" (Decision 1).
+- A clean review reads as reviewed-and-clean, not as a no-op: a zero-finding tick leaves a `No findings` rollup and, when present, the review's summary as a scope-level verdict (Decision 6, sounds-abroad#122).
 - A future delivery-model surface (#134) inherits one already-aggregated index rather than a per-SHA count to migrate.

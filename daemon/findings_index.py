@@ -13,8 +13,9 @@ review's count as a pointer to the Review, never a tracked per-item entry
 (ADR 0020 Decision 4).
 
 Input is the thread array `fetch_open_review_threads` (lib.sh) emits, both open
-and resolved. Output is the markdown block `render_status_comment` inserts, or an
-empty string when the PR has nothing to index.
+and resolved. Output is the markdown block `render_status_comment` inserts: the
+findings index, or a `No findings` affirmation when the review surfaced nothing
+(ADR 0020 Decision 6).
 """
 
 from __future__ import annotations
@@ -81,17 +82,34 @@ def _entry(thread: dict) -> str:
     return f"- {linked} · {state}"
 
 
+def _clean_affirmation(summary: str | None) -> str:
+    """The clean-review affirmation: a `No findings` rollup, plus the review's
+    summary as a blockquote when one is present, for a tick that surfaced nothing.
+
+    Without it a zero-finding review leaves no verdict, since #166 suppresses the
+    Review object. Why a summary belongs here and cannot drift: ADR 0020 Decision 6.
+    """
+    lines = ["**No findings**"]
+    text = (summary or "").strip()
+    if text:
+        lines.append("")
+        lines.extend(f"> {ln}" if ln else ">" for ln in text.splitlines())
+    return "\n".join(lines)
+
+
 def render_index(
     threads: list[dict],
     operator: str,
     unanchored_count: int = 0,
     review_url: str | None = None,
+    summary: str | None = None,
 ) -> str:
-    """The full index block, or "" when the PR has no Findings to show."""
+    """The full index block, or the clean-review affirmation (`No findings` +
+    optional summary) when the PR has no Findings (ADR 0020 Decision 6)."""
     findings = daemon_findings(threads, operator)
     total = len(findings)
     if total == 0 and unanchored_count <= 0:
-        return ""
+        return _clean_affirmation(summary)
 
     lines: list[str] = []
     if total > 0:
@@ -119,6 +137,9 @@ def main() -> int:
     ap.add_argument("--operator", required=True)
     ap.add_argument("--unanchored", type=int, default=0, help="this review's outside-diff count")
     ap.add_argument("--review-url", default="", help="link target for the outside-diff pointer")
+    ap.add_argument(
+        "--summary-file", default="", help="review summary, quoted in the clean affirmation"
+    )
     args = ap.parse_args()
 
     # Best-effort: an unreadable or malformed thread file yields an empty index
@@ -128,7 +149,18 @@ def main() -> int:
     except (OSError, ValueError):
         threads = []
 
-    block = render_index(threads, args.operator, args.unanchored, args.review_url or None)
+    # Same best-effort read: a missing summary degrades to the bare rollup, never
+    # an abort. Only consulted on the zero-finding path.
+    summary = ""
+    if args.summary_file:
+        try:
+            summary = Path(args.summary_file).read_text()
+        except OSError:
+            summary = ""
+
+    block = render_index(
+        threads, args.operator, args.unanchored, args.review_url or None, summary or None
+    )
     sys.stdout.write(block)
     return 0
 
