@@ -104,8 +104,29 @@ def test_render_singular_noun_for_one_finding():
     assert out.splitlines()[0] == "**1 finding · 1 open · 0 resolved**"
 
 
-def test_render_empty_when_no_findings_and_no_unanchored():
-    assert fi.render_index([], OPERATOR, unanchored_count=0) == ""
+def test_render_clean_affirmation_bare_rollup_without_summary():
+    # Zero findings, no summary: the bare rollup so a clean review still reads as
+    # reviewed-and-clean rather than an empty no-op (ADR 0020).
+    assert fi.render_index([], OPERATOR, unanchored_count=0) == "**No findings**"
+
+
+def test_render_clean_affirmation_quotes_the_summary():
+    out = fi.render_index(
+        [], OPERATOR, unanchored_count=0, summary="All clear; nothing blocking.\n"
+    )
+    assert out == "**No findings**\n\n> All clear; nothing blocking."
+
+
+def test_clean_affirmation_quotes_every_line_of_a_multiline_summary():
+    # A blockquote breaks out at the first un-prefixed line, so each line (blank
+    # lines included) carries its own marker.
+    out = fi._clean_affirmation("Line one.\n\nLine two.")
+    assert out == "**No findings**\n\n> Line one.\n>\n> Line two."
+
+
+def test_clean_affirmation_falls_back_to_bare_rollup_on_whitespace_summary():
+    assert fi._clean_affirmation("   \n") == "**No findings**"
+    assert fi._clean_affirmation(None) == "**No findings**"
 
 
 def test_render_unanchored_pointer_with_review_url():

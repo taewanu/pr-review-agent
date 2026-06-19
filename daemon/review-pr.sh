@@ -522,7 +522,8 @@ index_block=""
 if fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$index_threads_file"; then
   index_block="$(python3 "$SCRIPT_DIR/findings_index.py" \
     --threads "$index_threads_file" --operator "$OPERATOR" \
-    --unanchored "$unanchored_count" --review-url "$review_url" 2>/dev/null || true)"
+    --unanchored "$unanchored_count" --review-url "$review_url" \
+    --summary-file "$SUMMARY_FILE" 2>/dev/null || true)"
 else
   log_info "thread fetch for status index failed (non-fatal)"
 fi
