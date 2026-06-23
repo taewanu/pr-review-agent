@@ -137,6 +137,18 @@ def test_render_singular_file_noun():
     assert "<summary>1 file</summary>" in out
 
 
+def test_render_inserts_body_block_between_scope_and_files():
+    # The failed status comment (#180) and the findings index both ride the 5th
+    # arg, dropped in as its own paragraph between the scope line and the file list.
+    out, rc, _ = _run(
+        "render_status_comment 'h' 'full PR' 1 'only.sh' '> The review agent timed out.'"
+    )
+    assert rc == 0
+    assert "> The review agent timed out." in out
+    assert out.index("_Scope: full PR_") < out.index("> The review agent timed out.")
+    assert out.index("> The review agent timed out.") < out.index("<summary>1 file</summary>")
+
+
 def test_diff_paths_extracts_post_image_paths():
     with tempfile.TemporaryDirectory() as tmp:
         diff = Path(tmp) / "d.txt"
@@ -159,6 +171,53 @@ def test_diff_paths_empty_on_missing_file():
     out, rc, _ = _run("diff_paths /nonexistent/diff.txt")
     assert rc == 0
     assert out.strip() == ""
+
+
+# --- status_failure_reason (#180) -----------------------------------------
+# Maps a log_failure category to the author-facing reason on the failed status
+# head-line. Surfaces a phrase only where it helps the author; internal hiccups
+# return empty so the caller drops the reason line and the bare "will retry next
+# cycle" head-line carries the message.
+
+
+def test_status_failure_reason_timeouts_share_one_phrase():
+    # review and editor stages both read as "the review" to the author.
+    for category in ("review-timeout", "edit-timeout"):
+        out, rc, _ = _run(f"status_failure_reason {category}")
+        assert rc == 0
+        assert out == "The review agent timed out."
+
+
+def test_status_failure_reason_pending_conflict_is_surfaced():
+    out, rc, _ = _run("status_failure_reason pending-conflict")
+    assert rc == 0
+    assert out == "An earlier review is still pending on this PR."
+
+
+def test_status_failure_reason_internal_hiccups_are_silent():
+    # Categories the author can't act on return empty, so the caller drops the
+    # reason line rather than print an internal slug.
+    for category in (
+        "empty-stdout",
+        "no-fence",
+        "parse-error",
+        "schema-invalid",
+        "style-violation",
+        "edit-empty",
+        "post-failed",
+        "unknown",
+    ):
+        out, rc, _ = _run(f"status_failure_reason {category}")
+        assert rc == 0
+        assert out == ""
+
+
+def test_status_failure_reason_phrases_are_em_dash_free():
+    # The failed head-line is fixed chrome that skips the voice.py gate, so the
+    # no-em-dash rule is enforced on these phrases directly.
+    for category in ("review-timeout", "pending-conflict"):
+        out, _, _ = _run(f"status_failure_reason {category}")
+        assert "—" not in out
 
 
 # --- find_status_comment --------------------------------------------------
