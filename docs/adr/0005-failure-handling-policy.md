@@ -56,3 +56,15 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 - Until state tracking lands, system-failed ticks retry by hand. After it
   lands, retries happen automatically on the next poll cycle if the HEAD SHA
   has not changed.
+
+> **Amended 2026-06-23 (#180).** System failures still exit non-zero and post no
+> review object. The narrow change: when the durable status comment (#60, ADR
+> 0020) is already live, the tick edits it to a `⚠️ Review failed … will retry`
+> head-line instead of leaving it frozen at `👀 Reviewing…`. "Post nothing"
+> predates the status comment; once the comment is posted *before* the review, a
+> persistent failure that never touches it reads as a hung review. The flip is
+> best-effort like every status-comment edit, so a failed flip never changes the
+> exit code, and the next successful tick reuses the same comment and overwrites
+> failed → Reviewing → Reviewed. Pre-comment preflight failures (auth, `git
+> remote`, identity) stay silent: there is no live comment to update, and the
+> author cannot act on an operator-environment error.

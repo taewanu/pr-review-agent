@@ -161,6 +161,53 @@ def test_diff_paths_empty_on_missing_file():
     assert out.strip() == ""
 
 
+# --- status_failure_reason (#180) -----------------------------------------
+# Maps a log_failure category to the author-facing reason on the failed status
+# head-line. Surfaces a phrase only where it helps the author; internal hiccups
+# return empty so the caller drops the reason line and the bare "will retry next
+# cycle" head-line carries the message.
+
+
+def test_status_failure_reason_timeouts_share_one_phrase():
+    # review and editor stages both read as "the review" to the author.
+    for category in ("review-timeout", "edit-timeout"):
+        out, rc, _ = _run(f"status_failure_reason {category}")
+        assert rc == 0
+        assert out == "the review timed out"
+
+
+def test_status_failure_reason_pending_conflict_is_surfaced():
+    out, rc, _ = _run("status_failure_reason pending-conflict")
+    assert rc == 0
+    assert out == "an earlier review is still pending on this PR"
+
+
+def test_status_failure_reason_internal_hiccups_are_silent():
+    # Categories the author can't act on return empty, so the caller drops the
+    # reason line rather than print an internal slug.
+    for category in (
+        "empty-stdout",
+        "no-fence",
+        "parse-error",
+        "schema-invalid",
+        "style-violation",
+        "edit-empty",
+        "post-failed",
+        "unknown",
+    ):
+        out, rc, _ = _run(f"status_failure_reason {category}")
+        assert rc == 0
+        assert out == ""
+
+
+def test_status_failure_reason_phrases_are_em_dash_free():
+    # The failed head-line is fixed chrome that skips the voice.py gate, so the
+    # no-em-dash rule is enforced on these phrases directly.
+    for category in ("review-timeout", "pending-conflict"):
+        out, _, _ = _run(f"status_failure_reason {category}")
+        assert "—" not in out
+
+
 # --- find_status_comment --------------------------------------------------
 
 

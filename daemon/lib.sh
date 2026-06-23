@@ -61,6 +61,10 @@ log_ok() {
 # Positional fields per ADR 0005 so log scrapers don't re-parse prose.
 log_failure() {
   local category="$1" url="$2" sha="$3" reason="$4"
+  # Record the latest failure category so an EXIT-trap consumer can surface it on
+  # the status comment (#180); harmless in callers that don't read it.
+  # shellcheck disable=SC2034  # consumed by review-pr.sh's failure trap (#180)
+  LAST_FAILURE_CATEGORY="$category"
   printf '[pr-review-agent] failure: %s pr=%s sha=%s reason=%s\n' \
     "$category" "$url" "$sha" "$reason" >&2
 }
@@ -632,6 +636,32 @@ render_status_comment() {
   # Visible Provenance tag (ADR 0010), then the hidden Status marker last.
   body+=$'\n\n'"${PROVENANCE_TAG}"$'\n\n'"${STATUS_COMMENT_MARKER}"
   printf '%s\n' "$body"
+}
+
+# status_failure_reason <category>
+# Maps a log_failure category slug (ADR 0005's failure table) to a short,
+# author-facing reason for the failed status head-line (#180). Fixed UI chrome
+# authored here, not agent prose, so it skips the voice.py gate like the other
+# status head-lines; keep each phrase 두괄식 and em-dash-free by hand. Returns an
+# empty string for an unmapped slug so the caller can drop the reason line rather
+# than print a slug the author can't act on.
+status_failure_reason() {
+  local category="$1"
+  case "$category" in
+    review-timeout | edit-timeout)
+      printf 'the review timed out'
+      ;;
+    pending-conflict)
+      printf 'an earlier review is still pending on this PR'
+      ;;
+    *)
+      # Internal agent/pipeline hiccups (empty output, malformed payload, style
+      # gate, post error, unknown): the author can't act on them and the next
+      # tick retries, so the "will retry next cycle" head-line already says enough. Empty
+      # makes the caller drop the reason line rather than print a slug.
+      printf ''
+      ;;
+  esac
 }
 
 # diff_paths <unified-diff-file>

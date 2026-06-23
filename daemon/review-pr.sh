@@ -81,6 +81,15 @@ HEAD_OID=""
 # in place — never deleted, so it outlives the run. Not touched by cleanup().
 STATUS_COMMENT_ID=""
 
+# Flips to 1 once the review reaches a successful terminal outcome (posted or
+# intentionally skipped per ADR 0020); the failure trap reads it to leave a
+# landed review's status comment alone (#180).
+STATUS_DONE=0
+
+# Latest system-failure category, set by log_failure; the failure trap turns it
+# into the failed status head-line's reason (#180).
+LAST_FAILURE_CATEGORY=""
+
 # Per-PR lock path (#67); set once acquired, released by cleanup().
 LOCK_FILE=""
 
@@ -93,6 +102,31 @@ cleanup() {
   if [[ $KEEP_SCRATCH -eq 0 && -n "${SCRATCH:-}" ]]; then
     rm -rf "$SCRATCH"
   fi
+}
+
+# flip_status_failed <exit-code>
+# On a system failure after the status comment went live, flip it from
+# "Reviewing…" to a failed head-line so a persistent failure stops reading as a
+# frozen "Reviewing…" forever (#180, ADR 0005 amendment). Best-effort, like
+# edit_status_comment: never changes the exit code, ADR 0005 still posts no review
+# object and exits non-zero. No-ops on success, when the review already reached a
+# terminal state (STATUS_DONE), or before the comment is live, so a pre-comment
+# preflight failure stays silent (unchanged from ADR 0005). The next successful
+# tick reuses the same comment and overwrites failed → Reviewing → Reviewed.
+flip_status_failed() {
+  local rc="$1"
+  [[ "$rc" -ne 0 ]] || return 0
+  [[ "${STATUS_DONE:-0}" -eq 0 ]] || return 0
+  [[ -n "${STATUS_COMMENT_ID:-}" ]] || return 0
+  local reason failed_head failed_body
+  reason="$(status_failure_reason "${LAST_FAILURE_CATEGORY:-unknown}" || true)"
+  failed_head="⚠️ Review failed for $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID"), will retry next cycle"
+  [[ -n "$reason" ]] && failed_head+=$'\n'"_${reason}_"
+  failed_body="$(render_status_comment \
+    "$failed_head" "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
+  edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$failed_body"
+  log_info "status comment flipped to failed (${LAST_FAILURE_CATEGORY:-unknown})"
+  return 0
 }
 
 # Parse the `category=<slug>` first stderr line emitted by extract_json.py and
@@ -247,12 +281,14 @@ fi
 # Take the per-PR lock before any work, skipping if a review of this PR is
 # already in flight (#67; rationale on acquire_pr_lock). The EXIT trap moves up
 # to here so the lock is released on every exit below, including the dedup skip;
-# cleanup() no-ops on the still-empty ack/scratch globals.
+# both handlers no-op on the still-empty globals. flip_status_failed runs first
+# so the (durable) status comment is updated before cleanup tears down the
+# (run-scoped) lock and scratch; it reads $? for the exit code (#180).
 if ! LOCK_FILE="$(acquire_pr_lock "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER")"; then
   log_info "review already in progress for ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}, skipping"
   exit 0
 fi
-trap cleanup EXIT
+trap 'flip_status_failed $?; cleanup' EXIT
 
 # Idempotency for the sequential case: skip if the operator already reviewed this
 # exact HEAD (the lock above covers the concurrent case). poll.sh dedups before
@@ -506,6 +542,11 @@ if [[ "$new_findings_total" -gt 0 ]]; then
 else
   log_info "no new findings at $HEAD_OID; skipping review object (ADR 0020)"
 fi
+
+# The review reached a successful terminal outcome (posted, or intentionally
+# skipped per ADR 0020). Only best-effort cosmetics run past here, so a non-zero
+# exit must not flip the status comment to "failed" (#180).
+STATUS_DONE=1
 
 # Commit-driven thread resolution (#125, ADR 0017; stamp model ADR 0019). Runs
 # before the terminal status edit so the findings index below reflects the threads
