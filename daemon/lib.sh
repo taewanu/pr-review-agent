@@ -640,25 +640,25 @@ render_status_comment() {
 
 # status_failure_reason <category>
 # Maps a log_failure category slug (ADR 0005's failure table) to a short,
-# author-facing reason for the failed status head-line (#180). Fixed UI chrome
-# authored here, not agent prose, so it skips the voice.py gate like the other
-# status head-lines; keep each phrase 두괄식 and em-dash-free by hand. Returns an
-# empty string for an unmapped slug so the caller can drop the reason line rather
-# than print a slug the author can't act on.
+# author-facing sentence shown as a blockquote under the failed status head-line
+# (#180), mirroring where a clean review's verdict sits. Fixed UI chrome authored
+# here, not agent prose, so it skips the voice.py gate; keep each sentence 두괄식
+# and em-dash-free by hand. Returns empty for an unmapped slug so the caller drops
+# the blockquote rather than surface a slug the author can't act on.
 status_failure_reason() {
   local category="$1"
   case "$category" in
     review-timeout | edit-timeout)
-      printf 'the review timed out'
+      printf 'The review agent timed out.'
       ;;
     pending-conflict)
-      printf 'an earlier review is still pending on this PR'
+      printf 'An earlier review is still pending on this PR.'
       ;;
     *)
       # Internal agent/pipeline hiccups (empty output, malformed payload, style
-      # gate, post error, unknown): the author can't act on them and the next
-      # tick retries, so the "will retry next cycle" head-line already says enough. Empty
-      # makes the caller drop the reason line rather than print a slug.
+      # gate, post error, unknown): the author can't act on them and the next tick
+      # retries, so the "will retry next cycle" head-line already says enough.
+      # Empty drops the blockquote rather than surface an internal slug.
       printf ''
       ;;
   esac

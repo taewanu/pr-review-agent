@@ -137,6 +137,18 @@ def test_render_singular_file_noun():
     assert "<summary>1 file</summary>" in out
 
 
+def test_render_inserts_body_block_between_scope_and_files():
+    # The failed status comment (#180) and the findings index both ride the 5th
+    # arg, dropped in as its own paragraph between the scope line and the file list.
+    out, rc, _ = _run(
+        "render_status_comment 'h' 'full PR' 1 'only.sh' '> The review agent timed out.'"
+    )
+    assert rc == 0
+    assert "> The review agent timed out." in out
+    assert out.index("_Scope: full PR_") < out.index("> The review agent timed out.")
+    assert out.index("> The review agent timed out.") < out.index("<summary>1 file</summary>")
+
+
 def test_diff_paths_extracts_post_image_paths():
     with tempfile.TemporaryDirectory() as tmp:
         diff = Path(tmp) / "d.txt"
@@ -173,13 +185,13 @@ def test_status_failure_reason_timeouts_share_one_phrase():
     for category in ("review-timeout", "edit-timeout"):
         out, rc, _ = _run(f"status_failure_reason {category}")
         assert rc == 0
-        assert out == "the review timed out"
+        assert out == "The review agent timed out."
 
 
 def test_status_failure_reason_pending_conflict_is_surfaced():
     out, rc, _ = _run("status_failure_reason pending-conflict")
     assert rc == 0
-    assert out == "an earlier review is still pending on this PR"
+    assert out == "An earlier review is still pending on this PR."
 
 
 def test_status_failure_reason_internal_hiccups_are_silent():

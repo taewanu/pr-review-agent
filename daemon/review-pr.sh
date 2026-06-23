@@ -118,12 +118,15 @@ flip_status_failed() {
   [[ "$rc" -ne 0 ]] || return 0
   [[ "${STATUS_DONE:-0}" -eq 0 ]] || return 0
   [[ -n "${STATUS_COMMENT_ID:-}" ]] || return 0
-  local reason failed_head failed_body
+  local reason failed_head failed_block failed_body
   reason="$(status_failure_reason "${LAST_FAILURE_CATEGORY:-unknown}" || true)"
   failed_head="⚠️ Review failed for $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID"), will retry next cycle"
-  [[ -n "$reason" ]] && failed_head+=$'\n'"_${reason}_"
+  # Reason rides the body-block slot as a blockquote, where a clean review's
+  # verdict sits, so the failed comment keeps the Reviewed comment's rhythm (#180).
+  failed_block=""
+  [[ -n "$reason" ]] && failed_block="> ${reason}"
   failed_body="$(render_status_comment \
-    "$failed_head" "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
+    "$failed_head" "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$failed_block")"
   edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$failed_body"
   log_info "status comment flipped to failed (${LAST_FAILURE_CATEGORY:-unknown})"
   return 0
