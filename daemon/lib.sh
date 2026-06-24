@@ -615,14 +615,16 @@ status_scope_link() {
   fi
 }
 
-# render_status_comment <head-line> <scope-label> <file-count> <files> [index-block]
+# render_status_comment <head-line> <scope-label> <file-count> <files> [index-block] [trail-block]
 # Assembles the status-comment body (#60): header, the optional findings index
 # (ADR 0020), the diff scope (commit range + file list, folded in <details> so a
-# wide PR stays compact), and the marker find_status_comment keys on. The index is
-# a pointer view (links + state), never finding bodies, so it duplicates nothing in
-# the Review object. Omit the index arg for the pre-review "Reviewing…" render.
+# wide PR stays compact), the optional reviewed-SHAs trail (ADR 0021), and the
+# marker find_status_comment keys on. The index is a pointer view (links + state),
+# never finding bodies, so it duplicates nothing in the Review object. Omit the
+# index arg for the pre-review "Reviewing…" render; the trail (prior rows only at
+# that point) still passes through.
 render_status_comment() {
-  local head_line="$1" scope_label="$2" file_count="$3" files="$4" index_block="${5:-}"
+  local head_line="$1" scope_label="$2" file_count="$3" files="$4" index_block="${5:-}" trail_block="${6:-}"
   local noun="files"
   [[ "$file_count" == "1" ]] && noun="file"
   local bullets
@@ -633,6 +635,9 @@ render_status_comment() {
   local body="$head_line"$'\n\n'"_Scope: ${scope_label}_"
   [[ -n "$index_block" ]] && body+=$'\n\n'"$index_block"
   body+=$'\n\n'"<details><summary>${file_count} ${noun}</summary>"$'\n\n'"${bullets}"$'\n\n</details>'
+  # Trail sits below the file list and above provenance: scope and index stay the
+  # eye's first stop (current state), the trail reads as an appendix (history).
+  [[ -n "$trail_block" ]] && body+=$'\n\n'"$trail_block"
   # Visible Provenance tag (ADR 0010), then the hidden Status marker last.
   body+=$'\n\n'"${PROVENANCE_TAG}"$'\n\n'"${STATUS_COMMENT_MARKER}"
   printf '%s\n' "$body"
@@ -693,6 +698,17 @@ post_status_comment() {
   local owner="$1" repo="$2" pr="$3" body="$4"
   gh api "repos/${owner}/${repo}/issues/${pr}/comments" \
     -f body="$body" --jq '.id' 2>/dev/null || true
+}
+
+# status_comment_body <owner> <repo> <comment-id>
+# Prints an issue comment's body by id, for recovering the reviewed-SHAs trail
+# (ADR 0021) before the in-place edit overwrites it. Best-effort: prints nothing
+# and returns 0 on an empty id or gh failure, so a fetch miss degrades to a trail
+# that restarts rather than aborting the review.
+status_comment_body() {
+  local owner="$1" repo="$2" comment_id="$3"
+  [[ -n "$comment_id" ]] || return 0
+  gh api "repos/${owner}/${repo}/issues/comments/${comment_id}" --jq '.body' 2>/dev/null || true
 }
 
 # edit_status_comment <owner> <repo> <comment-id> <body>

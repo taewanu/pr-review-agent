@@ -81,6 +81,11 @@ HEAD_OID=""
 # in place — never deleted, so it outlives the run. Not touched by cleanup().
 STATUS_COMMENT_ID=""
 
+# Reviewed-SHAs trail (ADR 0021), recovered from the status comment body before
+# the first edit overwrites it. Declared here, assigned later, so flip_status_failed
+# can read it to preserve the trail on a failed tick rather than wiping it.
+STATUS_TRAIL_PRIOR=""
+
 # Flips to 1 once the review reaches a successful terminal outcome (posted or
 # intentionally skipped per ADR 0020); the failure trap reads it to leave a
 # landed review's status comment alone (#180).
@@ -125,8 +130,11 @@ flip_status_failed() {
   # verdict sits, so the failed comment keeps the Reviewed comment's rhythm (#180).
   failed_block=""
   [[ -n "$reason" ]] && failed_block="> ${reason}"
+  # Carry the prior trail through (ADR 0021) so a failed tick preserves the
+  # reviewed-SHAs record instead of overwriting it away; the next success reads it
+  # back. This tick's SHA is not added — it was not successfully reviewed.
   failed_body="$(render_status_comment \
-    "$failed_head" "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$failed_block")"
+    "$failed_head" "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$failed_block" "$STATUS_TRAIL_PRIOR")"
   edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$failed_body"
   log_info "status comment flipped to failed (${LAST_FAILURE_CATEGORY:-unknown})"
   return 0
@@ -398,10 +406,24 @@ if [[ $diff_scoped -eq 1 ]]; then
 else
   STATUS_SCOPE="$(status_scope_link "$HEAD_REPO_URL" "" "$HEAD_OID")"
 fi
+# Find the status comment first, then recover the reviewed-SHAs trail (ADR 0021)
+# from its current body before the edits below overwrite it. The trail is the one
+# part of the comment that accumulates across ticks rather than being derived from
+# current state, so its prior rows live nowhere but the comment body itself. A
+# fetch or parse miss degrades to a restarted trail (best-effort), never aborts.
+# STATUS_TRAIL_PRIOR is read by flip_status_failed too, so a failed tick preserves
+# the trail rather than wiping it.
+STATUS_COMMENT_ID="$(find_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
+if [[ -n "$STATUS_COMMENT_ID" ]]; then
+  STATUS_TRAIL_PRIOR="$(status_comment_body "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" |
+    python3 "$SCRIPT_DIR/status_trail.py" 2>/dev/null || true)"
+fi
+
+# The "Reviewing…" render carries the prior trail unchanged — this tick's SHA is
+# not reviewed yet; the terminal render below folds it in.
 reviewing_body="$(render_status_comment \
   "👀 Reviewing $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")…" \
-  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES")"
-STATUS_COMMENT_ID="$(find_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
+  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "" "$STATUS_TRAIL_PRIOR")"
 if [[ -n "$STATUS_COMMENT_ID" ]]; then
   edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewing_body"
   log_info "status comment reused (${STATUS_COMMENT_ID})"
@@ -577,9 +599,16 @@ if fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$index_th
 else
   log_info "thread fetch for status index failed (non-fatal)"
 fi
+# Append this tick's reviewed SHA to the trail (ADR 0021): re-parse the prior
+# block (held in STATUS_TRAIL_PRIOR) and fold in HEAD with the reviewed-at time,
+# so the audit record grows by one row rather than being overwritten.
+status_trail_block="$(printf '%s' "$STATUS_TRAIL_PRIOR" |
+  python3 "$SCRIPT_DIR/status_trail.py" \
+    --add-sha "${HEAD_OID:0:8}" --add-time "$(date -u +'%Y-%m-%d %H:%M UTC')" \
+    2>/dev/null || true)"
 reviewed_body="$(render_status_comment \
   "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" \
-  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block")"
+  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block" "$status_trail_block")"
 edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
 
 log_step "done"
