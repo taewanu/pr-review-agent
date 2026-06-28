@@ -234,7 +234,7 @@ resolution() {
         # Pull comment_id (the in-place edit target) and finding_body straight from
         # the candidate, so the multi-line body never round-trips through a shell var.
         jq -c --argjson i "$i" --arg rationale "$rationale" \
-          '.[$i] | {thread_id, comment_id, path, line, finding_body, rationale: $rationale}' \
+          '.[$i] | {thread_id, comment_id, path, line, head_line, head_start_line, finding_body, rationale: $rationale}' \
           "$candidates_file" >>"$notes_jsonl"
       else
         log_info "left open ${path}:${line} (${tid}): ${rationale}"

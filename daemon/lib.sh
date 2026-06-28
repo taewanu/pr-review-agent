@@ -496,14 +496,20 @@ bundle_operator_agents() {
 # and findings_index.py:
 #   [{thread_id, is_resolved, root_author, root_body, root_comment_id,
 #     root_comment_url, path, original_line, original_start_line,
-#     has_resolution_stamp}]
+#     head_line, head_start_line, has_resolution_stamp}]
 # `root_comment_url` is the root comment's web URL, the per-entry link target for
 # the Status comment's findings index (ADR 0020); resolve_threads.py ignores it.
 # The root (oldest) comment is the Finding; resolve_threads.py filters to the
-# open, daemon-owned ones. `originalLine`, not `line`: GitHub nulls `line` exactly
-# when a thread goes outdated (its anchored code changed), the case commit-driven
-# resolution must catch, so the creation-side coordinate is the only one that
-# survives (#125, ADR 0017). `has_resolution_stamp` is true when the root comment
+# open, daemon-owned ones. Each thread carries two coordinate pairs for two jobs.
+# `original_line`/`original_start_line` (GraphQL `originalLine`/`originalStartLine`)
+# is the creation-side (OLD) coordinate: it drives candidate *selection*, matched
+# against the OLD side of the increment diff, and survives `outdated` (GitHub nulls
+# `line` exactly when a thread goes outdated, the case commit-driven resolution must
+# catch, #125, ADR 0017). `head_line`/`head_start_line` (`line`/`startLine`) is
+# GitHub's HEAD-remapped coordinate: it anchors the resolution stamp's HEAD blob
+# link, so the link lands on the code at HEAD rather than the creation-side line a
+# fix has since shifted. It is null when the thread is outdated (no HEAD mapping
+# exists), in which case the stamp drops its anchor. `has_resolution_stamp` is true when the root comment
 # carries the stamp's hidden sentinel (ADR 0019), so an already-stamped thread
 # skips re-judgment and routes to resolve-only retry (ADR 0017 §4); the literal
 # mirrors resolve_threads (RESOLUTION_SENTINEL), pinned by test_resolve_threads.
@@ -522,7 +528,7 @@ fetch_open_review_threads() {
         pullRequest(number:$pr){
           reviewThreads(first:100){
             nodes{
-              id isResolved path originalLine originalStartLine
+              id isResolved path originalLine originalStartLine line startLine
               comments(first:1){ nodes{ id url author{ login } body } }
             }
           }
@@ -543,6 +549,8 @@ fetch_open_review_threads() {
         path: .path,
         original_line: .originalLine,
         original_start_line: .originalStartLine,
+        head_line: .line,
+        head_start_line: .startLine,
         has_resolution_stamp: ((.comments.nodes[0].body // "") | contains("<!-- pr-review-agent:resolved -->"))
       }]' <<<"$resp"
 }
