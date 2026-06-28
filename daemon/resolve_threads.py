@@ -177,6 +177,11 @@ def select_candidates(
             "comment_id": t.get("root_comment_id"),
             "path": path,
             "line": line,
+            # HEAD-remapped coordinate for the stamp's blob link, kept distinct from
+            # `line` (the creation-side coordinate the touched test above uses). Null
+            # when the thread is outdated, which head_link_range turns into no anchor.
+            "head_line": t.get("head_line"),
+            "head_start_line": t.get("head_start_line"),
             "finding_body": body,
         }
         if diff.touched(path, line, start_line):
@@ -287,6 +292,33 @@ def degrade_rationale(rationale: str) -> tuple[str, str | None]:
     return FALLBACK_RATIONALE, f"rationale rewritten to fallback ({'; '.join(violations)})"
 
 
+def head_link_range(
+    head_line: int | None, head_start_line: int | None
+) -> tuple[int | None, int | None]:
+    """The (line, end_line) to feed build_blob_link for a resolution stamp's HEAD blob
+    link, from a thread's HEAD-remapped coordinate.
+
+    `head_line`/`head_start_line` are GitHub's `line`/`startLine` at HEAD (lib.sh):
+    where the Finding's anchored code now lives after the increment. The stamp link
+    must use this, not the creation-side `original_line`, or it anchors a HEAD blob on
+    a coordinate a fix has since shifted and lands on unrelated code (the bug this
+    fixes: `original_line` 413 was a flagged line at creation but a bare `}` once the
+    fix inserted lines above it). GitHub nulls `head_line` exactly when a thread is
+    outdated and it can no longer map the Finding to HEAD; there is then no honest HEAD
+    line to point at, so the link must drop its anchor — build_blob_link returns None
+    for a None line, and build_stamp then renders "✅ _Resolved_" with no link.
+
+    Return (line, end_line) for build_blob_link(..., line, end_line): a (start, end)
+    range when the Finding spans multiple lines, a single line otherwise, and
+    (None, None) when there is no HEAD coordinate. build_blob_link already collapses
+    end == start to a single `#L`, so an equal pair needs no special case."""
+    if head_line is None:
+        return None, None
+    if head_start_line is not None and head_start_line != head_line:
+        return head_start_line, head_line
+    return head_line, None
+
+
 def _vet_notes(
     notes: list[dict], head_owner: str, head_repo: str, head_sha: str
 ) -> tuple[list[dict], list[str]]:
@@ -307,7 +339,8 @@ def _vet_notes(
         rationale, notice = degrade_rationale(n.get("rationale") or "")
         if notice:
             degraded.append(f"resolution stamp {tid}: {notice}")
-        link = build_blob_link(head_owner, head_repo, head_sha, n.get("path"), n.get("line"))
+        link_line, link_end = head_link_range(n.get("head_line"), n.get("head_start_line"))
+        link = build_blob_link(head_owner, head_repo, head_sha, n.get("path"), link_line, link_end)
         postable.append(
             {
                 "thread_id": tid,
@@ -462,7 +495,8 @@ def main() -> int:
     p_act.add_argument(
         "--notes",
         type=Path,
-        help="JSON array of {thread_id, comment_id, finding_body, path, line, rationale}",
+        help="JSON array of {thread_id, comment_id, finding_body, path, line, "
+        "head_line, head_start_line, rationale}",
     )
     p_act.add_argument("--retry", type=Path, help="JSON array of {thread_id} to resolve only")
     p_act.add_argument("--head-owner", default="", help="head repo owner for the blob link")

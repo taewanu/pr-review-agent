@@ -142,6 +142,8 @@ def _thread(**over) -> dict:
         "path": "daemon/lib.sh",
         "original_line": 10,
         "original_start_line": None,
+        "head_line": 10,
+        "head_start_line": None,
         "has_resolution_stamp": False,
     }
     base.update(over)
@@ -159,6 +161,8 @@ def test_candidate_happy_path():
             "comment_id": "RC_1",
             "path": "daemon/lib.sh",
             "line": 10,
+            "head_line": 10,
+            "head_start_line": None,
             "finding_body": f"Unbounded loop.\n\n{MARKER}",
         }
     ]
@@ -425,6 +429,28 @@ def test_degrade_rationale_empty_uses_fallback():
 # ---------- act dry-run plan: stamps, resolves, and degrade notices ----------
 
 
+# ---------- head_link_range (stamp blob-link coordinate at HEAD) ----------
+
+
+def test_head_link_range_multiline_returns_start_end():
+    # A multi-line Finding links the whole HEAD range (startLine..line), so the stamp
+    # anchors the block the fix changed, not just its last line.
+    assert resolve_threads.head_link_range(418, 406) == (406, 418)
+
+
+def test_head_link_range_single_line():
+    # A single-line comment has no startLine; the link is the lone HEAD line.
+    assert resolve_threads.head_link_range(418, None) == (418, None)
+
+
+def test_head_link_range_outdated_returns_no_anchor():
+    # GitHub nulls head_line when a thread is outdated and it cannot map the Finding to
+    # HEAD; with no honest HEAD coordinate the stamp drops its anchor (None, None), even
+    # if a stale start line lingers.
+    assert resolve_threads.head_link_range(None, None) == (None, None)
+    assert resolve_threads.head_link_range(None, 406) == (None, None)
+
+
 def _act_dry_run(notes: list[dict], retry: list[dict]) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         nf = Path(tmp) / "notes.json"
@@ -497,6 +523,47 @@ def test_act_dry_run_empty_rationale_degrades_and_resolves():
     assert [n["thread_id"] for n in plan["would_stamp"]] == ["PRRT_x"]
     assert plan["would_resolve"] == ["PRRT_x"]
     assert len(plan["degraded"]) == 1
+
+
+def test_act_dry_run_stamp_links_head_range():
+    # The stamp's blob link uses the HEAD-remapped coordinate (head_start_line..head_line),
+    # not the creation-side line, so it lands on the fix at HEAD rather than a line a fix
+    # has shifted (the coordinate-space bug this fixes).
+    plan = _act_dry_run(
+        [
+            {
+                "thread_id": "PRRT_a",
+                "comment_id": "RC_a",
+                "path": "page.html",
+                "head_line": 418,
+                "head_start_line": 406,
+                "rationale": "grid2 now recurses into card panes",
+            }
+        ],
+        [],
+    )
+    assert "#L406-L418" in plan["would_stamp"][0]["stamp"]
+
+
+def test_act_dry_run_outdated_thread_drops_anchor():
+    # An outdated thread carries no HEAD line; the stamp still resolves but anchors no
+    # blob link rather than guessing a coordinate GitHub itself could not map.
+    plan = _act_dry_run(
+        [
+            {
+                "thread_id": "PRRT_a",
+                "comment_id": "RC_a",
+                "path": "page.html",
+                "head_line": None,
+                "head_start_line": None,
+                "rationale": "grid2 now recurses into card panes",
+            }
+        ],
+        [],
+    )
+    stamp = plan["would_stamp"][0]["stamp"]
+    assert "blob/" not in stamp
+    assert stamp.startswith("✅ _Resolved_:")
 
 
 # ---------- act stamps the Finding comment and resolves, through a gh stub ----------
