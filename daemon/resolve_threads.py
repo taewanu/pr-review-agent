@@ -305,8 +305,8 @@ def head_link_range(
     fixes: `original_line` 413 was a flagged line at creation but a bare `}` once the
     fix inserted lines above it). GitHub nulls `head_line` exactly when a thread is
     outdated and it can no longer map the Finding to HEAD; there is then no honest HEAD
-    line to point at, so the link must drop its anchor — build_blob_link returns None
-    for a None line, and build_stamp then renders "✅ _Resolved_" with no link.
+    line to point at, so the link must drop its anchor: a None line makes
+    build_blob_link return None, and build_stamp then renders "✅ _Resolved_" with no link.
 
     Return (line, end_line) for build_blob_link(..., line, end_line): a (start, end)
     range when the Finding spans multiple lines, a single line otherwise, and
