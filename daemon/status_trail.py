@@ -1,4 +1,4 @@
-"""Render the reviewed-SHAs trail for the Status comment (B1, ADR 0021).
+"""Render the reviewed-SHAs trail for the Status comment (ADR 0021).
 
 The trail is a folded `<details>` block listing every HEAD SHA the daemon has
 reviewed on this PR, newest last, each with the UTC time it was reviewed. It is
