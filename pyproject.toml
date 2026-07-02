@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-review-agent"
-version = "0.2.3"
+version = "0.3.0"
 description = "Self-hosted PR review daemon driven by Claude Code subagents."
 requires-python = ">=3.13"
 dependencies = [
