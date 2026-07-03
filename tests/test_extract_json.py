@@ -496,3 +496,99 @@ def test_extract_no_style_still_enforces_cap():
     with pytest.raises(ExtractError) as exc:
         extract_json.extract(_wrap(big), validate_style=False)
     assert exc.value.category == "cap-violation"
+
+
+# --- confidence field + gate (ADR 0022) --------------------------------------
+
+
+def test_confidence_survives_extraction():
+    # Like `quote`, the score must reach the payload; pydantic drops unknown keys.
+    f = _minimal_finding(confidence=90)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert payload.comments[0].confidence == 90
+
+
+def test_confidence_defaults_to_none_when_omitted():
+    f = _minimal_finding()
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert payload.comments[0].confidence is None
+
+
+@pytest.mark.parametrize("bad", [-1, 101, 150])
+def test_confidence_out_of_range_raises_schema_invalid(bad):
+    f = _minimal_finding(confidence=bad)
+    with pytest.raises(ExtractError) as exc:
+        extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert exc.value.category == "schema-invalid"
+
+
+def test_gate_drops_below_threshold(monkeypatch):
+    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)  # default 80
+    f = _minimal_finding(confidence=79)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert payload.comments == []
+
+
+def test_gate_keeps_at_or_above_threshold(monkeypatch):
+    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)  # default 80
+    at = _minimal_finding(line=1, confidence=80)
+    above = _minimal_finding(line=2, confidence=95)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [at, above]}))
+    assert [c.confidence for c in payload.comments] == [80, 95]
+
+
+def test_gate_keeps_unscored_none(monkeypatch):
+    # Absence means not-scored, not zero: an unscored finding is never culled,
+    # preserving older payloads and #44 omissions.
+    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)
+    f = _minimal_finding(confidence=None)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert len(payload.comments) == 1
+    assert payload.comments[0].confidence is None
+
+
+def test_gate_respects_env_override(monkeypatch):
+    # A finding the default (80) would drop survives when the operator lowers
+    # the threshold: the gate reads the env at call time.
+    monkeypatch.setenv("CONFIDENCE_THRESHOLD", "50")
+    f = _minimal_finding(confidence=60)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert payload.comments[0].confidence == 60
+
+
+def test_gate_drops_before_cap(monkeypatch):
+    # 11 findings, 5 below threshold: the gate culls them first, so the 6 that
+    # survive fall under the cap and no cap-violation fires (drop-then-cap).
+    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)
+    low = [_minimal_finding(line=i, confidence=10) for i in range(1, 6)]
+    high = [_minimal_finding(line=i, confidence=90) for i in range(6, 12)]
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": low + high}))
+    assert len(payload.comments) == 6
+
+
+def test_gate_runs_under_no_style(monkeypatch):
+    # The daemon calls extract with --no-style; the gate must still run there.
+    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)
+    f = _minimal_finding(confidence=10)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}), validate_style=False)
+    assert payload.comments == []
+
+
+@pytest.mark.parametrize("garbage", ["", "high", "80.5", "  "])
+def test_malformed_threshold_falls_back_to_default(monkeypatch, garbage):
+    # A non-integer env value must not escape as an uncaught crash; it falls
+    # back to the 80 default so one operator typo doesn't break every tick.
+    monkeypatch.setenv("CONFIDENCE_THRESHOLD", garbage)
+    below = _minimal_finding(line=1, confidence=50)
+    at = _minimal_finding(line=2, confidence=80)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [below, at]}))
+    assert [c.confidence for c in payload.comments] == [80]  # default 80 applied
+
+
+def test_out_of_range_threshold_is_honored(monkeypatch):
+    # An in-range-integer-but-extreme threshold is a legitimate operator choice,
+    # not malformed: 0 keeps everything, so it is honored as-is.
+    monkeypatch.setenv("CONFIDENCE_THRESHOLD", "0")
+    f = _minimal_finding(confidence=1)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert payload.comments[0].confidence == 1

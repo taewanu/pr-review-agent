@@ -163,6 +163,26 @@ run_with_timeout() {
   perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
 }
 
+# resolve_tunable <KEY> <dotenv-path>
+# Resolve an operator dial: the exported environment wins, then the KEY=VALUE
+# line in the .env file, else empty (the caller supplies the default). Prints the
+# value. Uses grep, not `source`, so a stray .env line can't run as code (the
+# same parse as run.sh's POLL_INTERVAL and bin/install.sh). The daemon never
+# sources .env wholesale, so a Python subprocess reading os.environ only sees a
+# dial the shell resolved here and exported.
+resolve_tunable() {
+  local key="$1" dotenv="$2" val
+  val="${!key:-}"
+  if [[ -z "$val" && -r "$dotenv" ]]; then
+    # `|| true` scopes tolerance to grep alone: a missing key (exit 1) is the
+    # normal absent-dial case and must resolve to empty, not abort the function
+    # under the daemon's `set -euo pipefail`. A genuinely broken downstream pipe
+    # still propagates.
+    val="$({ grep -E "^${key}=" "$dotenv" || true; } | head -1 | cut -d= -f2- | tr -d '"'\''')"
+  fi
+  printf '%s' "$val"
+}
+
 # Outer per-PR watchdog cap (#121). run_with_timeout bounds only the inner
 # `claude -p` call (300s default); the network steps around it — `gh repo clone`,
 # the per-PR `git fetch`, `gh pr diff`, the `gh api` posts — were unbounded, so a

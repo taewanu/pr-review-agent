@@ -1,0 +1,53 @@
+# ADR 0022: Confidence-scored generate-verify review
+
+Date: 2026-07-02
+Status: Accepted
+
+## Context
+
+The review agent misses real bugs that take effort to confirm, because precision is enforced at generation time. `review-agent-default.md` instructs the agent to flag a finding only when it is "certain a finding is real AND worth surfacing," and to prefer a zero-finding review over a padded one. That instruction is a precision lever applied to the generator itself: the agent decides, while generating, whether each candidate clears the bar, and self-censors the rest. The effect is that recall is capped at whatever the generator is confident enough to emit on a single pass.
+
+The failure mode showed on sounds-abroad#165. The review agent returned `No findings` on a diff whose new code path had a confirmed cross-component bug (a scroll effect that resolves a row from the displayed country's list using a rank that belongs to the *playing* country, so the two diverge while browsing). A separate high-effort review (Anthropic's code-review skill) caught it. The skill's method is the difference: it enumerated candidates broadly, verified each against the code, and confirmed the survivors. The bug needed that generate-then-verify effort to surface; under generation-time self-censorship the agent settled at "looks clean" and never generated the candidate.
+
+Two prior decisions bound the fix.
+
+- **The author prompt has a ceiling on judgment-level properties (ADR 0016, `project_voice_iteration_limits`).** Iterating the prompt improved clarity and economy but never moved load-bearing judgment. "Look harder" instructions are the same class: they buy more candidates, not the recall/precision separation, and pushing "flag more" against a precision-first prompt trades false negatives for false positives.
+- **The editor is subtract-only (ADR 0016).** The editorial pass fixed content *quality* by adding a second independent judgment, but its contract is drop / rewrite / reconcile and it "may not invent findings." It cannot recover a finding the author never generated. Recall has no repair stage downstream of the author.
+
+Both mature AI review systems solve this the same way, and neither does it at generation time. CodeRabbit generates in an investigative agent, then a separate verification agent filters each comment before it posts. Anthropic's code-review plugin runs independent agents that emit candidates, scores each 0-100, and drops everything below a threshold (default 80). The shared shape is to **decouple recall (generate wide) from precision (score, then a deterministic threshold gate)**, rather than fuse them in the generator.
+
+## Considered options
+
+- **Iterate the author prompt to look harder (rejected).** The path ADR 0016's ceiling already closed. More "hunt for bugs" language against a precision-first prompt raises false positives without giving the recall/precision separation; the generator stays the sole arbiter of what ships.
+- **Keep binary self-censorship, the status quo (rejected).** The coupling is the defect. A generator told "only emit what you're certain of" cannot also be the surface that surfaces effort-to-confirm bugs; certainty and the work needed to reach it are different axes.
+- **Score confidence in the prompt but let the agent self-filter by the number (rejected).** This is self-censorship with a number attached: the agent still decides internally what to withhold, so recall does not move. The cut must leave the agent and become deterministic, or the instruction "do not self-censor, score honestly" has no teeth.
+- **Let the editor add findings (rejected for S1).** The most direct recall repair, but it reverses ADR 0016's deliberate subtract-only contract and its index-keyed output (the daemon carries author fields by index; a net-new finding has no author index). Recall-via-redundancy is real, but it belongs in independent *generators*, not in the editor. Deferred to S2 (#187), parallel independent generators.
+- **Add parallel independent generators now (deferred).** The Anthropic redundancy lever and the stronger recall fix, but it multiplies per-tick `claude -p` cost and adds a dedup/merge seam. S1 ships the single-agent core first so the field, the gate, and the prompt method are proven before fan-out. S2 (#187) adds the generators; S3 (#188) adds a dedicated adversarial verify pass.
+
+## Decision
+
+Shift precision out of the generator and into a deterministic gate, and change the generator's method from judge-and-emit to generate-verify-score.
+
+1. **Generation method: enumerate wide, verify each, score.** `review-agent-default.md` changes from "flag only what you're certain of" to a three-step method. Enumerate candidates broadly, including the class that missed sounds-abroad#165: cross-component state that diverges across the diff boundary, caller-contract mismatches, and assumptions that two pieces of state co-vary. Verify each candidate by reading its callers and surrounding code and constructing a concrete trigger scenario (inputs to wrong output); a candidate with no scenario scores low. Score confidence 0-100. The existing precision rules (no style, no linter-owned nits, no hypotheticals) become "what lowers confidence," not "what not to look at."
+
+2. **`confidence` is an optional finding field, 0-100.** Added to the `Finding` model as `confidence: int | None = None` with a 0-100 range validator, mirroring `quote`'s optional-with-graceful-fallback precedent. Optional because a required field would fail every in-flight payload and every existing fixture until the prompt is updated, and because the agent intermittently omits fields (#44). An unscored finding (`None`) is never dropped by the gate: absence means "not scored," not "zero confidence."
+
+3. **A deterministic threshold gate, in `extract_json.py`, between style and cap.** The gate drops findings whose `confidence` is below `CONFIDENCE_THRESHOLD` (read in Python via `os.environ`, default 80), running after style validation and before the `MAX_FINDINGS` cap so a low-confidence finding never consumes a cap slot (drop-then-cap). It is always-on, not `--no-style`-gated: the daemon calls extract with `--no-style`, so a style-gated confidence check would never run in production. The drop count is logged to stderr for observability; surfacing it in the review body is deferred, not part of the S1 core.
+
+The daemon does not source `.env` wholesale, so a Python subprocess reading `os.environ` would not see a dial set only in `.env`. `review-pr.sh` therefore resolves `CONFIDENCE_THRESHOLD` (environment, then `.env`) through the shared `resolve_tunable` helper and exports it into the extract step, the same grep idiom `run.sh` uses for `POLL_INTERVAL_SECONDS`. Without this the operator's expected tuning path would silently no-op at the default.
+
+4. **The editor and the rest of the pipeline are untouched.** `confidence` rides author-to-final by index; `apply_edits.py`, `anchor_findings.py`, and `create-review.sh` carry it through opaquely and render nothing new. The editor never sees it, which is consistent with ADR 0016: the editor forms its own judgment from the code and is told not to trust the draft's confidence, and here it does not, because the gate is deterministic and runs before the editor on the already-filtered set.
+
+5. **The gate is the decoupling.** Moving the cut out of the generator is what licenses the prompt to say "do not self-censor, score honestly." Recall now comes from wide generation; precision comes from the threshold. `CONFIDENCE_THRESHOLD` is the single dial that trades them, calibrated by dogfooding from the 80 default rather than fixed by fiat.
+
+## Boundary
+
+This ADR decides the single-agent generate-verify core and the deterministic confidence gate. It does not add parallel generators (S2, #187), a dedicated adversarial verify pass (S3, #188), or any recall repair in the editor (ADR 0016's subtract-only contract stands). It does not touch the severity/type taxonomy (ADR 0002), the format layer (ADR 0010), anchoring, or the reply path. `voice.py` is unchanged: confidence is a numeric field, not prose, so it is outside the lexical gate's remit (ADR 0010 §4).
+
+## Consequences
+
+- Recall and precision are managed at different stages: the generator optimizes recall, the gate optimizes precision. A precision-first prompt no longer suppresses effort-to-confirm bugs.
+- `CONFIDENCE_THRESHOLD` is a tunable dial with a real trade: too high drops real findings, too low readmits the noise the precision rules exist to stop. The 80 default follows the Anthropic plugin convention and is a starting point for dogfood calibration, not a settled value.
+- A wrongly low-scored real finding is dropped silently, a new failure mode the old binary path expressed as a non-emit. The gate mitigates by never dropping unscored (`None`) findings and by keeping the threshold overridable; the verify step (scenario construction) is what should keep a real finding's score above the floor.
+- No new pipeline stage, unlike ADR 0016. The change is one optional field and one deterministic filter in an existing stage, plus a prompt rewrite. Cost and latency are unchanged; the single `claude -p` generation call does more work internally but the pipeline shape is the same.
+- The prompt grows a method and a rubric. The risk that a larger prompt dilutes the load-bearing instruction is real and is why S1 keeps the pipeline change minimal and defers fan-out: the prompt method is validated on its own before more agents run it.

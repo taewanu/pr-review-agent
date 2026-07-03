@@ -2,12 +2,13 @@
 """Parse the trailing ```json fence from stdin or argv[1], validate, emit JSON."""
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 # daemon/ is not a package and this script is run by path, so add its own dir to
 # the import path before importing the shared voice rules (ADR 0010).
@@ -16,6 +17,10 @@ import voice  # noqa: E402
 
 FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 MAX_FINDINGS = 10
+# ADR 0022. The precision floor for the confidence gate; env CONFIDENCE_THRESHOLD
+# overrides. 80 follows the Anthropic code-review plugin default, a dogfood
+# starting point, not a settled value.
+DEFAULT_CONFIDENCE_THRESHOLD = 80
 
 
 class ExtractError(Exception):
@@ -39,6 +44,10 @@ class Finding(BaseModel):
     # quote never fails the review (#44); the agent omits it only for region-level
     # findings with no single line to quote.
     quote: str | None = None
+    # Confidence 0-100 that the finding is real and worth surfacing (ADR 0022).
+    # Optional like `quote`: an unscored finding (None) is never dropped by the
+    # gate, so an older payload or a #44 omission is kept, not culled.
+    confidence: int | None = Field(default=None, ge=0, le=100)
 
     @model_validator(mode="after")
     def _check_end_line(self) -> Self:
@@ -72,18 +81,63 @@ def extract(raw: str, *, validate_style: bool = True) -> ReviewPayload:
         payload = ReviewPayload.model_validate(data)
     except ValidationError as exc:
         raise ExtractError("schema-invalid", str(exc)) from exc
-    # Style first, cap second: with N>cap em-dash findings, surface the voice
-    # problem before the count noise (culling to N=cap doesn't fix em-dashes).
-    # The editor stage (#133) parses the author payload with --no-style: the
-    # voice gate moves behind the Editor (ADR 0016), so the author parse only
-    # shapes the findings to hand on. The cap is not style and always applies.
+    # Order: style, then the confidence gate (ADR 0022), then the cap. Style
+    # first so an em-dash finding surfaces before count noise (culling to N=cap
+    # doesn't fix em-dashes); the gate before the cap so a low-confidence finding
+    # never takes a cap slot. The editor stage (#133) parses the author payload
+    # with --no-style: the voice gate moves behind the Editor (ADR 0016), so the
+    # author parse only shapes the findings to hand on. The gate and cap are not
+    # style and always apply.
     if validate_style:
         _validate_style(payload)
+    _drop_low_confidence(payload)
     if len(payload.comments) > MAX_FINDINGS:
         raise ExtractError(
             "cap-violation", f"too many findings: {len(payload.comments)} > cap {MAX_FINDINGS}"
         )
     return payload
+
+
+def _confidence_threshold() -> int:
+    """The confidence gate's cutoff, from env CONFIDENCE_THRESHOLD or the default.
+
+    A malformed value (non-integer, empty) falls back to the default with a
+    warning rather than raising: this gate runs outside extract()'s try/except,
+    so an uncaught ValueError would escape as an uncategorized crash (a stack
+    trace, `category=unknown`) and break every review tick from one operator
+    typo. Degrading to the default keeps reviews flowing, matching the shell
+    `:-` idiom's tolerance. An out-of-range integer is a legitimate operator
+    choice (a low value keeps everything, a high one drops all scored), not
+    malformed, so it is honored as-is."""
+    raw = os.environ.get("CONFIDENCE_THRESHOLD")
+    if raw is None:
+        return DEFAULT_CONFIDENCE_THRESHOLD
+    try:
+        return int(raw)
+    except ValueError:
+        print(
+            f"confidence-gate: ignoring non-integer CONFIDENCE_THRESHOLD={raw!r}, "
+            f"using default {DEFAULT_CONFIDENCE_THRESHOLD}",
+            file=sys.stderr,
+        )
+        return DEFAULT_CONFIDENCE_THRESHOLD
+
+
+def _drop_low_confidence(payload: ReviewPayload) -> None:
+    """Drop findings scored below the confidence threshold (ADR 0022).
+
+    This deterministic cull, not the agent's self-censorship, is where low
+    confidence findings are removed, which is what lets the prompt tell the agent
+    to generate wide and score honestly. Runs before the cap so a dropped finding
+    never takes a cap slot. A finding with no score (confidence None) is kept:
+    absence means not-scored, not zero, so older payloads and #44 omissions
+    survive. Env CONFIDENCE_THRESHOLD overrides the default."""
+    threshold = _confidence_threshold()
+    kept = [c for c in payload.comments if c.confidence is None or c.confidence >= threshold]
+    dropped = len(payload.comments) - len(kept)
+    if dropped:
+        print(f"confidence-gate: dropped {dropped} finding(s) below {threshold}", file=sys.stderr)
+    payload.comments = kept
 
 
 def _validate_style(payload: ReviewPayload) -> None:
