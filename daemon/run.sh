@@ -15,12 +15,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Interval resolution: an explicit POLL_INTERVAL_SECONDS in the environment (the
 # operator's shell for a foreground run) wins; otherwise read it from .env; else
-# default 300. grep rather than `source` so a stray .env line can't run as code
-# (same parse as bin/install.sh).
-poll_interval="${POLL_INTERVAL_SECONDS:-}"
-if [[ -z "$poll_interval" && -r "$REPO_ROOT/.env" ]]; then
-  poll_interval="$(grep -E '^POLL_INTERVAL_SECONDS=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2- | tr -d '"'\''')"
-fi
+# default 300. resolve_tunable does the env-then-.env lookup with the safe grep
+# parse and is pipefail-clean on an absent key.
+poll_interval="$(resolve_tunable POLL_INTERVAL_SECONDS "$REPO_ROOT/.env")"
 poll_interval="${poll_interval:-300}"
 if ! [[ "$poll_interval" =~ ^[0-9]+$ ]] || [[ "$poll_interval" -lt 1 ]]; then
   log_err "POLL_INTERVAL_SECONDS is not a positive integer ($poll_interval)"

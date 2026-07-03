@@ -27,7 +27,9 @@ fi
 
 # Read POLL_INTERVAL_SECONDS from .env, default 300. The bash subset of .env we
 # accept doesn't need full `source` — a simple grep is safer (no surprise eval).
-poll_interval="$(grep -E '^POLL_INTERVAL_SECONDS=' "$REPO_ROOT/.env" | head -1 | cut -d= -f2- | tr -d '"'\''')"
+# Brace-guard the grep so a missing key (exit 1) doesn't abort under pipefail.
+# This script doesn't source lib.sh, so it can't reuse resolve_tunable.
+poll_interval="$({ grep -E '^POLL_INTERVAL_SECONDS=' "$REPO_ROOT/.env" || true; } | head -1 | cut -d= -f2- | tr -d '"'\''')"
 poll_interval="${poll_interval:-300}"
 if ! [[ "$poll_interval" =~ ^[0-9]+$ ]] || [[ "$poll_interval" -lt 1 ]]; then
   echo "ERROR: POLL_INTERVAL_SECONDS in .env is not a positive integer ($poll_interval)" >&2
