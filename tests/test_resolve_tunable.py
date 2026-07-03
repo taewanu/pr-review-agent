@@ -17,8 +17,12 @@ LIB = REPO_ROOT / "daemon" / "lib.sh"
 
 
 def _run(snippet: str, env: dict | None = None) -> str:
+    # Run under the daemon's own flags: review-pr.sh sources lib.sh with
+    # `set -euo pipefail`, so the helper must not abort when grep finds no
+    # matching key (the default, key-absent case). A bare shell would mask
+    # that regression.
     result = subprocess.run(
-        ["bash", "-c", f"source {LIB}; {snippet}"],
+        ["bash", "-c", f"set -euo pipefail; source {LIB}; {snippet}"],
         capture_output=True,
         text=True,
         env=env,

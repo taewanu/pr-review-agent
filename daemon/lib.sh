@@ -174,7 +174,11 @@ resolve_tunable() {
   local key="$1" dotenv="$2" val
   val="${!key:-}"
   if [[ -z "$val" && -r "$dotenv" ]]; then
-    val="$(grep -E "^${key}=" "$dotenv" | head -1 | cut -d= -f2- | tr -d '"'\''')"
+    # `|| true` scopes tolerance to grep alone: a missing key (exit 1) is the
+    # normal absent-dial case and must resolve to empty, not abort the function
+    # under the daemon's `set -euo pipefail`. A genuinely broken downstream pipe
+    # still propagates.
+    val="$({ grep -E "^${key}=" "$dotenv" || true; } | head -1 | cut -d= -f2- | tr -d '"'\''')"
   fi
   printf '%s' "$val"
 }
