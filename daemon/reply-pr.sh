@@ -69,6 +69,11 @@ PR_NUMBER="${BASH_REMATCH[3]}"
 # the interleaved review-path lines of other PRs in the same cycle.
 log_set_pr_context "$REPO" "$PR_NUMBER"
 
+# Same per-PR colour as review-pr.sh's (identical "repo#pr" hash key), so a
+# PR's colour matches across both scripts if they ever run concurrently.
+PR_COLOR_START="$(_sgr "${_LOG_PR_PALETTE[$(pr_color_index "${REPO}#${PR_NUMBER}")]}")"
+PR_COLOR_RESET="$(_sgr 0)"
+
 GITHUB_USER="$(gh api user --jq '.login')"
 HEAD_OID=""
 
@@ -189,10 +194,16 @@ REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
 reply_rc=0
 (
   cd "$SCRATCH"
+  # claude's own stderr (e.g. its non-interactive workspace-trust notice,
+  # expected every run since a fresh scratch clone is never pre-trusted) goes
+  # to a sidecar file rather than flooding the daemon log unlabeled.
   run_with_timeout "$REPLY_AGENT_TIMEOUT" \
     claude -p "/reply-pr $PR_URL --threads $THREADS_BASENAME" \
-    --output-format stream-json --verbose |
-    python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE"
+    --output-format stream-json --verbose \
+    2>"$RAW_FILE.stderr" |
+    python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE" \
+      --label "${PR_COLOR_START}pr${PR_NUMBER}:reply${PR_COLOR_RESET}" \
+      --cost-out "$RAW_FILE.cost"
 ) || reply_rc=$?
 if [[ "$reply_rc" -eq "$TIMEOUT_EXIT" ]]; then
   log_failure "reply-timeout" "$PR_URL" "$HEAD_OID" \
@@ -202,6 +213,9 @@ fi
 if [[ ! -s "$RAW_FILE" ]]; then
   log_failure "empty-stdout" "$PR_URL" "$HEAD_OID" "reply agent produced no output"
   exit 1
+fi
+if [[ -s "$RAW_FILE.cost" ]]; then
+  log_info "reply cost: \$$(cat "$RAW_FILE.cost")"
 fi
 
 log_step "posting replies"

@@ -73,6 +73,15 @@ PR_NUMBER="${BASH_REMATCH[3]}"
 # cycle-level lines in poll.sh/run.sh).
 log_set_pr_context "$BASE_REPO" "$PR_NUMBER"
 
+# Same per-PR colour the daemon-level lines above use (pr_prefix's palette,
+# keyed identically off "repo#pr"), reused for the lens/editor activity labels
+# below so a PR's colour is consistent across both logging subsystems. Only
+# the escape bytes travel through --label; stream_format.py stays colour-blind
+# (it just wraps whatever string it's given in brackets), so _log_color_enabled
+# stays single-sourced here.
+PR_COLOR_START="$(_sgr "${_LOG_PR_PALETTE[$(pr_color_index "${BASE_REPO}#${PR_NUMBER}")]}")"
+PR_COLOR_RESET="$(_sgr 0)"
+
 # Set after `gh pr view`; leave blank so log_failure pre-view still has the
 # placeholder field populated.
 HEAD_OID=""
@@ -98,6 +107,27 @@ LAST_FAILURE_CATEGORY=""
 # Per-PR lock path (#67); set once acquired, released by cleanup().
 LOCK_FILE=""
 
+# Sum every lens/editor/judge-fix cost sidecar and log the total, on success or
+# failure (ADR 0023 dogfood follow-up): each was only ever visible as one line
+# per claude -p call in the live log, so seeing what a review actually cost, or
+# a FAILED review had already burned before it failed, meant hand-summing the
+# log by eye. Must run before cleanup() removes $SCRATCH (the trap order below
+# guarantees this: flip_status_failed, which calls this, runs first). `find`,
+# not a `*.cost` glob: every raw file (hence every .cost sidecar) is a dotfile
+# (.pr-review-raw*.txt.cost), which a bare `*` glob silently excludes without
+# `dotglob`. Process substitution (not a pipe) keeps the while loop in this
+# shell, so total_cost survives past the loop.
+log_total_review_cost() {
+  [[ -n "${SCRATCH:-}" ]] || return 0
+  local total_cost=0 cost_file
+  while IFS= read -r cost_file; do
+    total_cost="$(awk -v a="$total_cost" -v b="$(cat "$cost_file")" 'BEGIN { printf "%.3f", a + b }')"
+  done < <(find "$SCRATCH" -maxdepth 1 -name "*.cost" -type f)
+  if [[ "$total_cost" != "0" ]]; then
+    log_info "total review cost: \$${total_cost}"
+  fi
+}
+
 # Single EXIT path for the run-scoped artifacts: the per-PR lock (#67) and the
 # scratch clone, neither of which should outlive the run. The status comment
 # (#60) is deliberately durable, so it is not cleaned up here. The globals it
@@ -121,6 +151,12 @@ cleanup() {
 flip_status_failed() {
   local rc="$1"
   [[ "$rc" -ne 0 ]] || return 0
+  # A failed attempt can still have burned real claude -p cost on whichever
+  # lenses/editor ran before the failure (e.g. a style-violation caught only
+  # after all 5 lenses and the editor completed, sounds-abroad#192): that cost
+  # was previously invisible, since the success path's own cost log line never
+  # ran. Independent of the guards below, which are about the status comment.
+  log_total_review_cost
   [[ "${STATUS_DONE:-0}" -eq 0 ]] || return 0
   [[ -n "${STATUS_COMMENT_ID:-}" ]] || return 0
   local reason failed_head failed_block failed_body
@@ -148,6 +184,17 @@ extract_category() {
   local cat
   cat="$(grep -m1 '^category=' "$stderr_path" 2>/dev/null | cut -d= -f2 || true)"
   [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
+}
+
+# Parse the `truncated_count=<n>` line merge_findings.py emits on a successful
+# (non-error) run whose post-cap truncation dropped findings (ADR 0023). Falls
+# back to 0 so an absent line (no truncation happened) is indistinguishable
+# from an explicit zero, both meaning "nothing to append to the summary."
+extract_truncated_count() {
+  local stderr_path="$1"
+  local n
+  n="$(grep -m1 '^truncated_count=' "$stderr_path" 2>/dev/null | cut -d= -f2 || true)"
+  [[ -n "$n" ]] && printf '%s' "$n" || printf '0'
 }
 
 # resolution: commit-driven thread resolution (#125, ADR 0017; stamp model ADR 0019).
@@ -216,10 +263,15 @@ resolution() {
       rc=0
       (
         cd "$SCRATCH"
+        # claude's own stderr (workspace-trust notice, etc.) goes to a sidecar
+        # file rather than the primary log; see the lens loop above.
         run_with_timeout "$fix_check_timeout" \
           claude -p "/judge-fix $PR_URL --finding $(basename "$finding_file")" \
-          --output-format stream-json --verbose |
-          python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$judge_raw"
+          --output-format stream-json --verbose \
+          2>"$judge_raw.stderr" |
+          python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$judge_raw" \
+            --label "${PR_COLOR_START}pr${PR_NUMBER}:judge-fix${PR_COLOR_RESET}" \
+            --cost-out "$judge_raw.cost"
       ) || rc=$?
       if [[ "$rc" -ne 0 || ! -s "$judge_raw" ]]; then
         log_info "fix-check failed for ${path}:${line} (${tid}), rc=${rc}; leaving open"
@@ -261,11 +313,12 @@ resolution() {
   return 0
 }
 
-meta="$(gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,author)"
+meta="$(gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,author)"
 HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
 HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
 HEAD_OID="$(jq -r '.headRefOid // empty' <<<"$meta")"
+BASE_REF="$(jq -r '.baseRefName // empty' <<<"$meta")"
 PR_AUTHOR="$(jq -r '.author.login // empty' <<<"$meta")"
 if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HEAD_OID" ]]; then
   log_err "gh pr view returned incomplete metadata for $PR_URL (closed PR with deleted fork?)"
@@ -345,6 +398,22 @@ DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
 NUMBERED_BASENAME=".pr-review-diff-numbered.txt"
 NUMBERED_FILE="$SCRATCH/$NUMBERED_BASENAME"
 RAW_FILE="$SCRATCH/.pr-review-raw.txt"
+# ADR 0023: parallel independent lenses, each an unaware-of-the-others
+# generator. Their raw outputs are unioned and deduped before the confidence gate
+# (daemon/merge_findings.py), so a bug one lens misses another can still catch.
+# Parallel arrays, not an associative array, so this stays bash-3.2-safe (ADR
+# 0013's runtime constraint: stock macOS bash has no bash-4 associative arrays).
+LENS_COMMANDS=(/review-pr /review-pr-correctness /review-pr-perf /review-pr-security /review-pr-tests)
+LENS_LABELS=(default correctness perf security tests)
+# Each path's own filename suffix names its lens; a named variable per lens
+# would only be read once, right here, so the array is written inline.
+LENS_RAW_FILES=(
+  "$RAW_FILE"
+  "$SCRATCH/.pr-review-raw-correctness.txt"
+  "$SCRATCH/.pr-review-raw-perf.txt"
+  "$SCRATCH/.pr-review-raw-security.txt"
+  "$SCRATCH/.pr-review-raw-tests.txt"
+)
 # The editor agent reads the draft from cwd by basename (like the diff), so the
 # author payload lives in the scratch under a bare name (#133).
 AUTHOR_BASENAME=".pr-review-author.json"
@@ -386,7 +455,21 @@ if [[ -n "$LAST_SHA" ]]; then
   fi
 fi
 if [[ $diff_scoped -eq 0 ]]; then
-  gh pr diff "$PR_URL" >"$DIFF_FILE"
+  # Explicit timeout (review fix, ADR 0023): PER_PR_TIMEOUT's default grew to
+  # cover the 5-lens review-agent leg's worst case, which widened the window
+  # before an unrelated, unbounded gh call (this one) gets caught if it hangs.
+  # A dedicated small bound keeps a stalled `gh pr diff` fast to detect
+  # regardless of how large the outer per-PR watchdog needs to be.
+  GH_API_CALL_TIMEOUT="${GH_API_CALL_TIMEOUT:-90}"
+  diff_rc=0
+  run_with_timeout "$GH_API_CALL_TIMEOUT" gh pr diff "$PR_URL" >"$DIFF_FILE" || diff_rc=$?
+  if [[ "$diff_rc" -eq "$TIMEOUT_EXIT" ]]; then
+    log_failure "diff-fetch-timeout" "$PR_URL" "$HEAD_OID" "gh pr diff exceeded ${GH_API_CALL_TIMEOUT}s"
+    exit 1
+  elif [[ "$diff_rc" -ne 0 ]]; then
+    log_failure "diff-fetch-failed" "$PR_URL" "$HEAD_OID" "gh pr diff exited $diff_rc"
+    exit 1
+  fi
 fi
 
 # Line-numbered diff for the agents (ADR 0018, layer A).
@@ -406,6 +489,12 @@ if [[ $diff_scoped -eq 1 ]]; then
 else
   STATUS_SCOPE="$(status_scope_link "$HEAD_REPO_URL" "" "$HEAD_OID")"
 fi
+# Named unconditionally, not just when it differs from the repo's default
+# branch: knowing the default would need its own `gh repo view` call, and a
+# stacked PR (this PR's base is another open PR's branch, not main) is common
+# enough in a solo/incremental workflow that the operator should not have to
+# guess from context which diff they're looking at.
+[[ -n "$BASE_REF" ]] && STATUS_SCOPE="${STATUS_SCOPE} (base: \`${BASE_REF}\`)"
 # Find the status comment first, then recover the reviewed-SHAs trail (ADR 0021)
 # from its current body before the edits below overwrite it. The trail is the one
 # part of the comment that accumulates across ticks rather than being derived from
@@ -436,63 +525,153 @@ else
   fi
 fi
 
-log_step "running review agent via claude -p"
-# Wall-clock backstop (#76), symmetric with the reply agent: same unbounded
-# `claude -p` shape, same 300s rationale (see reply-pr.sh). Partial output on
-# timeout is discarded, not parsed.
-REVIEW_AGENT_TIMEOUT="${REVIEW_AGENT_TIMEOUT:-300}"
-review_rc=0
-(
-  cd "$SCRATCH"
-  run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-    claude -p "/review-pr $PR_URL --diff $NUMBERED_BASENAME" \
-    --output-format stream-json --verbose |
-    python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE"
-) || review_rc=$?
-if [[ "$review_rc" -eq "$TIMEOUT_EXIT" ]]; then
-  log_failure "review-timeout" "$PR_URL" "$HEAD_OID" \
-    "review agent exceeded ${REVIEW_AGENT_TIMEOUT}s"
-  exit 1
-fi
-if [[ ! -s "$RAW_FILE" ]]; then
-  log_failure "empty-stdout" "$PR_URL" "$HEAD_OID" "claude produced no output"
-  exit 1
-fi
+# Wall-clock backstop (#76), symmetric with the reply agent. Raised from 300s
+# to 600s after dogfooding the multi-lens design (ADR 0023): even in isolation
+# several lenses on a real PR took 178-262s, some genuinely exceeded 300s (not
+# stuck, just slow generate-verify-score work), and concurrent slot contention
+# can push this further. Partial output on timeout is discarded, not parsed.
+REVIEW_AGENT_TIMEOUT="${REVIEW_AGENT_TIMEOUT:-600}"
+
+# Global claude_slot pool size (ADR 0023 revision): resolve from env, then
+# .env, same pattern as CONFIDENCE_THRESHOLD below. acquire_claude_slot (in
+# lib.sh, which every background lens subshell also sources) reads
+# CLAUDE_SLOT_POOL_SIZE as `${CLAUDE_SLOT_POOL_SIZE:-3}`, which only sees a
+# value set in .env if this shell exports it first (the daemon never sources
+# .env wholesale).
+CLAUDE_SLOT_POOL_SIZE="$(resolve_tunable CLAUDE_SLOT_POOL_SIZE "$SCRIPT_DIR/../.env")"
+[[ -n "$CLAUDE_SLOT_POOL_SIZE" ]] && export CLAUDE_SLOT_POOL_SIZE
+
+# ADR 0023 (revised): five independent lenses read the same diff, each
+# unaware of the others' output, so a bug one misses another can still catch.
+# Dispatched in parallel, each bounded by the global claude_slot pool
+# (daemon/lib.sh's acquire_claude_slot/release_claude_slot), not by ADR 0013's
+# MAX_PARALLEL: that dial now only bounds concurrent review-pr.sh *processes*,
+# while the slot pool bounds concurrent `claude -p` *calls* directly, shared
+# automatically across however many review-pr.sh processes are running (the
+# slot files live on disk, not in one process's memory). A stuck lens is still
+# bounded by its own REVIEW_AGENT_TIMEOUT; the slot is released in the same
+# subshell that acquired it, so a killed lens's slot is freed immediately
+# rather than waiting for stale-reclaim.
+lens_i=0
+lens_count="${#LENS_COMMANDS[@]}"
+lens_pids=()
+while [[ "$lens_i" -lt "$lens_count" ]]; do
+  lens_cmd="${LENS_COMMANDS[$lens_i]}"
+  lens_label="${LENS_LABELS[$lens_i]}"
+  lens_raw="${LENS_RAW_FILES[$lens_i]}"
+  log_step "running review agent ($lens_label lens) via claude -p"
+  (
+    slot="$(acquire_claude_slot "$lens_label lens")"
+    cd "$SCRATCH"
+    rc=0
+    # `claude`'s own stderr (e.g. its non-interactive workspace-trust notice,
+    # expected every run since a fresh scratch clone is never pre-trusted) was
+    # bypassing stream_format.py's labeling and flooding the daemon log
+    # unlabeled; it goes to a per-lens sidecar file instead, so nothing is
+    # silently lost but the primary log stays legible.
+    run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
+      claude -p "$lens_cmd $PR_URL --diff $NUMBERED_BASENAME" \
+      --output-format stream-json --verbose \
+      2>"$lens_raw.stderr" |
+      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
+        --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
+        --cost-out "$lens_raw.cost" ||
+      rc=$?
+    release_claude_slot "$slot"
+    exit "$rc"
+  ) &
+  lens_pids[lens_i]=$!
+  lens_i=$((lens_i + 1))
+done
+
+# Wait for every backgrounded lens, in dispatch order, checking each one's
+# outcome. wait "$pid" returns that PID's own exit status, unaffected by which
+# other lenses finish first.
+lens_i=0
+while [[ "$lens_i" -lt "$lens_count" ]]; do
+  lens_label="${LENS_LABELS[$lens_i]}"
+  lens_raw="${LENS_RAW_FILES[$lens_i]}"
+  # The default lens keeps ADR 0005's original unprefixed categories
+  # (review-timeout, empty-stdout): both are pinned elsewhere (status_failure_
+  # reason's routing in this file, test_log_styling.py, test_status_comment.py).
+  # Every other lens gets a `<label>-` prefix so a stuck lens is diagnosable in
+  # .daemon.log without ambiguity.
+  if [[ "$lens_label" == "default" ]]; then
+    timeout_category="review-timeout"
+    empty_category="empty-stdout"
+  else
+    timeout_category="${lens_label}-review-timeout"
+    empty_category="${lens_label}-empty-stdout"
+  fi
+
+  lens_rc=0
+  wait "${lens_pids[$lens_i]}" || lens_rc=$?
+  if [[ "$lens_rc" -eq "$TIMEOUT_EXIT" ]]; then
+    log_failure "$timeout_category" "$PR_URL" "$HEAD_OID" \
+      "$lens_label lens exceeded ${REVIEW_AGENT_TIMEOUT}s"
+    exit 1
+  fi
+  if [[ ! -s "$lens_raw" ]]; then
+    log_failure "$empty_category" "$PR_URL" "$HEAD_OID" "$lens_label lens produced no output"
+    exit 1
+  fi
+
+  lens_i=$((lens_i + 1))
+done
 
 # Confidence gate threshold (ADR 0022): resolve from env, then .env, and export
-# so extract_json.py's os.environ read sees it. The daemon never sources .env
+# so merge_findings.py's os.environ read sees it. The daemon never sources .env
 # wholesale, so without this the operator's .env dial would silently no-op and
 # the gate would sit at the Python default (80). An unset value stays unexported
 # so Python keeps its default.
 CONFIDENCE_THRESHOLD="$(resolve_tunable CONFIDENCE_THRESHOLD "$SCRIPT_DIR/../.env")"
 [[ -n "$CONFIDENCE_THRESHOLD" ]] && export CONFIDENCE_THRESHOLD
 
-log_step "extracting payload"
-# --no-style: the voice gate moved behind the editor (ADR 0016). This parse only
-# schema-validates the author draft and shapes it to hand to the editor; the
-# final gate runs in apply_edits.py, on what is posted.
-if ! python3 "$SCRIPT_DIR/extract_json.py" --no-style "$RAW_FILE" >"$AUTHOR_FILE" 2>"$EXTRACT_ERR"; then
+log_step "merging lens payloads"
+# --no-style: the voice gate moved behind the editor (ADR 0016). This union
+# only schema-validates each lens's draft, dedupes, and shapes the result to
+# hand to the editor; the final gate runs in apply_edits.py, on what is posted.
+if ! python3 "$SCRIPT_DIR/merge_findings.py" --no-style "${LENS_RAW_FILES[@]}" \
+  >"$AUTHOR_FILE" 2>"$EXTRACT_ERR"; then
   cat "$EXTRACT_ERR" >&2
-  log_failure "$(extract_category "$EXTRACT_ERR")" "$PR_URL" "$HEAD_OID" "extract_json.py exited non-zero"
+  log_failure "$(extract_category "$EXTRACT_ERR")" "$PR_URL" "$HEAD_OID" "merge_findings.py exited non-zero"
   exit 1
 fi
+# Surfaced in the posted summary (ADR 0023), not just this stderr log: a
+# healthy multi-lens union clearing the cap is not an error, so the count
+# still needs a visible trace an operator can actually see.
+TRUNCATED_COUNT="$(extract_truncated_count "$EXTRACT_ERR")"
 
 # Editorial pass (#133, ADR 0016): a fresh editor agent re-reads the PR at HEAD
 # and refines the draft (drop weak findings, sharpen survivors, reconcile the
 # summary) before posting. Skipped on a zero-finding draft, where there is
 # nothing to refine; apply_edits.py still runs the moved voice gate either way.
-EDIT_ARGS=(--author "$AUTHOR_FILE")
+EDIT_ARGS=(--author "$AUTHOR_FILE" --truncated-count "$TRUNCATED_COUNT")
 if [[ "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
   log_step "running editor agent via claude -p"
-  # Same unbounded `claude -p` shape and 300s backstop as the review agent.
-  EDITOR_AGENT_TIMEOUT="${EDITOR_AGENT_TIMEOUT:-300}"
+  # Same unbounded `claude -p` shape and backstop as the review agent, raised
+  # to 600s for the same dogfood-observed reason. Not backgrounded (nothing to
+  # fan out to; it's the one call after the lenses), but still draws from the
+  # shared claude_slot pool (ADR 0023 revision), since other PRs' lenses/
+  # editors may be running concurrently.
+  EDITOR_AGENT_TIMEOUT="${EDITOR_AGENT_TIMEOUT:-600}"
   edit_rc=0
   (
+    slot="$(acquire_claude_slot editor)"
     cd "$SCRATCH"
+    rc=0
+    # See the lens loop above: claude's own stderr goes to a sidecar file, not
+    # the primary log.
     run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
       claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" \
-      --output-format stream-json --verbose |
-      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE"
+      --output-format stream-json --verbose \
+      2>"$EDIT_RAW_FILE.stderr" |
+      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
+        --label "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" \
+        --cost-out "$EDIT_RAW_FILE.cost" ||
+      rc=$?
+    release_claude_slot "$slot"
+    exit "$rc"
   ) || edit_rc=$?
   if [[ "$edit_rc" -eq "$TIMEOUT_EXIT" ]]; then
     log_failure "edit-timeout" "$PR_URL" "$HEAD_OID" "editor agent exceeded ${EDITOR_AGENT_TIMEOUT}s"
@@ -616,7 +795,9 @@ status_trail_block="$(printf '%s' "$STATUS_TRAIL_PRIOR" |
     2>/dev/null || true)"
 reviewed_body="$(render_status_comment \
   "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" \
-  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block" "$status_trail_block")"
+  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block" "$status_trail_block" \
+  "$HEAD_OID")"
 edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
 
+log_total_review_cost
 log_step "done"

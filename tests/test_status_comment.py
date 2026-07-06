@@ -88,6 +88,33 @@ def test_render_is_scope_only_never_findings():
     assert "AI-drafted" not in out
 
 
+def test_render_omits_sentinel_when_not_given():
+    # The default: "Reviewing…" and failure renders never pass a 7th arg.
+    out, rc, _ = _run("render_status_comment 'h' 'full PR' 1 'only.sh'")
+    assert rc == 0
+    assert "pr-review-agent:sha:" not in out
+
+
+SHA_40 = "f" * 40
+
+
+def test_render_embeds_sentinel_when_given():
+    # ADR 0024: the terminal "✅ Reviewed" render passes HEAD_OID as the 7th
+    # arg, so a zero-finding review (no review-object sentinel, ADR 0020)
+    # still leaves one discover_sentinel_sha can find next tick.
+    out, rc, _ = _run(f"render_status_comment 'h' 'full PR' 1 'only.sh' '' '' '{SHA_40}'")
+    assert rc == 0
+    assert f"<!-- pr-review-agent:sha:{SHA_40} -->" in out
+
+
+def test_render_sentinel_sits_after_provenance_before_status_marker():
+    out, rc, _ = _run(f"render_status_comment 'h' 'full PR' 1 'only.sh' '' '' '{SHA_40}'")
+    provenance_pos = out.index("🤖 _pr-review-agent_")
+    sentinel_pos = out.index(f"pr-review-agent:sha:{SHA_40}")
+    marker_pos = out.index("<!-- pr-review-agent:status -->")
+    assert provenance_pos < sentinel_pos < marker_pos
+
+
 # --- status_sha_link / status_scope_link (head-line + scope builders) -----
 # These pure helpers (lib.sh) build the linked head SHA and linked scope range
 # that review-pr.sh passes into render_status_comment (#102). The head line uses
@@ -188,10 +215,40 @@ def test_status_failure_reason_timeouts_share_one_phrase():
         assert out == "The review agent timed out."
 
 
+def test_status_failure_reason_lens_timeouts_share_the_same_phrase():
+    # Every lens (ADR 0023) reads as "the review" to the author too; which
+    # internal generator stalled is not something they can act on.
+    for category in (
+        "correctness-review-timeout",
+        "perf-review-timeout",
+        "security-review-timeout",
+        "tests-review-timeout",
+    ):
+        out, rc, _ = _run(f"status_failure_reason {category}")
+        assert rc == 0
+        assert out == "The review agent timed out."
+
+
+def test_status_failure_reason_matches_a_hypothetical_future_lens_by_glob():
+    # Proves the case arm is a `*-review-timeout` glob, not a literal
+    # enumeration of today's 4 lenses: a made-up lens name must match with no
+    # code change here, the same way daemon/review-pr.sh's dispatch loop
+    # derives "${lens_label}-review-timeout" programmatically from LENS_LABELS.
+    out, rc, _ = _run("status_failure_reason zzz-hypothetical-future-lens-review-timeout")
+    assert rc == 0
+    assert out == "The review agent timed out."
+
+
 def test_status_failure_reason_pending_conflict_is_surfaced():
     out, rc, _ = _run("status_failure_reason pending-conflict")
     assert rc == 0
     assert out == "An earlier review is still pending on this PR."
+
+
+def test_status_failure_reason_diff_fetch_timeout_is_surfaced():
+    out, rc, _ = _run("status_failure_reason diff-fetch-timeout")
+    assert rc == 0
+    assert out == "Fetching the PR diff timed out."
 
 
 def test_status_failure_reason_internal_hiccups_are_silent():
@@ -205,6 +262,8 @@ def test_status_failure_reason_internal_hiccups_are_silent():
         "style-violation",
         "edit-empty",
         "post-failed",
+        "diff-fetch-failed",
+        "all-lenses-failed",
         "unknown",
     ):
         out, rc, _ = _run(f"status_failure_reason {category}")
@@ -215,7 +274,7 @@ def test_status_failure_reason_internal_hiccups_are_silent():
 def test_status_failure_reason_phrases_are_em_dash_free():
     # The failed head-line is fixed chrome that skips the voice.py gate, so the
     # no-em-dash rule is enforced on these phrases directly.
-    for category in ("review-timeout", "pending-conflict"):
+    for category in ("review-timeout", "pending-conflict", "diff-fetch-timeout"):
         out, _, _ = _run(f"status_failure_reason {category}")
         assert "—" not in out
 

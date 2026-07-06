@@ -138,10 +138,32 @@ def finalize(author: dict, edits_raw: str | None) -> dict:
     return final
 
 
+def append_truncation_note(payload: dict, truncated_count: int) -> dict:
+    """Append a count of findings the merge-time cap silently dropped (ADR 0023)
+    to the summary, mirroring Anthropic's own code-review plugin convention of
+    capping nits and mentioning the rest as a count rather than dropping them
+    with no visible trace. A no-op when truncated_count is 0.
+
+    Runs after the Editor's gate, not before: this is fixed UI chrome authored
+    here, not agent prose, so it skips voice.py the same way status_failure_
+    reason's phrases do. Keep the sentence 두괄식 and em-dash-free by hand."""
+    if truncated_count <= 0:
+        return payload
+    plural = "" if truncated_count == 1 else "s"
+    note = f"{truncated_count} additional low-severity finding{plural} omitted by the review cap."
+    return {**payload, "summary": f"{payload['summary']}\n\n{note}"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--author", required=True, help="path to the author payload JSON")
     parser.add_argument("--edits", help="path to the Editor agent's raw stdout; omit to skip")
+    parser.add_argument(
+        "--truncated-count",
+        type=int,
+        default=0,
+        help="findings dropped by merge_findings.py's cap truncation (ADR 0023)",
+    )
     args = parser.parse_args()
     author = json.loads(Path(args.author).read_text())
     edits_raw = Path(args.edits).read_text() if args.edits else None
@@ -151,6 +173,7 @@ def main() -> int:
         print(f"category={exc.category}", file=sys.stderr)
         print(f"apply_edits: {exc}", file=sys.stderr)
         return 1
+    final = append_truncation_note(final, args.truncated_count)
     print(json.dumps(final))
     return 0
 

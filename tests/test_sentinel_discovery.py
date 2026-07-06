@@ -45,8 +45,16 @@ def _comment(
     *,
     login: str = "operator",
     created_at: str = "2026-05-28T10:00:00Z",
+    updated_at: str | None = None,
 ) -> dict:
-    return {"user": {"login": login}, "body": body, "created_at": created_at}
+    # updated_at defaults to created_at (a never-edited comment): the status
+    # comment (ADR 0024) is the exception, created once and edited every tick.
+    return {
+        "user": {"login": login},
+        "body": body,
+        "created_at": created_at,
+        "updated_at": updated_at if updated_at is not None else created_at,
+    }
 
 
 def _sentinel_body(sha: str) -> str:
@@ -237,6 +245,26 @@ def test_comments_api_failure_degrades_to_reviews_only():
     )
     assert rc == 0
     assert sha == SENTINEL_SHA_A
+
+
+def test_comment_uses_updated_at_not_created_at():
+    # ADR 0024 regression: the status comment is created once (old created_at)
+    # then edited every tick, most recently with a fresh sentinel from a
+    # zero-finding review that never got its own review-object sentinel. If
+    # sorting used created_at, this comment would look ancient next to the
+    # review below and the stale review sentinel would win, defeating the fix.
+    sha, rc, _ = _run(
+        reviews=[_review(_sentinel_body(SENTINEL_SHA_A), submitted_at="2026-05-28T10:00:00Z")],
+        comments=[
+            _comment(
+                _sentinel_body(SENTINEL_SHA_B),
+                created_at="2026-05-01T09:00:00Z",
+                updated_at="2026-05-28T12:00:00Z",
+            )
+        ],
+    )
+    assert rc == 0
+    assert sha == SENTINEL_SHA_B
 
 
 def test_filters_comment_sentinel_by_login():
