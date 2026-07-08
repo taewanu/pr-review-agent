@@ -586,34 +586,28 @@ done
 
 # Wait for every backgrounded lens, in dispatch order, checking each one's
 # outcome. wait "$pid" returns that PID's own exit status, unaffected by which
-# other lenses finish first.
+# other lenses finish first. Every PID is waited on unconditionally, even when
+# an earlier one timed out or produced nothing: a self-review (pr-review-agent
+# PR #192) caught the prior version exiting immediately on the first bad lens,
+# which left later-dispatched, still-running lenses (a 5-lens/3-slot pool means
+# the last dispatched lenses start their own timeout clock later in wall time,
+# so this is the normal case, not an edge case) as orphaned background jobs
+# racing the EXIT trap's `cleanup()`, which `rm -rf`s $SCRATCH out from under
+# whatever they were still writing to. A timed-out or empty lens is logged and
+# skipped, not fatal to the whole review: merge_findings.py already tolerates
+# a lens payload that fails to parse (ADR 0024), including an empty one, so the
+# other lenses' valid findings still reach the confidence gate.
 lens_i=0
 while [[ "$lens_i" -lt "$lens_count" ]]; do
   lens_label="${LENS_LABELS[$lens_i]}"
   lens_raw="${LENS_RAW_FILES[$lens_i]}"
-  # The default lens keeps ADR 0005's original unprefixed categories
-  # (review-timeout, empty-stdout): both are pinned elsewhere (status_failure_
-  # reason's routing in this file, test_log_styling.py, test_status_comment.py).
-  # Every other lens gets a `<label>-` prefix so a stuck lens is diagnosable in
-  # .daemon.log without ambiguity.
-  if [[ "$lens_label" == "default" ]]; then
-    timeout_category="review-timeout"
-    empty_category="empty-stdout"
-  else
-    timeout_category="${lens_label}-review-timeout"
-    empty_category="${lens_label}-empty-stdout"
-  fi
 
   lens_rc=0
   wait "${lens_pids[$lens_i]}" || lens_rc=$?
   if [[ "$lens_rc" -eq "$TIMEOUT_EXIT" ]]; then
-    log_failure "$timeout_category" "$PR_URL" "$HEAD_OID" \
-      "$lens_label lens exceeded ${REVIEW_AGENT_TIMEOUT}s"
-    exit 1
-  fi
-  if [[ ! -s "$lens_raw" ]]; then
-    log_failure "$empty_category" "$PR_URL" "$HEAD_OID" "$lens_label lens produced no output"
-    exit 1
+    log_info "$lens_label lens exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing without it"
+  elif [[ ! -s "$lens_raw" ]]; then
+    log_info "$lens_label lens produced no output; continuing without it"
   fi
 
   lens_i=$((lens_i + 1))
