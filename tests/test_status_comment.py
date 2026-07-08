@@ -23,7 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
 
 
-def _run(call: str, *, gh_stdout: str = "", gh_exit: int = 0) -> tuple[str, int, str]:
+def _run(
+    call: str, *, gh_stdout: str = "", gh_exit: int = 0, env_extra: dict | None = None
+) -> tuple[str, int, str]:
     """Source lib.sh and run `call` with a stubbed `gh`. Returns
     (stdout, returncode, recorded gh argv)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -39,6 +41,33 @@ def _run(call: str, *, gh_stdout: str = "", gh_exit: int = 0) -> tuple[str, int,
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         env = os.environ.copy()
         env["PATH"] = f"{tmp}:{env['PATH']}"
+        if env_extra:
+            env.update(env_extra)
+        result = subprocess.run(
+            ["bash", "-c", f"source {LIB}; {call}"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        calls = log.read_text() if log.exists() else ""
+        return result.stdout, result.returncode, calls
+
+
+def _run_with_stub_script(
+    call: str, stub_body: str, *, env_extra: dict | None = None
+) -> tuple[str, int, str]:
+    """Like _run, but with a hand-written gh stub script instead of a fixed
+    exit code, so a test can make gh fail N times then succeed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "gh_calls.log"
+        counter = Path(tmp) / "gh_attempts"
+        stub = Path(tmp) / "gh"
+        stub.write_text(stub_body.format(log=log, counter=counter))
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        env = os.environ.copy()
+        env["PATH"] = f"{tmp}:{env['PATH']}"
+        if env_extra:
+            env.update(env_extra)
         result = subprocess.run(
             ["bash", "-c", f"source {LIB}; {call}"],
             capture_output=True,
@@ -86,6 +115,33 @@ def test_render_is_scope_only_never_findings():
     )
     assert "🔴" not in out and "🐛" not in out
     assert "AI-drafted" not in out
+
+
+def test_render_omits_sentinel_when_not_given():
+    # The default: "Reviewing…" and failure renders never pass a 7th arg.
+    out, rc, _ = _run("render_status_comment 'h' 'full PR' 1 'only.sh'")
+    assert rc == 0
+    assert "pr-review-agent:sha:" not in out
+
+
+SHA_40 = "f" * 40
+
+
+def test_render_embeds_sentinel_when_given():
+    # ADR 0024: the terminal "✅ Reviewed" render passes HEAD_OID as the 7th
+    # arg, so a zero-finding review (no review-object sentinel, ADR 0020)
+    # still leaves one discover_sentinel_sha can find next tick.
+    out, rc, _ = _run(f"render_status_comment 'h' 'full PR' 1 'only.sh' '' '' '{SHA_40}'")
+    assert rc == 0
+    assert f"<!-- pr-review-agent:sha:{SHA_40} -->" in out
+
+
+def test_render_sentinel_sits_after_provenance_before_status_marker():
+    out, rc, _ = _run(f"render_status_comment 'h' 'full PR' 1 'only.sh' '' '' '{SHA_40}'")
+    provenance_pos = out.index("🤖 _pr-review-agent_")
+    sentinel_pos = out.index(f"pr-review-agent:sha:{SHA_40}")
+    marker_pos = out.index("<!-- pr-review-agent:status -->")
+    assert provenance_pos < sentinel_pos < marker_pos
 
 
 # --- status_sha_link / status_scope_link (head-line + scope builders) -----
@@ -188,10 +244,40 @@ def test_status_failure_reason_timeouts_share_one_phrase():
         assert out == "The review agent timed out."
 
 
+def test_status_failure_reason_lens_timeouts_share_the_same_phrase():
+    # Every lens (ADR 0023) reads as "the review" to the author too; which
+    # internal generator stalled is not something they can act on.
+    for category in (
+        "correctness-review-timeout",
+        "perf-review-timeout",
+        "security-review-timeout",
+        "tests-review-timeout",
+    ):
+        out, rc, _ = _run(f"status_failure_reason {category}")
+        assert rc == 0
+        assert out == "The review agent timed out."
+
+
+def test_status_failure_reason_matches_a_hypothetical_future_lens_by_glob():
+    # Proves the case arm is a `*-review-timeout` glob, not a literal
+    # enumeration of today's 4 lenses: a made-up lens name must match with no
+    # code change here, the same way daemon/review-pr.sh's dispatch loop
+    # derives "${lens_label}-review-timeout" programmatically from LENS_LABELS.
+    out, rc, _ = _run("status_failure_reason zzz-hypothetical-future-lens-review-timeout")
+    assert rc == 0
+    assert out == "The review agent timed out."
+
+
 def test_status_failure_reason_pending_conflict_is_surfaced():
     out, rc, _ = _run("status_failure_reason pending-conflict")
     assert rc == 0
     assert out == "An earlier review is still pending on this PR."
+
+
+def test_status_failure_reason_diff_fetch_timeout_is_surfaced():
+    out, rc, _ = _run("status_failure_reason diff-fetch-timeout")
+    assert rc == 0
+    assert out == "Fetching the PR diff timed out."
 
 
 def test_status_failure_reason_internal_hiccups_are_silent():
@@ -205,6 +291,8 @@ def test_status_failure_reason_internal_hiccups_are_silent():
         "style-violation",
         "edit-empty",
         "post-failed",
+        "diff-fetch-failed",
+        "all-lenses-failed",
         "unknown",
     ):
         out, rc, _ = _run(f"status_failure_reason {category}")
@@ -215,7 +303,7 @@ def test_status_failure_reason_internal_hiccups_are_silent():
 def test_status_failure_reason_phrases_are_em_dash_free():
     # The failed head-line is fixed chrome that skips the voice.py gate, so the
     # no-em-dash rule is enforced on these phrases directly.
-    for category in ("review-timeout", "pending-conflict"):
+    for category in ("review-timeout", "pending-conflict", "diff-fetch-timeout"):
         out, _, _ = _run(f"status_failure_reason {category}")
         assert "—" not in out
 
@@ -285,5 +373,54 @@ def test_edit_status_comment_noop_on_empty_id():
 
 
 def test_edit_status_comment_swallows_failure():
-    _, rc, _ = _run("edit_status_comment owner repo 999 'new body'", gh_exit=1)
+    _, rc, calls = _run(
+        "edit_status_comment owner repo 999 'new body'",
+        gh_exit=1,
+        env_extra={"STATUS_EDIT_RETRY_SLEEP_SECONDS": "0"},
+    )
     assert rc == 0
+    # 3 attempts even on a hard, unchanging failure (ADR: laptop-resume dogfood
+    # incident, sounds-abroad#192): a transient blip gets a few tries before
+    # the caller gives up on this tick's status edit.
+    assert calls.count("PATCH") == 3
+
+
+def test_edit_status_comment_retries_and_succeeds_on_a_transient_failure():
+    # First 2 attempts fail, 3rd succeeds: proves a transient blip (the
+    # dogfood-observed laptop-resume network hiccup) is absorbed rather than
+    # leaving the comment stuck on a stale state.
+    stub_body = (
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "{log}"\n'
+        'n=$(cat "{counter}" 2>/dev/null || echo 0)\n'
+        "n=$((n + 1))\n"
+        'echo "$n" > "{counter}"\n'
+        'if [[ "$n" -lt 3 ]]; then exit 1; fi\n'
+        "exit 0\n"
+    )
+    _, rc, calls = _run_with_stub_script(
+        "edit_status_comment owner repo 999 'new body'",
+        stub_body,
+        env_extra={"STATUS_EDIT_RETRY_SLEEP_SECONDS": "0"},
+    )
+    assert rc == 0
+    assert calls.count("PATCH") == 3
+
+
+def test_edit_status_comment_logs_when_retries_exhausted():
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = Path(tmp) / "gh"
+        stub.write_text("#!/usr/bin/env bash\nexit 1\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        env = os.environ.copy()
+        env["PATH"] = f"{tmp}:{env['PATH']}"
+        env["STATUS_EDIT_RETRY_SLEEP_SECONDS"] = "0"
+        result = subprocess.run(
+            ["bash", "-c", f"source {LIB}; edit_status_comment owner repo 999 'new body'"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    assert result.returncode == 0
+    assert "status comment edit failed after 3 attempts" in result.stderr
+    assert "999" in result.stderr

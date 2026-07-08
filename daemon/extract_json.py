@@ -65,7 +65,22 @@ class ReviewPayload(BaseModel):
     comments: list[Finding] = []
 
 
-def extract(raw: str, *, validate_style: bool = True) -> ReviewPayload:
+def parse_payload(raw: str, *, validate_style: bool = True) -> ReviewPayload:
+    """Fence-extract, JSON-parse, and schema-validate a single agent payload.
+
+    Each finding in `comments` validates independently (ADR 0024 follow-up): one
+    finding with a bad field (a stray `severity: "minor"`, observed live sharing
+    a payload with an otherwise-valid, high-confidence finding) is dropped and
+    logged, not treated as invalidating every other finding the same lens
+    produced. Payload-level fields (`summary` itself, `comments` not being a
+    list) still fail the whole payload: there is no per-item structure to
+    salvage there the way there is for one bad entry in a list of many.
+
+    The parse stage only, without the confidence gate or the cap: those filter
+    the finding *set* and must run after ADR 0023 unions candidates across
+    lenses, so a candidate is not gated per-lens before overlap can raise its
+    score. `extract()` composes this with the gate and cap for the single-agent
+    path; `merge_findings.py` calls it per lens and gates the union."""
     if not raw.strip():
         raise ExtractError("empty-stdout", "input is empty or whitespace-only")
     matches = FENCE_RE.findall(raw)
@@ -77,10 +92,39 @@ def extract(raw: str, *, validate_style: bool = True) -> ReviewPayload:
         data = json.loads(matches[-1])
     except json.JSONDecodeError as exc:
         raise ExtractError("parse-error", f"JSON decode failed: {exc}") from exc
-    try:
-        payload = ReviewPayload.model_validate(data)
-    except ValidationError as exc:
-        raise ExtractError("schema-invalid", str(exc)) from exc
+    if not isinstance(data, dict):
+        raise ExtractError(
+            "schema-invalid", f"top-level JSON must be an object, got {type(data).__name__}"
+        )
+    summary = data.get("summary")
+    if not isinstance(summary, str):
+        raise ExtractError("schema-invalid", "'summary' must be a string")
+    raw_comments = data.get("comments", [])
+    if not isinstance(raw_comments, list):
+        raise ExtractError(
+            "schema-invalid", f"'comments' must be a list, got {type(raw_comments).__name__}"
+        )
+    findings: list[Finding] = []
+    for i, item in enumerate(raw_comments):
+        try:
+            findings.append(Finding.model_validate(item))
+        except ValidationError as exc:
+            print(f"finding-skip: comments[{i}] failed validation: {exc}", file=sys.stderr)
+    payload = ReviewPayload(summary=summary, comments=findings)
+    if validate_style:
+        _validate_style(payload)
+    return payload
+
+
+def enforce_cap(payload: ReviewPayload) -> None:
+    """Raise cap-violation if the finding count exceeds MAX_FINDINGS."""
+    if len(payload.comments) > MAX_FINDINGS:
+        raise ExtractError(
+            "cap-violation", f"too many findings: {len(payload.comments)} > cap {MAX_FINDINGS}"
+        )
+
+
+def extract(raw: str, *, validate_style: bool = True) -> ReviewPayload:
     # Order: style, then the confidence gate (ADR 0022), then the cap. Style
     # first so an em-dash finding surfaces before count noise (culling to N=cap
     # doesn't fix em-dashes); the gate before the cap so a low-confidence finding
@@ -88,13 +132,9 @@ def extract(raw: str, *, validate_style: bool = True) -> ReviewPayload:
     # with --no-style: the voice gate moves behind the Editor (ADR 0016), so the
     # author parse only shapes the findings to hand on. The gate and cap are not
     # style and always apply.
-    if validate_style:
-        _validate_style(payload)
+    payload = parse_payload(raw, validate_style=validate_style)
     _drop_low_confidence(payload)
-    if len(payload.comments) > MAX_FINDINGS:
-        raise ExtractError(
-            "cap-violation", f"too many findings: {len(payload.comments)} > cap {MAX_FINDINGS}"
-        )
+    enforce_cap(payload)
     return payload
 
 
@@ -153,10 +193,16 @@ def _validate_style(payload: ReviewPayload) -> None:
         raise ExtractError("style-violation", "; ".join(violations))
 
 
+def parse_no_style_flag(argv: list[str]) -> tuple[bool, list[str]]:
+    """Split a `--no-style` flag out of argv. Shared by this module's own
+    main() and merge_findings.py's, both of which take the flag the same way:
+    `validate_style` is False when present, and it is stripped from the
+    returned positional args."""
+    return "--no-style" not in argv, [a for a in argv if a != "--no-style"]
+
+
 def main() -> int:
-    args = sys.argv[1:]
-    validate_style = "--no-style" not in args
-    args = [a for a in args if a != "--no-style"]
+    validate_style, args = parse_no_style_flag(sys.argv[1:])
     raw = Path(args[0]).read_text() if args else sys.stdin.read()
     try:
         payload = extract(raw, validate_style=validate_style)

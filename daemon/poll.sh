@@ -119,7 +119,8 @@ review_head=0
 for repo in "${REPOS[@]}"; do
   log_step "polling $repo"
   if ! prs_json="$(gh pr list --repo "$repo" --state open \
-    --json number,headRefOid,isDraft,author,labels,url 2>/dev/null)"; then
+    --json number,headRefOid,isDraft,author,labels,url 2>/dev/null |
+    jq 'sort_by(.number)')"; then
     log_err "cannot list PRs for $repo — skipping this repo"
     continue
   fi

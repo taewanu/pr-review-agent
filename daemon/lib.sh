@@ -183,14 +183,27 @@ resolve_tunable() {
   printf '%s' "$val"
 }
 
-# Outer per-PR watchdog cap (#121). run_with_timeout bounds only the inner
-# `claude -p` call (300s default); the network steps around it — `gh repo clone`,
-# the per-PR `git fetch`, `gh pr diff`, the `gh api` posts — were unbounded, so a
-# stalled fetch after a laptop sleep once froze the whole serial loop for ~10h.
-# This caps a per-PR step end-to-end. It must stay above the inner agent cap plus
-# clone/fetch/post overhead, or a legitimately slow review is killed: 600 ≈ 2×
-# the inner cap. Override for tests.
-readonly PER_PR_TIMEOUT="${PER_PR_TIMEOUT:-600}"
+# Outer per-PR watchdog cap (#121). run_with_timeout bounds only one inner
+# `claude -p` call; the network steps around it (`gh repo clone`, the per-PR
+# `git fetch`, `gh pr diff`, the `gh api` posts) were unbounded, so a stalled
+# fetch after a laptop sleep once froze the whole serial loop for ~10h. This
+# caps a per-PR step end-to-end.
+#
+# review-pr.sh's 5 lenses run in parallel against a shared claude_slot pool
+# (ADR 0023 revision), so this is not sized to their strict sequential sum.
+# Dogfooding the multi-lens design on a real codebase showed lens durations of
+# 178-262s even in the least-contended case, which is why REVIEW_AGENT_TIMEOUT/
+# EDITOR_AGENT_TIMEOUT rose to 600s; the realistic (not worst-case) shape is
+# one lens wave (~300-500s under real contention, well under the 600s cap)
+# plus the editor (~300-400s) plus clone/fetch/post overhead (~300s) ≈
+# 1000-1200s. 1800 adds a real margin for cross-PR contention on the shared
+# pool when MAX_PARALLEL > 1, not the full pathological worst case (every
+# concurrent PR maxing out simultaneously), which is unbounded for any shared
+# resource pool. A run that hits this bound under genuine heavy contention
+# fails and retries next cycle (poll.sh leaves state untouched on failure)
+# rather than being data loss, so this value trades some detection latency for
+# not chasing an unbounded worst case. Override for tests.
+readonly PER_PR_TIMEOUT="${PER_PR_TIMEOUT:-1800}"
 
 # run_with_pr_timeout <failure-category> <pr-url> <head-sha> <command...>
 # Wraps one per-PR step (review-pr.sh / reply-pr.sh dispatch) in PER_PR_TIMEOUT
@@ -330,11 +343,15 @@ discover_sentinel_sha() {
   fi
   rm -f "$stderr_capture"
   # One timeline across both sources, newest first; a still-pending review's
-  # submitted_at is null, so fall back to created_at.
+  # submitted_at is null, so fall back to created_at. Comments use updated_at,
+  # not created_at: the status comment is created once on first review and
+  # edited every tick after (ADR 0024), so its creation time would always sort
+  # as ancient next to any later-submitted review, hiding a freshly
+  # re-embedded sentinel behind a stale one from an old review object.
   local sha
   sha="$(jq -rn --argjson reviews "$reviews_json" --argjson comments "$comments_json" --arg login "$login" '
     ([$reviews[]  | {login: .user.login, ts: (.submitted_at // .created_at), body}]
-     + [$comments[] | {login: .user.login, ts: .created_at, body}])
+     + [$comments[] | {login: .user.login, ts: (.updated_at // .created_at), body}])
     | [.[] | select(.login == $login)]
     | sort_by(.ts) | reverse
     | [.[] | .body | capture("<!-- pr-review-agent:sha:(?<sha>[0-9a-f]{40}) -->"; "")? | .sha]
@@ -407,6 +424,127 @@ release_pr_lock() {
   local lockfile="${1:-}"
   [[ -n "$lockfile" ]] && rm -f "$lockfile"
   return 0
+}
+
+# Global slot pool bounding concurrent `claude -p` calls (ADR 0023 revision):
+# every lens and the editor acquire one before dispatch and release it after.
+# Same noclobber + stale-reclaim mechanism as the per-PR lock above, extended
+# to CLAUDE_SLOT_POOL_SIZE numbered slots instead of one PR-scoped lock. Shared
+# automatically across every concurrently-running review-pr.sh process: the
+# slot files live on disk, not in one process's memory, so poll.sh's
+# MAX_PARALLEL (how many review-pr.sh processes exist) and this pool (how many
+# claude -p calls run) compose without either script knowing about the other.
+#
+# Unlike acquire_pr_lock, this is blocking: a lens should wait for a slot, not
+# skip the PR on contention. Override $CLAUDE_SLOT_POOL_SIZE,
+# $CLAUDE_SLOT_STALE_SECONDS, $CLAUDE_SLOT_POLL_SECONDS for tests.
+_slot_path() {
+  printf '%s/claude-slot-%s.lock' "$(_state_dir)" "$1"
+}
+
+# _try_claim_slot <slot-number>
+# One non-blocking attempt at a single numbered slot. Same reclaim rule as
+# acquire_pr_lock: a lock whose holder is dead, or that outlived the stale
+# window, is reclaimed rather than waited on forever.
+_try_claim_slot() {
+  local slot="$1" path stale holder created now
+  path="$(_slot_path "$slot")"
+  if (
+    set -o noclobber
+    printf '%s %s\n' "$$" "$(date +%s)" >"$path"
+  ) 2>/dev/null; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  stale="${CLAUDE_SLOT_STALE_SECONDS:-1800}"
+  read -r holder created <"$path" 2>/dev/null || true
+  now="$(date +%s)"
+  if { [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; } ||
+    { [[ -n "$created" ]] && ((now - created > stale)); }; then
+    rm -f "$path"
+    if (
+      set -o noclobber
+      printf '%s %s\n' "$$" "$(date +%s)" >"$path"
+    ) 2>/dev/null; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# acquire_claude_slot [label]
+# Blocks until one of CLAUDE_SLOT_POOL_SIZE slots is free (polling every
+# CLAUDE_SLOT_POLL_SECONDS), then prints the claimed slot's lock path on
+# stdout. No internal timeout: the caller's own outer watchdog (PER_PR_TIMEOUT)
+# is the backstop if every slot stays held past its stale window without ever
+# clearing, matching how other unbounded waits in this pipeline are bounded.
+#
+# label, when given, logs which slot was claimed and how long the wait was
+# (nothing printed when it's empty, e.g. from a caller that doesn't pass one).
+# A dogfood round showed lens completion times of 35-519s with no way to tell
+# whether a slow one was genuinely complex work or blocked on slot contention;
+# this splits the two apart. The log call is safe inside `slot="$(...)"`:
+# log_info always writes to stderr, never stdout, so it can't corrupt the
+# captured slot path.
+acquire_claude_slot() {
+  local label="${1:-}" dir pool_size poll_interval i slot_path start_ts waited suffix
+  dir="$(_state_dir)"
+  mkdir -p "$dir"
+  pool_size="${CLAUDE_SLOT_POOL_SIZE:-3}"
+  poll_interval="${CLAUDE_SLOT_POLL_SECONDS:-2}"
+  start_ts="$(date +%s)"
+  while true; do
+    i=1
+    while ((i <= pool_size)); do
+      if slot_path="$(_try_claim_slot "$i")"; then
+        if [[ -n "$label" ]]; then
+          waited=$(($(date +%s) - start_ts))
+          suffix=""
+          ((waited > 0)) && suffix=" (waited ${waited}s)"
+          log_info "${label}: acquired slot ${i}/${pool_size}${suffix}"
+        fi
+        printf '%s\n' "$slot_path"
+        return 0
+      fi
+      i=$((i + 1))
+    done
+    sleep "$poll_interval"
+  done
+}
+
+# release_claude_slot <slot-lock-path>
+# Removes the slot lock. No-op on an empty path, same rationale as
+# release_pr_lock: a cleanup path can call this unconditionally.
+release_claude_slot() {
+  local lockfile="${1:-}"
+  [[ -n "$lockfile" ]] && rm -f "$lockfile"
+  return 0
+}
+
+# wait_for_lens_pids
+# Waits on every backgrounded lens PID in dispatch order, regardless of any
+# earlier lens's outcome (ADR 0026). Reads the caller's lens_count,
+# LENS_LABELS, LENS_RAW_FILES, and lens_pids arrays as globals, matching how
+# review-pr.sh already shares this state; extracted into lib.sh, rather than
+# left inline, so a test can source this file and assert the loop reaches
+# lens_i == lens_count even when an earlier lens times out or writes nothing,
+# the exact case that used to `exit 1` before the later lenses were reaped.
+# shellcheck disable=SC2154  # lens_count/LENS_LABELS/LENS_RAW_FILES/lens_pids set by the caller
+wait_for_lens_pids() {
+  local lens_i=0 lens_label lens_raw lens_rc
+  while [[ "$lens_i" -lt "$lens_count" ]]; do
+    lens_label="${LENS_LABELS[$lens_i]}"
+    lens_raw="${LENS_RAW_FILES[$lens_i]}"
+    lens_rc=0
+    wait "${lens_pids[$lens_i]}" || lens_rc=$?
+    if [[ "$lens_rc" -eq "$TIMEOUT_EXIT" ]]; then
+      log_info "$lens_label lens exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing without it"
+    elif [[ ! -s "$lens_raw" ]]; then
+      log_info "$lens_label lens produced no output; continuing without it"
+    fi
+    lens_i=$((lens_i + 1))
+  done
 }
 
 # Daemon singleton + heartbeat for the run.sh polling loop (ADR 0009). The loop
@@ -500,6 +638,15 @@ bundle_operator_agents() {
     [[ -e "$f" ]] || continue
     base="$(basename "$f")"
     [[ -e "$scratch/.claude/agents/$base" ]] || cp "$f" "$scratch/.claude/agents/$base"
+  done
+  # review-pr-*.md (a glob, like the agents above) is every lens's dispatch
+  # command (ADR 0023): adding a lens needs no update here. The non-lens
+  # commands (review-pr.md itself, and the reply/edit/judge pipeline stages)
+  # aren't name-prefixed the same way, so they stay an explicit list.
+  for f in "$repo_root/.claude/commands/review-pr-"*.md; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f")"
+    [[ -e "$scratch/.claude/commands/$base" ]] || cp "$f" "$scratch/.claude/commands/$base"
   done
   for f in "$repo_root/.claude/commands/review-pr.md" \
     "$repo_root/.claude/commands/edit-review.md" \
@@ -643,7 +790,7 @@ status_scope_link() {
   fi
 }
 
-# render_status_comment <head-line> <scope-label> <file-count> <files> [index-block] [trail-block]
+# render_status_comment <head-line> <scope-label> <file-count> <files> [index-block] [trail-block] [sentinel-sha]
 # Assembles the status-comment body (#60): header, the optional findings index
 # (ADR 0020), the diff scope (commit range + file list, folded in <details> so a
 # wide PR stays compact), the optional reviewed-SHAs trail (ADR 0021), and the
@@ -651,8 +798,18 @@ status_scope_link() {
 # never finding bodies, so it duplicates nothing in the Review object. Omit the
 # index arg for the pre-review "Reviewing…" render; the trail (prior rows only at
 # that point) still passes through.
+#
+# sentinel-sha (ADR 0024): embeds discover_sentinel_sha's marker so a completed
+# review is discoverable even when it found nothing and create-review.sh's own
+# sentinel (ADR 0006) never got (re-)embedded (ADR 0020 skips the review object
+# entirely on zero new findings). Pass it ONLY from the terminal "✅ Reviewed"
+# render, after the review has actually completed: the pre-review "Reviewing…"
+# and the failure renders must never carry it, or a crash/timeout mid-review
+# would leave a sentinel claiming a review that never finished, and the next
+# tick would wrongly skip re-trying it.
 render_status_comment() {
   local head_line="$1" scope_label="$2" file_count="$3" files="$4" index_block="${5:-}" trail_block="${6:-}"
+  local sentinel_sha="${7:-}"
   local noun="files"
   [[ "$file_count" == "1" ]] && noun="file"
   local bullets
@@ -666,8 +823,11 @@ render_status_comment() {
   # Trail sits below the file list and above provenance: scope and index stay the
   # eye's first stop (current state), the trail reads as an appendix (history).
   [[ -n "$trail_block" ]] && body+=$'\n\n'"$trail_block"
-  # Visible Provenance tag (ADR 0010), then the hidden Status marker last.
-  body+=$'\n\n'"${PROVENANCE_TAG}"$'\n\n'"${STATUS_COMMENT_MARKER}"
+  # Visible Provenance tag (ADR 0010), then the hidden sentinel and Status
+  # markers last (both HTML comments, neither meant for the reader's eye).
+  body+=$'\n\n'"${PROVENANCE_TAG}"
+  [[ -n "$sentinel_sha" ]] && body+=$'\n\n'"<!-- pr-review-agent:sha:${sentinel_sha} -->"
+  body+=$'\n\n'"${STATUS_COMMENT_MARKER}"
   printf '%s\n' "$body"
 }
 
@@ -681,11 +841,20 @@ render_status_comment() {
 status_failure_reason() {
   local category="$1"
   case "$category" in
-    review-timeout | edit-timeout)
+    review-timeout | edit-timeout | *-review-timeout)
+      # Every lens (ADR 0023) reads as "the review" to the author; which
+      # internal generator stalled is a detail the pipeline owns, not the
+      # reader. A glob, not a literal enumeration, so a future lens's
+      # <label>-review-timeout category (derived programmatically in
+      # daemon/review-pr.sh's dispatch loop from LENS_LABELS) is recognized
+      # automatically, with no update needed here.
       printf 'The review agent timed out.'
       ;;
     pending-conflict)
       printf 'An earlier review is still pending on this PR.'
+      ;;
+    diff-fetch-timeout)
+      printf 'Fetching the PR diff timed out.'
       ;;
     *)
       # Internal agent/pipeline hiccups (empty output, malformed payload, style
@@ -740,12 +909,25 @@ status_comment_body() {
 }
 
 # edit_status_comment <owner> <repo> <comment-id> <body>
-# Edits an issue comment in place; a no-op on an empty id. Best-effort (returns
-# 0 even on failure) — a failed status edit is not worth aborting a landed
-# review over.
+# Edits an issue comment in place; a no-op on an empty id. This is the most
+# user-visible write in the whole pipeline (the reviewed/failed state an
+# operator actually reads), so it gets a few quick retries for a transient
+# network blip (dogfood-observed: a laptop sleep/resume cycle left `gh api`
+# failing right at this call) before giving up. Still best-effort overall —
+# a review that already landed must never be aborted over a cosmetic status
+# edit, so this always returns 0 — but an exhausted retry is logged, since a
+# silent failure here used to leave a PR's status comment stuck on a stale
+# "Reviewing" state indefinitely (the daemon already marks that SHA reviewed,
+# so nothing else ever retries this specific edit) with no trace in
+# .daemon.log to explain it.
 edit_status_comment() {
   local owner="$1" repo="$2" comment_id="$3" body="$4"
+  local attempt sleep_secs="${STATUS_EDIT_RETRY_SLEEP_SECONDS:-2}"
   [[ -n "$comment_id" ]] || return 0
-  gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
-    -f body="$body" >/dev/null 2>&1 || true
+  for attempt in 1 2 3; do
+    gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
+      -f body="$body" >/dev/null 2>&1 && return 0
+    [[ "$attempt" -lt 3 ]] && sleep "$sleep_secs"
+  done
+  log_info "status comment edit failed after 3 attempts (comment ${comment_id})"
 }

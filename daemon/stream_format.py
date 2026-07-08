@@ -76,11 +76,16 @@ def render_event(event: dict) -> str | None:
 PREFIX = "[pr-review-agent]   "  # indent under the log_step markers (lib.sh)
 
 
-def _emit(line: str) -> None:
-    print(f"{PREFIX}{line}", file=sys.stderr, flush=True)
+def _emit(line: str, label: str | None = None) -> None:
+    # label (ADR 0023 revision): concurrent lenses stream to the same terminal
+    # at once now, so their live lines interleave; a label tags each line with
+    # its source (e.g. "[correctness]") so a reader can still follow one lens.
+    # None for every other caller (editor, reply-pr.sh) leaves output unchanged.
+    tag = f"[{label}] " if label else ""
+    print(f"{PREFIX}{tag}{line}", file=sys.stderr, flush=True)
 
 
-def run(stream, raw_out: Path) -> int:
+def run(stream, raw_out: Path, label: str | None = None, cost_out: Path | None = None) -> int:
     # Truncate --raw-out up front so it always exists, matching the old
     # `>"$RAW_FILE"` redirect: an empty file on a no-result (timeout) stream, the
     # reconstructed agent text on a complete one.
@@ -99,9 +104,18 @@ def run(stream, raw_out: Path) -> int:
             result_text = event.get("result")
             if isinstance(result_text, str):
                 raw_out.write_text(result_text)
+            # cost_out (ADR 0023 dogfood follow-up): the per-call cost was only
+            # ever visible as one line per lens in the live log; the operator
+            # had to hand-sum it to see what a review actually cost. Written
+            # only on a real result event, so a timeout (no result) leaves no
+            # cost file, matching --raw-out's own empty-on-timeout contract.
+            if cost_out is not None:
+                cost = event.get("total_cost_usd")
+                if isinstance(cost, (int, float)):
+                    cost_out.write_text(str(cost))
         rendered = render_event(event)
         if rendered is not None:
-            _emit(rendered)
+            _emit(rendered, label=label)
     return 0
 
 
@@ -113,8 +127,18 @@ def main() -> int:
         required=True,
         help="path to write the reconstructed agent stdout (the parser's input)",
     )
+    parser.add_argument(
+        "--label",
+        help="tag each progress line with this (e.g. a lens name) when concurrent"
+        " callers share one terminal",
+    )
+    parser.add_argument(
+        "--cost-out",
+        type=Path,
+        help="path to write this call's total_cost_usd, for the caller to sum across lenses",
+    )
     args = parser.parse_args()
-    return run(sys.stdin, args.raw_out)
+    return run(sys.stdin, args.raw_out, label=args.label, cost_out=args.cost_out)
 
 
 if __name__ == "__main__":

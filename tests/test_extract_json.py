@@ -128,9 +128,36 @@ def test_missing_comments_defaults_to_empty():
     assert payload.comments == []
 
 
-def test_invalid_enum_value_raises_schema_invalid():
+def test_invalid_enum_value_drops_that_finding_only(capsys):
+    # A single malformed finding no longer fails the whole payload (dogfood
+    # bug: sounds-abroad#165's tests lens had one valid, 90-confidence finding
+    # dropped alongside an unrelated one with severity="minor").
     bad = _minimal_finding(severity="critical")  # not in {important, nit, pre_existing}
+    good = _minimal_finding(line=99)
+    raw = _wrap({"summary": "x", "comments": [bad, good]})
+    payload = extract_json.extract(raw)
+    assert len(payload.comments) == 1
+    assert payload.comments[0].line == 99
+    assert "finding-skip: comments[0] failed validation" in capsys.readouterr().err
+
+
+def test_all_findings_invalid_leaves_empty_comments():
+    bad = _minimal_finding(severity="critical")
     raw = _wrap({"summary": "x", "comments": [bad]})
+    payload = extract_json.extract(raw)
+    assert payload.comments == []
+
+
+def test_summary_not_a_string_still_fails_whole_payload():
+    # Payload-level fields have no per-item structure to salvage.
+    raw = _wrap({"summary": 123, "comments": []})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "schema-invalid"
+
+
+def test_comments_not_a_list_fails_whole_payload():
+    raw = _wrap({"summary": "x", "comments": "not a list"})
     with pytest.raises(ExtractError) as exc_info:
         extract_json.extract(raw)
     assert exc_info.value.category == "schema-invalid"
@@ -181,12 +208,13 @@ def test_quote_defaults_to_none_when_omitted():
     assert payload.comments[0].quote is None
 
 
-def test_end_line_less_than_line_raises_schema_invalid():
-    f = _minimal_finding(line=20, end_line=10)
-    raw = _wrap({"summary": "x", "comments": [f]})
-    with pytest.raises(ExtractError) as exc_info:
-        extract_json.extract(raw)
-    assert exc_info.value.category == "schema-invalid"
+def test_end_line_less_than_line_drops_that_finding_only():
+    bad = _minimal_finding(line=20, end_line=10)
+    good = _minimal_finding(line=30)
+    raw = _wrap({"summary": "x", "comments": [bad, good]})
+    payload = extract_json.extract(raw)
+    assert len(payload.comments) == 1
+    assert payload.comments[0].line == 30
 
 
 def test_em_dash_in_summary_raises_style_violation():
@@ -515,11 +543,12 @@ def test_confidence_defaults_to_none_when_omitted():
 
 
 @pytest.mark.parametrize("bad", [-1, 101, 150])
-def test_confidence_out_of_range_raises_schema_invalid(bad):
+def test_confidence_out_of_range_drops_that_finding_only(bad):
     f = _minimal_finding(confidence=bad)
-    with pytest.raises(ExtractError) as exc:
-        extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
-    assert exc.value.category == "schema-invalid"
+    good = _minimal_finding(line=99)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f, good]}))
+    assert len(payload.comments) == 1
+    assert payload.comments[0].line == 99
 
 
 def test_gate_drops_below_threshold(monkeypatch):
@@ -592,3 +621,24 @@ def test_out_of_range_threshold_is_honored(monkeypatch):
     f = _minimal_finding(confidence=1)
     payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
     assert payload.comments[0].confidence == 1
+
+
+# --- parse_no_style_flag (shared by this module's main() and merge_findings.py) --
+
+
+def test_parse_no_style_flag_present_sets_false_and_strips_it():
+    validate_style, args = extract_json.parse_no_style_flag(["--no-style", "payload.txt"])
+    assert validate_style is False
+    assert args == ["payload.txt"]
+
+
+def test_parse_no_style_flag_absent_defaults_true():
+    validate_style, args = extract_json.parse_no_style_flag(["payload.txt"])
+    assert validate_style is True
+    assert args == ["payload.txt"]
+
+
+def test_parse_no_style_flag_strips_from_any_position():
+    validate_style, args = extract_json.parse_no_style_flag(["a.txt", "--no-style", "b.txt"])
+    assert validate_style is False
+    assert args == ["a.txt", "b.txt"]

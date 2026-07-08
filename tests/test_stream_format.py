@@ -126,6 +126,63 @@ def test_run_writes_result_field_to_raw_out(tmp_path):
     assert raw.read_text() == fence
 
 
+def test_run_writes_cost_to_cost_out(tmp_path):
+    # ADR 0023 dogfood follow-up: cost was only ever visible as one line per
+    # lens in the live log, so a review's total had to be hand-summed by eye.
+    raw = tmp_path / "raw.txt"
+    cost = tmp_path / "raw.txt.cost"
+    sf.run(
+        _ndjson({"type": "result", "result": "ok", "total_cost_usd": 0.446}),
+        raw,
+        cost_out=cost,
+    )
+    assert cost.read_text() == "0.446"
+
+
+def test_run_without_cost_out_writes_nothing(tmp_path):
+    raw = tmp_path / "raw.txt"
+    sf.run(_ndjson({"type": "result", "result": "ok", "total_cost_usd": 0.446}), raw)
+    assert not (tmp_path / "raw.txt.cost").exists()
+
+
+def test_run_timeout_leaves_cost_out_unwritten(tmp_path):
+    # No result event (killed on timeout): no cost file, matching --raw-out's
+    # own empty-on-timeout contract.
+    raw = tmp_path / "raw.txt"
+    cost = tmp_path / "raw.txt.cost"
+    sf.run(
+        _ndjson({"type": "assistant", "message": {"content": []}}),
+        raw,
+        cost_out=cost,
+    )
+    assert not cost.exists()
+
+
+def test_run_without_label_emits_unprefixed_lines(tmp_path, capsys):
+    # Default (ADR 0023): every existing caller (editor, reply-pr.sh) omits
+    # --label, so its progress lines must read exactly as before this change.
+    raw = tmp_path / "raw.txt"
+    sf.run(
+        _ndjson(_assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}})),
+        raw,
+    )
+    err = capsys.readouterr().err
+    assert err == "[pr-review-agent]   → Read: a.py\n"
+
+
+def test_run_with_label_tags_each_line(tmp_path, capsys):
+    # Concurrent lenses (ADR 0023) share one terminal; a label distinguishes
+    # which lens a given line came from.
+    raw = tmp_path / "raw.txt"
+    sf.run(
+        _ndjson(_assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}})),
+        raw,
+        label="correctness",
+    )
+    err = capsys.readouterr().err
+    assert err == "[pr-review-agent]   [correctness] → Read: a.py\n"
+
+
 def test_run_truncated_stream_leaves_raw_out_empty(tmp_path):
     # No result event (agent killed mid-run): raw-out exists but is empty, so the
     # call site's empty-stdout check fires instead of parsing partial output.

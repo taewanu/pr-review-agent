@@ -243,3 +243,41 @@ def test_finalize_no_edits_still_gates_summary_voice():
     with pytest.raises(ApplyError) as exc:
         apply_edits.finalize(author, None)
     assert exc.value.category == "style-violation"
+
+
+# --- append_truncation_note (ADR 0023, post-merge cap truncation) -----------
+
+
+def test_append_truncation_note_zero_is_a_no_op():
+    payload = {"summary": "Clean diff.", "comments": []}
+    assert apply_edits.append_truncation_note(payload, 0) == payload
+
+
+def test_append_truncation_note_singular():
+    payload = {"summary": "Clean diff.", "comments": []}
+    result = apply_edits.append_truncation_note(payload, 1)
+    expected = "Clean diff.\n\n1 additional low-severity finding omitted by the review cap."
+    assert result["summary"] == expected
+
+
+def test_append_truncation_note_plural():
+    payload = {"summary": "Clean diff.", "comments": []}
+    result = apply_edits.append_truncation_note(payload, 5)
+    expected = "Clean diff.\n\n5 additional low-severity findings omitted by the review cap."
+    assert result["summary"] == expected
+
+
+def test_append_truncation_note_does_not_mutate_the_comments():
+    payload = {"summary": "s", "comments": [{"path": "a.py", "line": 1}]}
+    result = apply_edits.append_truncation_note(payload, 2)
+    assert result["comments"] == payload["comments"]
+
+
+def test_append_truncation_note_skips_the_voice_gate():
+    # The note is fixed chrome appended after finalize()'s gate already ran, so
+    # a payload that would otherwise fail the gate (e.g. a forbidden opener) is
+    # untouched here; this function only appends, it never re-validates.
+    payload = {"summary": "This change is risky.", "comments": []}
+    result = apply_edits.append_truncation_note(payload, 3)
+    assert result["summary"].startswith("This change is risky.")
+    assert "3 additional" in result["summary"]

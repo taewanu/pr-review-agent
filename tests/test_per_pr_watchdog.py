@@ -24,9 +24,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
 
 TIMEOUT_EXIT = 142
-# The inner `claude -p` cap (REVIEW_AGENT_TIMEOUT / REPLY_AGENT_TIMEOUT default).
-# The outer per-PR cap must stay above it, or a legitimate slow review is killed.
-INNER_AGENT_CAP = 300
+# The inner `claude -p` cap (REVIEW_AGENT_TIMEOUT / EDITOR_AGENT_TIMEOUT /
+# REPLY_AGENT_TIMEOUT default). Raised from 300 to 600 after dogfooding the
+# multi-lens design showed real lens durations of 178-262s even uncontended.
+# The outer per-PR cap must stay above the sum of every sequential *stage*, or
+# a legitimate slow review is killed.
+INNER_AGENT_CAP = 600
+# review-pr.sh's realistic sequential stage count (ADR 0023 revision): the 5
+# lenses now run in parallel against a shared claude_slot pool, so with
+# CLAUDE_SLOT_POOL_SIZE >= 5 a solo PR's lens phase is one wave (~300s), not a
+# 5-call sum; the editor still runs sequentially after. 2 stages total.
+REVIEW_PR_SEQUENTIAL_STAGES = 2
 
 
 def _run(snippet: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -45,14 +53,20 @@ def _run(snippet: str, env: dict[str, str] | None = None) -> subprocess.Complete
 def test_per_pr_timeout_has_a_default():
     result = _run('printf %s "$PER_PR_TIMEOUT"')
     assert result.stdout.isdigit()
-    assert int(result.stdout) == 600
+    assert int(result.stdout) == 1800
 
 
-def test_per_pr_timeout_exceeds_the_inner_agent_cap():
-    # The outer watchdog must not kill a review that is legitimately running the
-    # inner agent up to its own cap plus clone/fetch/post overhead.
+def test_per_pr_timeout_exceeds_review_pr_realistic_worst_case():
+    # The outer watchdog must not kill a review-pr.sh run that is legitimately
+    # running its lens phase (parallel, ~one wave with a full slot pool) and
+    # the editor after it, plus clone/fetch/post overhead. A bound sized for
+    # only one inner call (the single-generator design's shape) would
+    # false-positive on a normal, successful multi-lens review. This is a
+    # realistic planning number, not the full pathological worst case under
+    # heavy cross-PR contention on the shared slot pool (ADR 0023 revision);
+    # that case fails and retries next cycle rather than hanging.
     result = _run('printf %s "$PER_PR_TIMEOUT"')
-    assert int(result.stdout) > INNER_AGENT_CAP
+    assert int(result.stdout) > INNER_AGENT_CAP * REVIEW_PR_SEQUENTIAL_STAGES
 
 
 def test_per_pr_timeout_is_env_overridable():
