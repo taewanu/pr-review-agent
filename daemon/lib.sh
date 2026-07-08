@@ -271,12 +271,14 @@ is_fast_forward() {
 # push back on a correct fix; deferring lets a later cycle verify once the push
 # arrives (poll.sh leaves the thread unaddressed, so it is redispatched). ADR 0028.
 #
-# Args: $1 the operator reply body, $2 the head repo (owner/name), $3 HEAD_OID.
+# Args: $1 the operator reply body, $2 the head repo (owner/name).
 # Returns 0 to defer this thread, 1 to verify it now (the pre-existing behavior).
-# Reachability goes through is_fast_forward (the compare API), so an unpushed SHA
-# reads as not-an-ancestor and defers, while a SHA already in HEAD verifies now.
+# Defers only when the claimed commit is absent from the repo, the race signal.
+# A commit that exists but is not an ancestor of HEAD (a later rebase moved the
+# fix onto an equivalent commit) still carries its fix into HEAD's tree, so the
+# agent verifies against HEAD as before rather than deferring forever on it.
 reply_defers_on_unreachable_fix() {
-  local reply_body="$1" head_repo="$2" head_oid="$3" sha=""
+  local reply_body="$1" head_repo="$2" sha=""
   # A deliberately-referenced commit: 7-40 hex either backtick-delimited
   # (`115dbb3`, or the `sha:Lnn` link form) or in a github commit/blob URL.
   # Prose hex ("the deadbeef case") is not shaped like either, so it never
@@ -289,8 +291,15 @@ reply_defers_on_unreachable_fix() {
   fi
 
   [[ -n "$sha" ]] || return 1
-  is_fast_forward "$head_repo" "$sha" "$head_oid" && return 1
+  commit_exists "$head_repo" "$sha" && return 1
   return 0
+}
+
+# True when $2 resolves to a commit in repo $1 (owner/name). Distinguishes an
+# unpushed fix SHA (the race, absent: defer) from one that exists but diverged
+# after a rebase (present: verify against HEAD). ADR 0028.
+commit_exists() {
+  gh api "repos/$1/commits/$2" --jq '.sha' >/dev/null 2>&1
 }
 
 # State tracking for same-SHA dedup. One file per PR. Layered behind the

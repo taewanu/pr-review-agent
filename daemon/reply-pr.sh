@@ -158,7 +158,7 @@ _thread_total="$(jq 'length' <<<"$THREADS_JSON")"
 for ((_i = 0; _i < _thread_total; _i++)); do
   _thread="$(jq -c ".[$_i]" <<<"$THREADS_JSON")"
   _reply_body="$(jq -r '.operator_reply.body // ""' <<<"$_thread")"
-  if reply_defers_on_unreachable_fix "$_reply_body" "$HEAD_REPO" "$HEAD_OID"; then
+  if reply_defers_on_unreachable_fix "$_reply_body" "$HEAD_REPO"; then
     DEFERRED_COUNT=$((DEFERRED_COUNT + 1))
     log_info "deferring a reply thread: its claimed fix commit is not in HEAD yet"
     continue
