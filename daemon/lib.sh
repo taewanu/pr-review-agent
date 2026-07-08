@@ -522,6 +522,31 @@ release_claude_slot() {
   return 0
 }
 
+# wait_for_lens_pids
+# Waits on every backgrounded lens PID in dispatch order, regardless of any
+# earlier lens's outcome (ADR 0026). Reads the caller's lens_count,
+# LENS_LABELS, LENS_RAW_FILES, and lens_pids arrays as globals, matching how
+# review-pr.sh already shares this state; extracted into lib.sh, rather than
+# left inline, so a test can source this file and assert the loop reaches
+# lens_i == lens_count even when an earlier lens times out or writes nothing,
+# the exact case that used to `exit 1` before the later lenses were reaped.
+# shellcheck disable=SC2154  # lens_count/LENS_LABELS/LENS_RAW_FILES/lens_pids set by the caller
+wait_for_lens_pids() {
+  local lens_i=0 lens_label lens_raw lens_rc
+  while [[ "$lens_i" -lt "$lens_count" ]]; do
+    lens_label="${LENS_LABELS[$lens_i]}"
+    lens_raw="${LENS_RAW_FILES[$lens_i]}"
+    lens_rc=0
+    wait "${lens_pids[$lens_i]}" || lens_rc=$?
+    if [[ "$lens_rc" -eq "$TIMEOUT_EXIT" ]]; then
+      log_info "$lens_label lens exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing without it"
+    elif [[ ! -s "$lens_raw" ]]; then
+      log_info "$lens_label lens produced no output; continuing without it"
+    fi
+    lens_i=$((lens_i + 1))
+  done
+}
+
 # Daemon singleton + heartbeat for the run.sh polling loop (ADR 0009). The loop
 # is the scheduling driver in place of a launchd StartInterval timer; the
 # singleton stops two loops (a foreground run.sh and the KeepAlive one) from both

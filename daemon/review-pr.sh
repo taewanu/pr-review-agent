@@ -596,22 +596,10 @@ done
 # whatever they were still writing to. A timed-out or empty lens is logged and
 # skipped, not fatal to the whole review: merge_findings.py already tolerates
 # a lens payload that fails to parse (ADR 0024), including an empty one, so the
-# other lenses' valid findings still reach the confidence gate.
-lens_i=0
-while [[ "$lens_i" -lt "$lens_count" ]]; do
-  lens_label="${LENS_LABELS[$lens_i]}"
-  lens_raw="${LENS_RAW_FILES[$lens_i]}"
-
-  lens_rc=0
-  wait "${lens_pids[$lens_i]}" || lens_rc=$?
-  if [[ "$lens_rc" -eq "$TIMEOUT_EXIT" ]]; then
-    log_info "$lens_label lens exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing without it"
-  elif [[ ! -s "$lens_raw" ]]; then
-    log_info "$lens_label lens produced no output; continuing without it"
-  fi
-
-  lens_i=$((lens_i + 1))
-done
+# other lenses' valid findings still reach the confidence gate. Lives in
+# lib.sh, not inline, so test_lens_wait.py can source it and assert this
+# (ADR 0026, #192 follow-up).
+wait_for_lens_pids
 
 # Confidence gate threshold (ADR 0022): resolve from env, then .env, and export
 # so merge_findings.py's os.environ read sees it. The daemon never sources .env

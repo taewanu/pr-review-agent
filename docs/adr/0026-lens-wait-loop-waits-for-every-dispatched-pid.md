@@ -22,3 +22,7 @@ This does not change what happens when every lens fails (`merge_findings.py`'s o
 - A single slow or timed-out lens no longer discards the other lenses' completed, valid work, nor deletes the scratch clone out from under them while they are still writing to it.
 - One fewer orphaned-process/wasted-cost failure mode under the shared slot pool (ADR 0023) when `CLAUDE_SLOT_POOL_SIZE` is smaller than the lens count, which is the common case, not a misconfiguration.
 - The per-lens `<label>-review-timeout` / `<label>-empty-stdout` failure categories (ADR 0005/0023) are no longer raised from this loop; a lens hiccup is now diagnosable via the `log_info` line rather than a system failure category, since it no longer fails the review on its own.
+
+## Follow-up
+
+pr-review-agent's own next-round review of this fix (still PR #192) flagged that nothing exercised the continue-past-a-bad-lens behavior itself, so a future edit could silently reintroduce the early-exit bug with no test failing. The wait loop moved from `review-pr.sh` into `daemon/lib.sh` as `wait_for_lens_pids`, reading the caller's `lens_count`/`LENS_LABELS`/`LENS_RAW_FILES`/`lens_pids` as globals (the same convention `acquire_claude_slot` already uses), so `tests/test_lens_wait.py` can source `lib.sh` and assert the loop reaches the end with stub PIDs standing in for a timed-out, an empty, and a slow-but-successful lens.
