@@ -148,6 +148,29 @@ fi
 HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
+# Drop any thread whose claimed fix commit has not reached HEAD yet, so the
+# agent never verifies a fix claim against pre-fix code and pushes back on a
+# correct operator (the reply-race, sa#163). A deferred thread stays
+# unaddressed and is redispatched next cycle once the push lands.
+KEPT_THREADS='[]'
+DEFERRED_COUNT=0
+_thread_total="$(jq 'length' <<<"$THREADS_JSON")"
+for ((_i = 0; _i < _thread_total; _i++)); do
+  _thread="$(jq -c ".[$_i]" <<<"$THREADS_JSON")"
+  _reply_body="$(jq -r '.operator_reply.body // ""' <<<"$_thread")"
+  if reply_defers_on_unreachable_fix "$_reply_body" "$HEAD_REPO" "$HEAD_OID"; then
+    DEFERRED_COUNT=$((DEFERRED_COUNT + 1))
+    log_info "deferring a reply thread: its claimed fix commit is not in HEAD yet"
+    continue
+  fi
+  KEPT_THREADS="$(jq -c --argjson t "$_thread" '. + [$t]' <<<"$KEPT_THREADS")"
+done
+THREADS_JSON="$KEPT_THREADS"
+if [[ "$(jq 'length' <<<"$THREADS_JSON")" -eq 0 ]]; then
+  log_info "all $DEFERRED_COUNT reply thread(s) deferred to next cycle"
+  exit 0
+fi
+
 SCRATCH="$(mktemp -d -t pr-review-reply.XXXXXX)"
 POST_ERR=""
 cleanup() {
