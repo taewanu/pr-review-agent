@@ -23,7 +23,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
 
 
-def _run(call: str, *, gh_stdout: str = "", gh_exit: int = 0) -> tuple[str, int, str]:
+def _run(
+    call: str, *, gh_stdout: str = "", gh_exit: int = 0, env_extra: dict | None = None
+) -> tuple[str, int, str]:
     """Source lib.sh and run `call` with a stubbed `gh`. Returns
     (stdout, returncode, recorded gh argv)."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -39,6 +41,33 @@ def _run(call: str, *, gh_stdout: str = "", gh_exit: int = 0) -> tuple[str, int,
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         env = os.environ.copy()
         env["PATH"] = f"{tmp}:{env['PATH']}"
+        if env_extra:
+            env.update(env_extra)
+        result = subprocess.run(
+            ["bash", "-c", f"source {LIB}; {call}"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        calls = log.read_text() if log.exists() else ""
+        return result.stdout, result.returncode, calls
+
+
+def _run_with_stub_script(
+    call: str, stub_body: str, *, env_extra: dict | None = None
+) -> tuple[str, int, str]:
+    """Like _run, but with a hand-written gh stub script instead of a fixed
+    exit code, so a test can make gh fail N times then succeed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "gh_calls.log"
+        counter = Path(tmp) / "gh_attempts"
+        stub = Path(tmp) / "gh"
+        stub.write_text(stub_body.format(log=log, counter=counter))
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        env = os.environ.copy()
+        env["PATH"] = f"{tmp}:{env['PATH']}"
+        if env_extra:
+            env.update(env_extra)
         result = subprocess.run(
             ["bash", "-c", f"source {LIB}; {call}"],
             capture_output=True,
@@ -344,5 +373,54 @@ def test_edit_status_comment_noop_on_empty_id():
 
 
 def test_edit_status_comment_swallows_failure():
-    _, rc, _ = _run("edit_status_comment owner repo 999 'new body'", gh_exit=1)
+    _, rc, calls = _run(
+        "edit_status_comment owner repo 999 'new body'",
+        gh_exit=1,
+        env_extra={"STATUS_EDIT_RETRY_SLEEP_SECONDS": "0"},
+    )
     assert rc == 0
+    # 3 attempts even on a hard, unchanging failure (ADR: laptop-resume dogfood
+    # incident, sounds-abroad#192): a transient blip gets a few tries before
+    # the caller gives up on this tick's status edit.
+    assert calls.count("PATCH") == 3
+
+
+def test_edit_status_comment_retries_and_succeeds_on_a_transient_failure():
+    # First 2 attempts fail, 3rd succeeds: proves a transient blip (the
+    # dogfood-observed laptop-resume network hiccup) is absorbed rather than
+    # leaving the comment stuck on a stale state.
+    stub_body = (
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "{log}"\n'
+        'n=$(cat "{counter}" 2>/dev/null || echo 0)\n'
+        "n=$((n + 1))\n"
+        'echo "$n" > "{counter}"\n'
+        'if [[ "$n" -lt 3 ]]; then exit 1; fi\n'
+        "exit 0\n"
+    )
+    _, rc, calls = _run_with_stub_script(
+        "edit_status_comment owner repo 999 'new body'",
+        stub_body,
+        env_extra={"STATUS_EDIT_RETRY_SLEEP_SECONDS": "0"},
+    )
+    assert rc == 0
+    assert calls.count("PATCH") == 3
+
+
+def test_edit_status_comment_logs_when_retries_exhausted():
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = Path(tmp) / "gh"
+        stub.write_text("#!/usr/bin/env bash\nexit 1\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        env = os.environ.copy()
+        env["PATH"] = f"{tmp}:{env['PATH']}"
+        env["STATUS_EDIT_RETRY_SLEEP_SECONDS"] = "0"
+        result = subprocess.run(
+            ["bash", "-c", f"source {LIB}; edit_status_comment owner repo 999 'new body'"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    assert result.returncode == 0
+    assert "status comment edit failed after 3 attempts" in result.stderr
+    assert "999" in result.stderr

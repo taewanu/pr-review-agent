@@ -909,12 +909,25 @@ status_comment_body() {
 }
 
 # edit_status_comment <owner> <repo> <comment-id> <body>
-# Edits an issue comment in place; a no-op on an empty id. Best-effort (returns
-# 0 even on failure) — a failed status edit is not worth aborting a landed
-# review over.
+# Edits an issue comment in place; a no-op on an empty id. This is the most
+# user-visible write in the whole pipeline (the reviewed/failed state an
+# operator actually reads), so it gets a few quick retries for a transient
+# network blip (dogfood-observed: a laptop sleep/resume cycle left `gh api`
+# failing right at this call) before giving up. Still best-effort overall —
+# a review that already landed must never be aborted over a cosmetic status
+# edit, so this always returns 0 — but an exhausted retry is logged, since a
+# silent failure here used to leave a PR's status comment stuck on a stale
+# "Reviewing" state indefinitely (the daemon already marks that SHA reviewed,
+# so nothing else ever retries this specific edit) with no trace in
+# .daemon.log to explain it.
 edit_status_comment() {
   local owner="$1" repo="$2" comment_id="$3" body="$4"
+  local attempt sleep_secs="${STATUS_EDIT_RETRY_SLEEP_SECONDS:-2}"
   [[ -n "$comment_id" ]] || return 0
-  gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
-    -f body="$body" >/dev/null 2>&1 || true
+  for attempt in 1 2 3; do
+    gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
+      -f body="$body" >/dev/null 2>&1 && return 0
+    [[ "$attempt" -lt 3 ]] && sleep "$sleep_secs"
+  done
+  log_info "status comment edit failed after 3 attempts (comment ${comment_id})"
 }
