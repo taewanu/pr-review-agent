@@ -264,6 +264,44 @@ is_fast_forward() {
   _status_is_fast_forward "$status"
 }
 
+# Decide whether to defer an operator reply thread because the fix commit it
+# names is not in the reviewed HEAD's history yet. The race: the operator
+# commits the fix, replies naming that SHA, and pushes, but this reply pass
+# fetched HEAD before the push landed. Verifying the pre-fix code would wrongly
+# push back on a correct fix; deferring lets a later cycle verify once the push
+# arrives (poll.sh leaves the thread unaddressed, so it is redispatched). ADR 0028.
+#
+# Args: $1 the operator reply body, $2 the head repo (owner/name).
+# Returns 0 to defer this thread, 1 to verify it now (the pre-existing behavior).
+# Defers only when the claimed commit is absent from the repo, the race signal.
+# A commit that exists but is not an ancestor of HEAD (a later rebase moved the
+# fix onto an equivalent commit) still carries its fix into HEAD's tree, so the
+# agent verifies against HEAD as before rather than deferring forever on it.
+reply_defers_on_unreachable_fix() {
+  local reply_body="$1" head_repo="$2" sha=""
+  # A deliberately-referenced commit: 7-40 hex either backtick-delimited
+  # (`115dbb3`, or the `sha:Lnn` link form) or in a github commit/blob URL.
+  # Prose hex ("the deadbeef case") is not shaped like either, so it never
+  # matches and the thread verifies now instead of deferring forever.
+  # shellcheck disable=SC2016  # backticks are literal regex delimiters, not a subshell
+  local re='`([0-9a-fA-F]{7,40})(:[Ll][0-9]|`)|/(commit|blob)/([0-9a-fA-F]{7,40})'
+  if [[ "$reply_body" =~ $re ]]; then
+    sha="${BASH_REMATCH[1]:-${BASH_REMATCH[4]}}"
+    sha="$(printf '%s' "$sha" | tr '[:upper:]' '[:lower:]')"
+  fi
+
+  [[ -n "$sha" ]] || return 1
+  commit_exists "$head_repo" "$sha" && return 1
+  return 0
+}
+
+# True when $2 resolves to a commit in repo $1 (owner/name). Distinguishes an
+# unpushed fix SHA (the race, absent: defer) from one that exists but diverged
+# after a rebase (present: verify against HEAD). ADR 0028.
+commit_exists() {
+  gh api "repos/$1/commits/$2" --jq '.sha' >/dev/null 2>&1
+}
+
 # State tracking for same-SHA dedup. One file per PR. Layered behind the
 # sentinel-based dedup (ADR 0006) as a fallback when GitHub's reviews API is
 # unavailable.
