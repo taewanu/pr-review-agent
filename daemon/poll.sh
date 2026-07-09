@@ -172,7 +172,12 @@ for repo in "${REPOS[@]}"; do
 
     # Reply handling runs every tick regardless of dedup — operators reply
     # independent of HEAD changes. reply-pr.sh exits 0 cheaply when nothing
-    # to ack (one gh api call, no scratch clone).
+    # to ack (one gh api call, no scratch clone). Deliberately foreground
+    # while reviews background (#198): pooling it alongside the review
+    # dispatch below would run this PR's reply and review legs concurrently,
+    # and both mutate the same threads (reply acks/resolves, the review's
+    # resolution leg stamps/resolves). The cheap no-reply case dominates,
+    # and a slow reply is bounded by the per-PR watchdog wrapping it here.
     if ! run_with_pr_timeout "reply-dispatch" "$pr_url" "$head_sha" \
       bash "$SCRIPT_DIR/reply-pr.sh" "$pr_url"; then
       log_err "reply check failed for $pr_url — continuing to review step"
