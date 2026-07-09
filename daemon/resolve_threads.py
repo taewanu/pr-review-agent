@@ -131,6 +131,7 @@ def select_candidates(
     operator: str,
     all_open: bool = False,
     untouched_cap: int = 0,
+    touched_cap: int = 10,
 ) -> list[dict]:
     """Open, daemon-owned threads of prior Findings the new HEAD might have fixed.
 
@@ -141,17 +142,21 @@ def select_candidates(
 
     Among those, a Finding is `touched` when its `original_line` (creation-side
     coordinate) falls inside an old-side hunk of this increment's diff. Touched
-    threads are always judged: the increment changed the exact line the Finding
-    sits on, the strongest "maybe fixed" signal.
+    threads are judged first — the increment changed the exact line the Finding
+    sits on, the strongest "maybe fixed" signal — up to `touched_cap` of them
+    (#197): each candidate is one serial judge-fix `claude -p` call, so an
+    uncapped touched list let a re-review of a large backlog blow through the
+    per-PR time budget that never sized it in.
 
     `untouched` threads are the #172 broadening: a fix can land away from the
     flagged line (a missing test added in a new file, a guard added elsewhere), so
     the touched test alone misses a whole class. We judge up to `untouched_cap` of
     them, the cost guard bounding the extra fix-check calls per tick.
 
-    `all_open` lifts the cap and judges every open thread. The review path sets it
-    on a force-push or rebase, where the increment diff can't be computed and the
-    touched/untouched split is meaningless (ADR 0017 §1's "full PR diff" scope).
+    `all_open` lifts both caps and judges every open thread. The review path sets
+    it on a force-push or rebase, where the increment diff can't be computed and
+    the touched/untouched split is meaningless (ADR 0017 §1's "full PR diff"
+    scope).
     """
     touched: list[dict] = []
     untouched: list[dict] = []
@@ -189,6 +194,9 @@ def select_candidates(
         else:
             untouched.append(entry)
 
+    effective_touched_cap = len(touched) if all_open else touched_cap
+    chosen_touched = touched[:effective_touched_cap]
+
     effective_cap = len(untouched) if all_open else untouched_cap
     # Judge file-touched threads first: a fix landing elsewhere in the Finding's
     # own file is likelier than one in a file this increment never opened. Then
@@ -197,15 +205,17 @@ def select_candidates(
         :effective_cap
     ]
 
+    dropped_touched = len(touched) - len(chosen_touched)
     dropped = len(untouched) - len(chosen_untouched)
-    if dropped > 0:
+    if dropped_touched > 0 or dropped > 0:
         print(
-            f"resolution candidates: {len(touched)} touched + "
-            f"{len(chosen_untouched)} untouched judged, {dropped} untouched capped "
-            f"(untouched_cap={untouched_cap})",
+            f"resolution candidates: {len(chosen_touched)} touched + "
+            f"{len(chosen_untouched)} untouched judged, "
+            f"{dropped_touched} touched capped (touched_cap={touched_cap}), "
+            f"{dropped} untouched capped (untouched_cap={untouched_cap})",
             file=sys.stderr,
         )
-    return touched + chosen_untouched
+    return chosen_touched + chosen_untouched
 
 
 def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
@@ -414,7 +424,12 @@ def _cmd_select(args: argparse.Namespace) -> int:
     threads = json.loads(args.threads.read_text())
     diff = IncrementDiff.parse(args.diff.read_text())
     candidates = select_candidates(
-        threads, diff, args.operator, all_open=args.all_open, untouched_cap=args.untouched_cap
+        threads,
+        diff,
+        args.operator,
+        all_open=args.all_open,
+        untouched_cap=args.untouched_cap,
+        touched_cap=args.touched_cap,
     )
     print(json.dumps(candidates, ensure_ascii=False))
     return 0
@@ -481,6 +496,12 @@ def main() -> int:
         type=int,
         default=0,
         help="max untouched threads to also judge per tick (#172 broadening; 0 = touched only)",
+    )
+    p_select.add_argument(
+        "--touched-cap",
+        type=int,
+        default=10,
+        help="max touched threads to judge per tick (#197; each is one serial judge-fix call)",
     )
     p_select.set_defaults(func=_cmd_select)
 

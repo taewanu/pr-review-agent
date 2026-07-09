@@ -218,7 +218,12 @@ log_step "running reply agent via claude -p"
 REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
 reply_rc=0
 (
+  # Same shared claude_slot pool as review-pr.sh's lenses/editor/judge-fix
+  # (ADR 0023 revision): the reply agent ran outside the pool, so with
+  # MAX_PARALLEL > 1 the concurrent claude count exceeded it (#197).
+  slot="$(acquire_claude_slot reply)"
   cd "$SCRATCH"
+  rc=0
   # claude's own stderr (e.g. its non-interactive workspace-trust notice,
   # expected every run since a fresh scratch clone is never pre-trusted) goes
   # to a sidecar file rather than flooding the daemon log unlabeled.
@@ -228,7 +233,10 @@ reply_rc=0
     2>"$RAW_FILE.stderr" |
     python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE" \
       --label "${PR_COLOR_START}pr${PR_NUMBER}:reply${PR_COLOR_RESET}" \
-      --cost-out "$RAW_FILE.cost"
+      --cost-out "$RAW_FILE.cost" ||
+    rc=$?
+  release_claude_slot "$slot"
+  exit "$rc"
 ) || reply_rc=$?
 if [[ "$reply_rc" -eq "$TIMEOUT_EXIT" ]]; then
   log_failure "reply-timeout" "$PR_URL" "$HEAD_OID" \

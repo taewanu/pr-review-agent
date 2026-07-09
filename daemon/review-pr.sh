@@ -233,9 +233,13 @@ resolution() {
   # branch, not the coordinate space the Findings' creation-side lines live in;
   # take every open daemon thread there (ADR 0017 §1) rather than line-filter
   # against the wrong side.
+  # Both caps bound the serial judge-fix loop below (#197): each candidate is
+  # one claude -p call, so candidate count × FIX_CHECK_AGENT_TIMEOUT is this
+  # leg's worst-case share of PER_PR_TIMEOUT.
   local untouched_cap="${RESOLVE_UNTOUCHED_CAP:-5}"
+  local touched_cap="${RESOLVE_TOUCHED_CAP:-10}"
   local select_args=(--threads "$threads_file" --diff "$DIFF_FILE" --operator "$OPERATOR"
-    --untouched-cap "$untouched_cap")
+    --untouched-cap "$untouched_cap" --touched-cap "$touched_cap")
   if [[ $diff_scoped -eq 0 ]]; then
     select_args+=(--all-open)
   fi
@@ -262,7 +266,12 @@ resolution() {
       judge_raw="$SCRATCH/.pr-review-judge-${i}.txt"
       rc=0
       (
+        # Same shared claude_slot pool as the lenses and editor (ADR 0023
+        # revision): without a slot this call ran outside the pool, so with
+        # MAX_PARALLEL > 1 the concurrent claude count exceeded it (#197).
+        slot="$(acquire_claude_slot judge-fix)"
         cd "$SCRATCH"
+        inner_rc=0
         # claude's own stderr (workspace-trust notice, etc.) goes to a sidecar
         # file rather than the primary log; see the lens loop above.
         run_with_timeout "$fix_check_timeout" \
@@ -271,7 +280,10 @@ resolution() {
           2>"$judge_raw.stderr" |
           python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$judge_raw" \
             --label "${PR_COLOR_START}pr${PR_NUMBER}:judge-fix${PR_COLOR_RESET}" \
-            --cost-out "$judge_raw.cost"
+            --cost-out "$judge_raw.cost" ||
+          inner_rc=$?
+        release_claude_slot "$slot"
+        exit "$inner_rc"
       ) || rc=$?
       if [[ "$rc" -ne 0 || ! -s "$judge_raw" ]]; then
         log_info "fix-check failed for ${path}:${line} (${tid}), rc=${rc}; leaving open"

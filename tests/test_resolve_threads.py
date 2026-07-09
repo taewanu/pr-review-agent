@@ -263,6 +263,43 @@ def test_all_open_lifts_the_cap():
     assert len(out) == 3
 
 
+# ---------- touched_cap (#197) ----------
+
+
+def test_touched_cap_truncates_overflow():
+    # Touched judgment was the one uncapped leg: a re-review touching N prior
+    # finding lines ran N serial judge-fix calls with no bound, inside a
+    # PER_PR_TIMEOUT budget that never sized it in.
+    threads = [_thread(thread_id=f"PRRT_{i}", original_line=10) for i in range(4)]
+    out = select_candidates(threads, DIFF, "operator", touched_cap=2)
+    assert [c["thread_id"] for c in out] == ["PRRT_0", "PRRT_1"]
+
+
+def test_touched_cap_default_bounds_large_backlog():
+    # The default must bound the judge loop without an explicit arg.
+    threads = [_thread(thread_id=f"PRRT_{i}", original_line=10) for i in range(15)]
+    out = select_candidates(threads, DIFF, "operator")
+    assert len(out) == 10
+
+
+def test_all_open_lifts_touched_cap():
+    # Force-push path judges every open thread (ADR 0017 §1); both caps lift.
+    threads = [_thread(thread_id=f"PRRT_{i}", original_line=10) for i in range(3)]
+    out = select_candidates(threads, DIFF, "operator", all_open=True, touched_cap=1)
+    assert len(out) == 3
+
+
+def test_touched_cap_does_not_consume_untouched_budget(capsys):
+    # The two caps are separate budgets, and the truncation is logged so a
+    # dropped candidate leaves a trace in the daemon log.
+    threads = [_thread(thread_id=f"PRRT_t{i}", original_line=10) for i in range(3)] + [
+        _thread(thread_id="PRRT_u", original_line=99)
+    ]
+    out = select_candidates(threads, DIFF, "operator", touched_cap=2, untouched_cap=1)
+    assert [c["thread_id"] for c in out] == ["PRRT_t0", "PRRT_t1", "PRRT_u"]
+    assert "1 touched capped" in capsys.readouterr().err
+
+
 # ---------- parse_verdict (safe-biased) ----------
 
 
