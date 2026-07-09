@@ -195,6 +195,9 @@ warn_env_drift() {
   local env_file="$1" template_file="$2" key missing=()
   [[ -r "$env_file" && -r "$template_file" ]] || return 0
   while IFS= read -r key; do
+    # A key exported in the environment is live (resolve_tunable resolves env
+    # before .env), not a code default — don't flag it as drift.
+    [[ -n "${!key:-}" ]] && continue
     grep -qE "^${key}=" "$env_file" || missing+=("$key")
   done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$template_file")
   ((${#missing[@]} > 0)) || return 0
