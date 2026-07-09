@@ -203,6 +203,14 @@ resolve_tunable() {
 # fails and retries next cycle (poll.sh leaves state untouched on failure)
 # rather than being data loss, so this value trades some detection latency for
 # not chasing an unbounded worst case. Override for tests.
+#
+# The resolution leg (#197) also runs inside this same wrapped process, after
+# the post: up to RESOLVE_TOUCHED_CAP + RESOLVE_UNTOUCHED_CAP serial judge-fix
+# calls, each slot-pooled and bounded by FIX_CHECK_AGENT_TIMEOUT (180s) —
+# those caps exist so this leg stays a bounded slice of the same budget. A
+# kill here is costlier than one mid-review: STATUS_DONE=1 has already stamped
+# the sentinel at HEAD, so the next tick skips on "same SHA" and the round's
+# remaining resolution work waits for the next push.
 readonly PER_PR_TIMEOUT="${PER_PR_TIMEOUT:-1800}"
 
 # run_with_pr_timeout <failure-category> <pr-url> <head-sha> <command...>
