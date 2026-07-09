@@ -619,6 +619,10 @@ if ! python3 "$SCRIPT_DIR/merge_findings.py" --no-style "${LENS_RAW_FILES[@]}" \
   log_failure "$(extract_category "$EXTRACT_ERR")" "$PR_URL" "$HEAD_OID" "merge_findings.py exited non-zero"
   exit 1
 fi
+# The merge succeeded, but its stderr may still carry quality-degradation
+# warnings (a lens skipped, findings dropped); forward them before cleanup
+# deletes the scratch dir, or a broken lens stays invisible forever (#196).
+log_degradation_warnings "$EXTRACT_ERR"
 # Surfaced in the posted summary (ADR 0023), not just this stderr log: a
 # healthy multi-lens union clearing the cap is not an error, so the count
 # still needs a visible trace an operator can actually see.
