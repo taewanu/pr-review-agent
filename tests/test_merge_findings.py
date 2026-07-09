@@ -188,6 +188,15 @@ def test_cap_truncates_instead_of_failing_post_merge():
     assert len(merged.comments) == 10
 
 
+def test_merge_cap_follows_max_findings_env(monkeypatch):
+    # #199: the post-merge truncation reads the same MAX_FINDINGS tunable as
+    # extract_json's single-payload hard cap, so the two stay one knob.
+    monkeypatch.setenv("MAX_FINDINGS", "3")
+    findings = [_finding(line=i, confidence=90) for i in range(1, 6)]
+    merged = merge_findings.merge([_lens(*findings)])
+    assert len(merged.comments) == 3
+
+
 def test_cap_truncation_emits_a_parseable_count(capsys):
     # review-pr.sh greps this exact line out of merge_findings.py's stderr and
     # passes the count on to apply_edits.py, which surfaces it in the posted

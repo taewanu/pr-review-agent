@@ -64,10 +64,6 @@ _Avoid_: run, cycle, pass
 A short-lived working tree the daemon creates per PR-tick, holding a shallow clone checked out to the PR's HEAD. Claude Code runs with the scratch directory as its cwd. Deleted at the end of the PR-tick.
 _Avoid_: workspace, sandbox, checkout dir
 
-**`.pr-review.yaml`**:
-The per-repo configuration file the daemon reads on each PR-tick. Single file; carries structured fields (path filters, max findings, active review agents) plus a multiline `instructions:` field for prose review guidance. Lives at the repo root, committed alongside source.
-_Avoid_: REVIEW.md (Anthropic Code Review's pattern uses a separate markdown file; ours bundles prose into the YAML `instructions:` field)
-
 **Status comment**:
 A pr-review-agent-owned issue comment on the PR, edited in place, showing the review scope plus a cumulative findings index (#60, ADR 0020). One per PR, mutable. Identified by the Status marker so a re-review edits it rather than posting a second. The index lists each Finding by location linked to its Inline comment, with the Finding's open/resolved state read from the thread each tick and a `total · open · resolved` rollup; it carries no Finding *body*, which stays in the Review object (one source per fact). The headline shows scope, not a per-SHA finding count. The PR-level twin of the Resolution stamp: both are in-place derived state, the stamp per thread, the index per PR.
 _Avoid_: ACK comment, review (it is not a Review object), status check (a GitHub commit status, unrelated), ledger (the findings index is content of the Status comment, not a separate comment or term; ADR 0020 rejected a dedicated ledger artifact)

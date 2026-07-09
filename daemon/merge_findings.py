@@ -83,9 +83,9 @@ _SEVERITY_RANK = {"important": 0, "nit": 1, "pre_existing": 2}
 
 
 def _truncate_to_cap(payload: ReviewPayload) -> None:
-    """Keep the top MAX_FINDINGS findings when the merged, deduped set exceeds
+    """Keep the top max_findings() findings when the merged, deduped set exceeds
     the cap, instead of hard-failing the way extract_json.enforce_cap does for
-    a single payload. MAX_FINDINGS was sized for one generator; a union of up
+    a single payload. The cap was sized for one generator; a union of up
     to 5 independently-capped lenses can legitimately exceed it even when every
     lens behaved correctly, so hard-failing here would discard every already-
     completed lens's output over a byproduct of merging, not a real defect.
@@ -96,18 +96,19 @@ def _truncate_to_cap(payload: ReviewPayload) -> None:
     scored finding at the same severity: a demonstrated high score is a
     stronger signal for a forced truncation choice than an absent one, though
     None is still never *gated* elsewhere in the pipeline."""
-    if len(payload.comments) <= extract_json.MAX_FINDINGS:
+    cap = extract_json.max_findings()
+    if len(payload.comments) <= cap:
         return
-    dropped = len(payload.comments) - extract_json.MAX_FINDINGS
+    dropped = len(payload.comments) - cap
     payload.comments.sort(
         key=lambda f: (
             _SEVERITY_RANK[f.severity],
             -(f.confidence if f.confidence is not None else -1),
         )
     )
-    payload.comments = payload.comments[: extract_json.MAX_FINDINGS]
+    payload.comments = payload.comments[:cap]
     print(
-        f"merge-cap: truncated {dropped} finding(s) beyond {extract_json.MAX_FINDINGS} post-merge",
+        f"merge-cap: truncated {dropped} finding(s) beyond {cap} post-merge",
         file=sys.stderr,
     )
     # Machine-parseable line (mirrors ExtractError's `category=` convention):

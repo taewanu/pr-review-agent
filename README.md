@@ -20,7 +20,7 @@ On a colleague's PR the daemon never auto-submits: what lands under your name is
 - Review comments post under your own GitHub identity, not a bot account.
 - Each teammate can run their own daemon; multiple independent reviews on the same PR are fine.
 - Runs on your laptop: no webhooks, no GitHub App, no hosting bill.
-- MIT-licensed. Retune via `.claude/agents/review-agent-default.md` (prompt) and `.pr-review.yaml` (per-project rules).
+- MIT-licensed. Retune via `.claude/agents/review-agent-default.md` (prompt) and `.env` tunables (confidence gate, findings cap).
 
 ## Prerequisites
 
@@ -60,10 +60,9 @@ The background job is invisible and bound to this checkout's working tree, so ke
 
 ## Configure
 
-Two files at the repo root:
+One file at the repo root:
 
-- **`.env`** (required): repos, GitHub user, poll interval, review concurrency, opt-out label, optional Slack webhook. See `templates/.env.example`.
-- **`.pr-review.yaml`** (optional): language, agents, path filters, per-path instructions, max findings. See `templates/.pr-review.example.yaml`.
+- **`.env`** (required): repos, GitHub user, poll interval, review concurrency, opt-out label, confidence gate, findings cap. See `templates/.env.example`.
 
 V1 only reviews PRs in repos where you've checked in the `.claude/agents/` and `.claude/commands/` files (forks of this repo have them by default). See [ADR 0004](docs/adr/0004-own-pr-review-default.md).
 
