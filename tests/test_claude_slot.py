@@ -225,3 +225,55 @@ def test_pool_never_exceeds_its_size_under_real_concurrency(tmp_path: Path):
     assert max_seen <= pool_size
     assert max_seen > 0  # sanity: contention was actually observed at some point
     assert list(tmp_path.glob("claude-slot-*.lock")) == []  # nothing leaked
+
+
+# ---------- pool-size validation (#200) ----------
+# CLAUDE_SLOT_POOL_SIZE was a raw `${...:-3}` read: a typo'd 50 fanned out 50
+# concurrent `claude -p` calls (the gap #161's ceiling closed for
+# MAX_PARALLEL), and 0 or garbage spun the acquire loop forever. As a runtime
+# env read inside a live review, it degrades with a warning instead of
+# hard-failing, per the CONFIDENCE_THRESHOLD contract.
+
+
+def _pool_size(state_dir: Path, raw: str) -> tuple[str, str]:
+    result = subprocess.run(
+        ["bash", "-c", f"source {LIB}; _slot_pool_size"],
+        capture_output=True,
+        text=True,
+        env=_env(state_dir, pool_size=raw),
+        timeout=10,
+    )
+    return result.stdout.strip(), result.stderr
+
+
+def test_pool_size_valid_passes_through_silently(tmp_path: Path):
+    size, err = _pool_size(tmp_path, "5")
+    assert size == "5"
+    assert err == ""
+
+
+def test_pool_size_above_ceiling_is_clamped_with_warning(tmp_path: Path):
+    size, err = _pool_size(tmp_path, "50")
+    assert size == "16"
+    assert "CLAUDE_SLOT_POOL_SIZE" in err
+
+
+def test_pool_size_zero_falls_back_to_default(tmp_path: Path):
+    # A zero pool would make every acquire spin forever: no slot 1..0 exists.
+    size, err = _pool_size(tmp_path, "0")
+    assert size == "3"
+    assert "CLAUDE_SLOT_POOL_SIZE" in err
+
+
+def test_pool_size_non_integer_falls_back_to_default(tmp_path: Path):
+    size, err = _pool_size(tmp_path, "many")
+    assert size == "3"
+    assert "CLAUDE_SLOT_POOL_SIZE" in err
+
+
+def test_acquire_with_zero_pool_size_still_acquires(tmp_path: Path):
+    # The end-to-end payoff: before validation, CLAUDE_SLOT_POOL_SIZE=0 hung
+    # acquire_claude_slot forever (caught here only by the harness timeout).
+    out, rc = _acquire(tmp_path, pool_size=0)
+    assert rc == 0
+    assert out.startswith(str(tmp_path))

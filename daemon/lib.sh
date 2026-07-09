@@ -546,6 +546,33 @@ _try_claim_slot() {
   return 1
 }
 
+# The slot-pool sibling of load_config's MAX_PARALLEL ceiling (#161): a typo'd
+# CLAUDE_SLOT_POOL_SIZE=50 is a fan-out mistake, not intent, since each unit is
+# one concurrent `claude -p` call (#200).
+readonly CLAUDE_SLOT_POOL_CEILING=16
+
+# _slot_pool_size
+# CLAUDE_SLOT_POOL_SIZE validated to a floor of 1 and the ceiling above
+# (#200). Unlike load_config's hard-fail at startup, this is a runtime env
+# read inside a live review, so a bad value degrades with a stderr warning
+# instead of crashing the tick (the CONFIDENCE_THRESHOLD contract): garbage or
+# 0 (which would spin the acquire loop forever, no slot 1..0 exists) falls
+# back to the default; an over-ceiling value clamps.
+_slot_pool_size() {
+  local raw="${CLAUDE_SLOT_POOL_SIZE:-3}" size
+  if [[ "$raw" =~ ^[0-9]+$ ]] && ((10#$raw >= 1)); then
+    size=$((10#$raw))
+  else
+    log_info "claude-slot: ignoring invalid CLAUDE_SLOT_POOL_SIZE='${raw}', using default 3"
+    size=3
+  fi
+  if ((size > CLAUDE_SLOT_POOL_CEILING)); then
+    log_info "claude-slot: clamping CLAUDE_SLOT_POOL_SIZE=${size} to ceiling ${CLAUDE_SLOT_POOL_CEILING}"
+    size=$CLAUDE_SLOT_POOL_CEILING
+  fi
+  printf '%s\n' "$size"
+}
+
 # acquire_claude_slot [label]
 # Blocks until one of CLAUDE_SLOT_POOL_SIZE slots is free (polling every
 # CLAUDE_SLOT_POLL_SECONDS), then prints the claimed slot's lock path on
@@ -564,7 +591,7 @@ acquire_claude_slot() {
   local label="${1:-}" dir pool_size poll_interval i slot_path start_ts waited suffix
   dir="$(_state_dir)"
   mkdir -p "$dir"
-  pool_size="${CLAUDE_SLOT_POOL_SIZE:-3}"
+  pool_size="$(_slot_pool_size)"
   poll_interval="${CLAUDE_SLOT_POLL_SECONDS:-2}"
   start_ts="$(date +%s)"
   while true; do
