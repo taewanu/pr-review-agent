@@ -352,6 +352,15 @@ state_write() {
 }
 
 # discover_sentinel_sha <owner> <repo> <pr-number> <login>
+# flatten_pages
+# Merges `gh api --paginate` stdout into one flat JSON array. `--paginate`
+# emits one array per 100-item page, concatenated (`[...][...]`), which is not
+# itself valid input for a single-array jq parse (#195). Keep this out of the
+# gh command substitution so gh's own exit code stays observable.
+flatten_pages() {
+  jq -s 'add // []'
+}
+
 # Reads the prior reviewed SHA from the most recent operator-authored review or
 # PR comment carrying the ADR 0006 sentinel. Comments are scanned too so the SHA
 # survives a submit-modal body-wipe that strips it from the review (#49). Exit
@@ -380,6 +389,8 @@ discover_sentinel_sha() {
     comments_json="[]"
   fi
   rm -f "$stderr_capture"
+  reviews_json="$(flatten_pages <<<"$reviews_json")"
+  comments_json="$(flatten_pages <<<"$comments_json")"
   # One timeline across both sources, newest first; a still-pending review's
   # submitted_at is null, so fall back to created_at. Comments use updated_at,
   # not created_at: the status comment is created once on first review and
