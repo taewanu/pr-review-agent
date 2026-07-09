@@ -351,7 +351,6 @@ state_write() {
   mv "$tmp" "$path"
 }
 
-# discover_sentinel_sha <owner> <repo> <pr-number> <login>
 # flatten_pages
 # Merges `gh api --paginate` stdout into one flat JSON array. `--paginate`
 # emits one array per 100-item page, concatenated (`[...][...]`), which is not
@@ -361,6 +360,7 @@ flatten_pages() {
   jq -s 'add // []'
 }
 
+# discover_sentinel_sha <owner> <repo> <pr-number> <login>
 # Reads the prior reviewed SHA from the most recent operator-authored review or
 # PR comment carrying the ADR 0006 sentinel. Comments are scanned too so the SHA
 # survives a submit-modal body-wipe that strips it from the review (#49). Exit
