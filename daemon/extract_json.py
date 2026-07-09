@@ -16,7 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import voice  # noqa: E402
 
 FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
-MAX_FINDINGS = 10
+# Findings cap; env MAX_FINDINGS overrides (#199), read per-call via
+# max_findings() so review-pr.sh's export lands the same way as
+# CONFIDENCE_THRESHOLD's.
+DEFAULT_MAX_FINDINGS = 10
 # ADR 0022. The precision floor for the confidence gate; env CONFIDENCE_THRESHOLD
 # overrides. 80 follows the Anthropic code-review plugin default, a dogfood
 # starting point, not a settled value.
@@ -116,11 +119,32 @@ def parse_payload(raw: str, *, validate_style: bool = True) -> ReviewPayload:
     return payload
 
 
+def max_findings() -> int:
+    """The findings cap, from env MAX_FINDINGS or the default (#199).
+
+    Same degradation contract as _confidence_threshold below: a malformed
+    value falls back to the default with a stderr warning instead of raising,
+    so one operator typo cannot crash every review tick."""
+    raw = os.environ.get("MAX_FINDINGS")
+    if raw is None:
+        return DEFAULT_MAX_FINDINGS
+    try:
+        return int(raw)
+    except ValueError:
+        print(
+            f"findings-cap: ignoring non-integer MAX_FINDINGS={raw!r}, "
+            f"using default {DEFAULT_MAX_FINDINGS}",
+            file=sys.stderr,
+        )
+        return DEFAULT_MAX_FINDINGS
+
+
 def enforce_cap(payload: ReviewPayload) -> None:
-    """Raise cap-violation if the finding count exceeds MAX_FINDINGS."""
-    if len(payload.comments) > MAX_FINDINGS:
+    """Raise cap-violation if the finding count exceeds the findings cap."""
+    cap = max_findings()
+    if len(payload.comments) > cap:
         raise ExtractError(
-            "cap-violation", f"too many findings: {len(payload.comments)} > cap {MAX_FINDINGS}"
+            "cap-violation", f"too many findings: {len(payload.comments)} > cap {cap}"
         )
 
 

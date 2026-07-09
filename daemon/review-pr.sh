@@ -609,6 +609,12 @@ wait_for_lens_pids
 CONFIDENCE_THRESHOLD="$(resolve_tunable CONFIDENCE_THRESHOLD "$SCRIPT_DIR/../.env")"
 [[ -n "$CONFIDENCE_THRESHOLD" ]] && export CONFIDENCE_THRESHOLD
 
+# Findings cap (#199): same resolve-and-export shape as the gate above. This
+# replaces the .pr-review.yaml max_findings key, which was parsed but never
+# read while the enforced cap sat hard-coded in extract_json.py.
+MAX_FINDINGS="$(resolve_tunable MAX_FINDINGS "$SCRIPT_DIR/../.env")"
+[[ -n "$MAX_FINDINGS" ]] && export MAX_FINDINGS
+
 log_step "merging lens payloads"
 # --no-style: the voice gate moved behind the editor (ADR 0016). This union
 # only schema-validates each lens's draft, dedupes, and shapes the result to

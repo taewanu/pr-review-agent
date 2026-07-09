@@ -171,11 +171,35 @@ def test_empty_comments_is_valid():
 
 
 def test_cap_exceeded_raises_cap_violation():
-    comments = [_minimal_finding(line=i) for i in range(1, extract_json.MAX_FINDINGS + 2)]
+    comments = [_minimal_finding(line=i) for i in range(1, extract_json.max_findings() + 2)]
     raw = _wrap({"summary": "lots", "comments": comments})
     with pytest.raises(ExtractError) as exc_info:
         extract_json.extract(raw)
     assert exc_info.value.category == "cap-violation"
+
+
+def test_max_findings_env_overrides_cap(monkeypatch):
+    # #199: the cap is an operator tunable via env MAX_FINDINGS, wired the same
+    # way as CONFIDENCE_THRESHOLD (ADR 0022), replacing the dead
+    # .pr-review.yaml max_findings key that was parsed but never read.
+    monkeypatch.setenv("MAX_FINDINGS", "2")
+    comments = [_minimal_finding(line=i) for i in range(1, 4)]
+    raw = _wrap({"summary": "lots", "comments": comments})
+    with pytest.raises(ExtractError) as exc_info:
+        extract_json.extract(raw)
+    assert exc_info.value.category == "cap-violation"
+
+
+def test_max_findings_non_integer_falls_back_with_warning(monkeypatch, capsys):
+    # Same degradation contract as CONFIDENCE_THRESHOLD: an operator typo must
+    # not crash every review tick, so the default applies and the typo is said
+    # out loud on stderr.
+    monkeypatch.setenv("MAX_FINDINGS", "many")
+    comments = [_minimal_finding(line=i) for i in range(1, 4)]
+    raw = _wrap({"summary": "ok", "comments": comments})
+    payload = extract_json.extract(raw)
+    assert len(payload.comments) == 3
+    assert "MAX_FINDINGS" in capsys.readouterr().err
 
 
 def test_end_line_equal_to_line_is_valid():
@@ -461,7 +485,7 @@ def test_style_fires_before_cap_when_both_apply():
     # Operator should see the voice problem first, not be told to cull one.
     bad = [
         _minimal_finding(line=i, body="Rename `tmp` — clearer intent.")
-        for i in range(1, extract_json.MAX_FINDINGS + 2)
+        for i in range(1, extract_json.max_findings() + 2)
     ]
     raw = _wrap({"summary": "x", "comments": bad})
     with pytest.raises(ExtractError) as exc_info:

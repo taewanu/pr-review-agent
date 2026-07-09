@@ -41,9 +41,10 @@ def test_minimum_required_fields(tmp_path: Path):
     assert cfg.poll_interval_seconds == 300
     assert cfg.review_own_prs is True
     assert cfg.opt_out_label == "no-ai-review"
-    assert cfg.slack_webhook_url == ""
-    assert cfg.review.language == "en"
-    assert cfg.review.max_findings == 10
+    # No parsed-but-unread keys (#199): the schema carries only what the
+    # daemon consumes, so an operator can't configure a silent no-op.
+    assert not hasattr(cfg, "slack_webhook_url")
+    assert not hasattr(cfg, "review")
 
 
 def test_env_overrides_and_quoted_values(tmp_path: Path):
@@ -56,7 +57,6 @@ def test_env_overrides_and_quoted_values(tmp_path: Path):
         POLL_INTERVAL_SECONDS=60
         REVIEW_OWN_PRS=false
         OPT_OUT_LABEL=skip-me
-        SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T/B/X
         """,
     )
     cfg = load_config.load(tmp_path)
@@ -65,27 +65,6 @@ def test_env_overrides_and_quoted_values(tmp_path: Path):
     assert cfg.poll_interval_seconds == 60
     assert cfg.review_own_prs is False
     assert cfg.opt_out_label == "skip-me"
-    assert cfg.slack_webhook_url.startswith("https://")
-
-
-def test_yaml_review_section_overlays_defaults(tmp_path: Path):
-    _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\n")
-    _write_yaml(
-        tmp_path,
-        """
-        language: ko
-        profile: thorough
-        agents: [default, security]
-        path_filters: ["!**/*.lock"]
-        max_findings: 5
-        """,
-    )
-    cfg = load_config.load(tmp_path)
-    assert cfg.review.language == "ko"
-    assert cfg.review.profile == "thorough"
-    assert cfg.review.agents == ["default", "security"]
-    assert cfg.review.path_filters == ["!**/*.lock"]
-    assert cfg.review.max_findings == 5
 
 
 def test_missing_env_fails_with_config_not_found(tmp_path: Path):
@@ -95,10 +74,22 @@ def test_missing_env_fails_with_config_not_found(tmp_path: Path):
     assert ".env" in str(exc.value)
 
 
-def test_missing_yaml_is_ok(tmp_path: Path):
+def test_stray_pr_review_yaml_warns_and_is_ignored(tmp_path: Path, capsys):
+    # #199 removed the never-read .pr-review.yaml layer. A leftover file from
+    # an earlier clone must not fail the load, but silence would recreate the
+    # original defect (an operator edits it and nothing happens), so the load
+    # says out loud that the file does nothing.
     _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\n")
+    _write_yaml(tmp_path, "max_findings: 5\n")
     cfg = load_config.load(tmp_path)
-    assert cfg.review.language == "en"
+    assert cfg.repos == ["alice/foo"]
+    assert ".pr-review.yaml" in capsys.readouterr().err
+
+
+def test_missing_yaml_loads_silently(tmp_path: Path, capsys):
+    _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\n")
+    load_config.load(tmp_path)
+    assert capsys.readouterr().err == ""
 
 
 def test_empty_repos_rejected(tmp_path: Path):
@@ -151,29 +142,12 @@ def test_malformed_env_line_rejected(tmp_path: Path):
     assert exc.value.category == "config-parse-error"
 
 
-def test_yaml_parse_error_rejected(tmp_path: Path):
-    _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\n")
-    (tmp_path / ".pr-review.yaml").write_text("language: ko\n  bad: indent: here\n")
-    with pytest.raises(ConfigError) as exc:
-        load_config.load(tmp_path)
-    assert exc.value.category == "config-parse-error"
-
-
-def test_yaml_top_level_must_be_mapping(tmp_path: Path):
-    _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\n")
-    (tmp_path / ".pr-review.yaml").write_text("- just\n- a\n- list\n")
-    with pytest.raises(ConfigError) as exc:
-        load_config.load(tmp_path)
-    assert exc.value.category == "config-invalid"
-
-
 def test_json_output_is_serialisable(tmp_path: Path):
     _write_env(tmp_path, "REPOS=alice/foo\nGITHUB_USER=alice\n")
     cfg = load_config.load(tmp_path)
     # Round-trip — daemon parses this with jq, so it must be valid JSON.
     parsed = json.loads(cfg.model_dump_json())
     assert parsed["repos"] == ["alice/foo"]
-    assert parsed["review"]["language"] == "en"
     # poll.sh reads max_parallel from this JSON to size its dispatch semaphore.
     assert parsed["max_parallel"] == 1
 
