@@ -74,6 +74,19 @@ log_set_pr_context "$REPO" "$PR_NUMBER"
 PR_COLOR_START="$(_sgr "${_LOG_PR_PALETTE[$(pr_color_index "${REPO}#${PR_NUMBER}")]}")"
 PR_COLOR_RESET="$(_sgr 0)"
 
+# Reply-scoped per-PR lock (#198), same double-post rationale as the review
+# path's #67 lock: a manual run overlapping a daemon tick would both list this
+# PR's comments before either's ack posts, and both dispatch the same thread.
+# The key is suffixed so it never contends with the review lock — the two
+# paths post to disjoint surfaces and poll.sh orders them within a tick.
+if ! REPLY_LOCK_FILE="$(acquire_pr_lock "$OWNER" "$REPO" "${PR_NUMBER}-reply")"; then
+  log_info "reply pass already in progress for ${OWNER}/${REPO}#${PR_NUMBER}, skipping"
+  exit 0
+fi
+# Replaced by the fuller cleanup trap once the scratch clone exists; that
+# cleanup releases the lock too.
+trap 'release_pr_lock "${REPLY_LOCK_FILE:-}"' EXIT
+
 GITHUB_USER="$(gh api user --jq '.login')"
 HEAD_OID=""
 
@@ -176,6 +189,7 @@ fi
 SCRATCH="$(mktemp -d -t pr-review-reply.XXXXXX)"
 POST_ERR=""
 cleanup() {
+  release_pr_lock "${REPLY_LOCK_FILE:-}"
   if [[ $KEEP_SCRATCH -ne 1 ]]; then
     rm -rf "$SCRATCH"
   fi
