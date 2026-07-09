@@ -77,15 +77,18 @@ def _run(
     Pass `reviews="FAIL"` to make the reviews call exit non-zero (the function
     must then return 2 before it ever reaches comments). `fail_comments=True`
     fails only the comments call, exercising the degrade-to-reviews-only path.
-    `fail_stderr` is the message a failing call writes to stderr.
+    `fail_stderr` is the message a failing call writes to stderr. Any other
+    string payload is emitted verbatim, for wire shapes json.dumps cannot
+    produce (the `--paginate` concatenated per-page arrays, #195).
     """
     import tempfile
 
-    def _branch(data: list[dict], fail: bool) -> str:
+    def _branch(data: list[dict] | str, fail: bool) -> str:
         if fail:
             line = fail_stderr.replace("'", "'\\''")
             return f"echo '{line}' >&2\nexit 1"
-        return "cat <<'JSON_EOF'\n" + json.dumps(data) + "\nJSON_EOF"
+        payload = data if isinstance(data, str) else json.dumps(data)
+        return "cat <<'JSON_EOF'\n" + payload + "\nJSON_EOF"
 
     reviews_fail = reviews == "FAIL"
     reviews_branch = _branch([] if reviews_fail else reviews, reviews_fail)
@@ -262,6 +265,39 @@ def test_comment_uses_updated_at_not_created_at():
                 updated_at="2026-05-28T12:00:00Z",
             )
         ],
+    )
+    assert rc == 0
+    assert sha == SENTINEL_SHA_B
+
+
+def _pages(*pages: list[dict]) -> str:
+    """`gh api --paginate` wire shape: one JSON array per page, concatenated
+    with no separator (`[...][...]`), not one merged array."""
+    return "".join(json.dumps(page) for page in pages)
+
+
+def test_finds_sentinel_on_second_reviews_page():
+    # #195: parsing the concatenated pages as one array made jq fail, which the
+    # if-condition callers read as "no sentinel" — dedup silently degraded to
+    # the state file and a fresh machine double-reviewed the PR.
+    sha, rc, _ = _run(
+        _pages(
+            [_review("no sentinel", submitted_at="2026-05-28T10:00:00Z")],
+            [_review(_sentinel_body(SENTINEL_SHA_A), submitted_at="2026-05-28T12:00:00Z")],
+        )
+    )
+    assert rc == 0
+    assert sha == SENTINEL_SHA_A
+
+
+def test_finds_sentinel_on_second_comments_page():
+    # The #49 comment backup must survive pagination too.
+    sha, rc, _ = _run(
+        reviews=[_review("no sentinel")],
+        comments=_pages(
+            [_comment("chatter", created_at="2026-05-28T10:00:00Z")],
+            [_comment(_sentinel_body(SENTINEL_SHA_B), created_at="2026-05-28T12:00:00Z")],
+        ),
     )
     assert rc == 0
     assert sha == SENTINEL_SHA_B

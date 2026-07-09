@@ -15,6 +15,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 JQ_FILE = REPO_ROOT / "daemon" / "detect-replies.jq"
+LIB = REPO_ROOT / "daemon" / "lib.sh"
 
 LOGIN = "operator"
 MARKER = "🤖 _pr-review-agent_"  # lib.sh PROVENANCE_TAG; pinned by test_provenance_tag
@@ -41,6 +42,25 @@ def _select(comments: list[dict]) -> list[dict]:
     out = subprocess.run(
         ["jq", "--arg", "login", LOGIN, "--arg", "provenance", MARKER, "-f", str(JQ_FILE)],
         input=json.dumps(comments),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(out.stdout)
+
+
+def _select_pages(*pages: list[dict]) -> list[dict]:
+    """Run reply-pr.sh's composed pipeline on `gh api --paginate` wire output:
+    one JSON array per page, concatenated (`[...][...]`), flattened by
+    lib.sh's flatten_pages before the jq filter sees it (#195)."""
+    out = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"source {LIB}; flatten_pages | "
+            f"jq --arg login {LOGIN} --arg provenance '{MARKER}' -f {JQ_FILE}",
+        ],
+        input="".join(json.dumps(page) for page in pages),
         capture_output=True,
         text=True,
         check=True,
@@ -78,6 +98,20 @@ def test_daemon_reply_ack_is_not_treated_as_an_operator_reply():
         body=f"Thanks, confirmed.\n\n{MARKER}\n\n<!-- pr-review-agent:reply:2 -->",
     )
     assert _select([_finding(1), ack]) == []
+
+
+def test_thread_split_across_pages_is_selected_once():
+    # #195: without flattening, the jq filter ran once per page-document — an
+    # acked thread on a mis-parsed page could re-dispatch, and the caller's
+    # `jq length` count came out multi-line. The finding sits on page 1, its
+    # operator reply on page 2; the acked thread spans pages too and must stay
+    # excluded.
+    acked_finding = _comment(10, body=f"**bug** other thing\n\n{MARKER}")
+    acked_reply = _comment(11, in_reply_to=10, body="done <!-- pr-review-agent:reply:11 -->")
+    live_reply = _comment(2, in_reply_to=1, body="thanks, fixed it")
+    threads = _select_pages([_finding(1), acked_finding], [live_reply, acked_reply])
+    assert len(threads) == 1
+    assert threads[0]["operator_reply"]["comment_id"] == "2"
 
 
 def test_operator_reply_selected_even_with_a_daemon_ack_present():

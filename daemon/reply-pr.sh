@@ -79,9 +79,11 @@ HEAD_OID=""
 
 log_info "checking for unaddressed replies"
 
-# List all inline review comments on the PR. --paginate handles >30 comments.
+# List all inline review comments on the PR. --paginate handles >30 comments;
+# flatten_pages merges its per-page arrays so the jq filter below runs once
+# over one array instead of once per page-document (#195).
 # https://docs.github.com/en/rest/pulls/comments
-COMMENTS_JSON="$(gh api --paginate "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments")"
+COMMENTS_JSON="$(gh api --paginate "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" | flatten_pages)"
 
 # Find unaddressed reply threads via the Reply sentinel (#39). Replaces the V2
 # `user.login != $login` filter which was dormant in 1-operator setups (daemon
