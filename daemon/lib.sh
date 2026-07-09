@@ -183,6 +183,24 @@ resolve_tunable() {
   printf '%s' "$val"
 }
 
+# warn_env_drift <dotenv-path> <template-path>
+# One boot-time line naming every key the template carries but the live .env
+# lacks — those knobs silently run on their code defaults (#201). The concrete
+# failure: CLAUDE_SLOT_POOL_SIZE (ADR 0023) never synced into a pre-existing
+# .env pinned lens concurrency at 3 instead of the recommended 10, visible
+# only as slot-wait-dominated 7-9 minute reviews. Read-only and non-blocking:
+# unreadable files no-op, and a commented-out key counts as absent because it
+# also runs the code default.
+warn_env_drift() {
+  local env_file="$1" template_file="$2" key missing=()
+  [[ -r "$env_file" && -r "$template_file" ]] || return 0
+  while IFS= read -r key; do
+    grep -qE "^${key}=" "$env_file" || missing+=("$key")
+  done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$template_file")
+  ((${#missing[@]} > 0)) || return 0
+  log_info "config drift: ${missing[*]} in templates/.env.example but not in .env — running on code defaults; add the key(s) to .env if that is not intended"
+}
+
 # Outer per-PR watchdog cap (#121). run_with_timeout bounds only one inner
 # `claude -p` call; the network steps around it (`gh repo clone`, the per-PR
 # `git fetch`, `gh pr diff`, the `gh api` posts) were unbounded, so a stalled
