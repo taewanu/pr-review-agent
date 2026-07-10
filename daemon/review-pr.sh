@@ -28,10 +28,38 @@ fi
 derive_project_identity "$SCRIPT_DIR/.."
 
 KEEP_SCRATCH=0
+DRY_RUN=0
 LAST_SHA=""
+AT_SHA=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --keep-scratch)
+      KEEP_SCRATCH=1
+      shift
+      ;;
+    --at-sha)
+      # Review the PR as of an earlier commit (a bug later fixed within the same
+      # PR), for reproducible recall measurement by the eval harness. Overrides
+      # HEAD_OID so the checkout, diff, and anchoring all target that commit, and
+      # diffs base...<sha> via the compare API. Implies --dry-run: findings
+      # anchored to the old commit would mis-anchor if posted to the live PR.
+      if [[ $# -lt 2 ]]; then
+        log_err "--at-sha requires a value"
+        exit 1
+      fi
+      AT_SHA="$2"
+      DRY_RUN=1
+      KEEP_SCRATCH=1
+      shift 2
+      ;;
+    --dry-run)
+      # Measurement / local-preview mode: run the full generation pipeline
+      # (lenses → merge → editor → findings) but post nothing to the PR — no
+      # status comment, no review object, no thread resolution. Implies
+      # --keep-scratch so the findings payload and .cost sidecars survive for a
+      # caller (the eval harness) to read. Bypasses the already-reviewed sentinel
+      # skip so a re-measurement of the same HEAD still runs.
+      DRY_RUN=1
       KEEP_SCRATCH=1
       shift
       ;;
@@ -54,7 +82,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -ne 1 ]]; then
-  log_err "usage: review-pr.sh [--keep-scratch] [--last-sha <sha>] <pr-url>"
+  log_err "usage: review-pr.sh [--keep-scratch] [--dry-run] [--at-sha <sha>] [--last-sha <sha>] <pr-url>"
   exit 1
 fi
 
@@ -343,6 +371,15 @@ HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 HEAD_REPO_URL="https://github.com/${HEAD_REPO}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
+# --at-sha pins the review to an earlier PR commit (recall measurement). Override
+# HEAD_OID here, after the live head is logged, so the checkout, diff, and finding
+# anchoring below all target the pinned commit. HEAD_REF stays the live head ref,
+# used only for the PR-head fetch (the pinned commit is fetched by SHA).
+if [[ -n "$AT_SHA" ]]; then
+  HEAD_OID="$AT_SHA"
+  log_info "pinned to ${AT_SHA:0:12} (--at-sha, dry-run)"
+fi
+
 # Own-vs-others gates the submit path (ADR 0008): own PRs auto-submit a COMMENT
 # review, others' stay pending. The operator is the gh-authenticated identity
 # (ADR 0003), as in reply-pr.sh. Derived here, not passed from poll.sh, so the
@@ -370,7 +407,8 @@ trap 'flip_status_failed $?; cleanup' EXIT
 # exact HEAD (the lock above covers the concurrent case). poll.sh dedups before
 # dispatch, but the manual one-shot bypasses that. A discovery failure falls
 # through to reviewing rather than skipping on uncertainty.
-if existing_sha="$(discover_sentinel_sha "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")" &&
+if [[ $DRY_RUN -eq 0 ]] &&
+  existing_sha="$(discover_sentinel_sha "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")" &&
   [[ "$existing_sha" == "$HEAD_OID" ]]; then
   log_info "already reviewed ${HEAD_OID:0:12}, skipping"
   exit 0
@@ -393,6 +431,9 @@ gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
   # squash-merged into an unreachable SHA. The `--branch $HEAD_REF` shortcut
   # silently breaks on merged PRs whose branch has since been deleted.
   git fetch --quiet --depth=1 origin "refs/pull/${PR_NUMBER}/head"
+  # --at-sha checks out an earlier PR commit the depth-1 head fetch above doesn't
+  # include; fetch that commit by SHA (GitHub serves reachable SHAs).
+  [[ -n "$AT_SHA" ]] && git fetch --quiet --depth=1 origin "$AT_SHA"
   git checkout --quiet --detach "$HEAD_OID"
 )
 
@@ -453,7 +494,22 @@ log_step "fetching diff"
 # The fast-forward check runs first so a force-push skips the now-pointless
 # fetch; it asks GitHub's compare API, not the shallow local history (#149).
 diff_scoped=0
-if [[ -n "$LAST_SHA" ]]; then
+if [[ -n "$AT_SHA" ]]; then
+  # Pinned-commit review (--at-sha): diff base...<sha> via the compare API, the
+  # at-sha analog of `gh pr diff`. Server-side merge-base diff, so the shallow
+  # clone's missing local merge-base is a non-issue. Same-repo PRs only (the base
+  # lives in BASE_OWNER/BASE_REPO); a fork's base would need a cross-repo compare.
+  GH_API_CALL_TIMEOUT="${GH_API_CALL_TIMEOUT:-90}"
+  at_diff_rc=0
+  run_with_timeout "$GH_API_CALL_TIMEOUT" \
+    gh api "repos/${BASE_OWNER}/${BASE_REPO}/compare/${BASE_REF}...${AT_SHA}" \
+    -H "Accept: application/vnd.github.diff" >"$DIFF_FILE" || at_diff_rc=$?
+  if [[ "$at_diff_rc" -ne 0 ]]; then
+    log_failure "diff-fetch-failed" "$PR_URL" "$HEAD_OID" \
+      "compare ${BASE_REF}...${AT_SHA:0:12} exited $at_diff_rc"
+    exit 1
+  fi
+elif [[ -n "$LAST_SHA" ]]; then
   if is_fast_forward "$HEAD_REPO" "$LAST_SHA" "$HEAD_OID"; then
     if (cd "$SCRATCH" && git fetch --quiet origin "$LAST_SHA" 2>/dev/null); then
       (cd "$SCRATCH" && git diff "$LAST_SHA..HEAD") >"$DIFF_FILE"
@@ -466,7 +522,7 @@ if [[ -n "$LAST_SHA" ]]; then
     log_info "non-fast-forward since ${LAST_SHA:0:12} (force-push/rebase), using full PR diff"
   fi
 fi
-if [[ $diff_scoped -eq 0 ]]; then
+if [[ -z "$AT_SHA" && $diff_scoped -eq 0 ]]; then
   # Explicit timeout (review fix, ADR 0023): PER_PR_TIMEOUT's default grew to
   # cover the 5-lens review-agent leg's worst case, which widened the window
   # before an unrelated, unbounded gh call (this one) gets caught if it hangs.
@@ -514,26 +570,31 @@ fi
 # fetch or parse miss degrades to a restarted trail (best-effort), never aborts.
 # STATUS_TRAIL_PRIOR is read by flip_status_failed too, so a failed tick preserves
 # the trail rather than wiping it.
-STATUS_COMMENT_ID="$(find_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
-if [[ -n "$STATUS_COMMENT_ID" ]]; then
-  STATUS_TRAIL_PRIOR="$(status_comment_body "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" |
-    python3 "$SCRIPT_DIR/status_trail.py" 2>/dev/null || true)"
-fi
-
-# The "Reviewing…" render carries the prior trail unchanged — this tick's SHA is
-# not reviewed yet; the terminal render below folds it in.
-reviewing_body="$(render_status_comment \
-  "👀 Reviewing $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")…" \
-  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "" "$STATUS_TRAIL_PRIOR")"
-if [[ -n "$STATUS_COMMENT_ID" ]]; then
-  edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewing_body"
-  log_info "status comment reused (${STATUS_COMMENT_ID})"
-else
-  STATUS_COMMENT_ID="$(post_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$reviewing_body")"
+# Dry-run posts nothing, so it skips the status comment entirely. STATUS_COMMENT_ID
+# stays empty, which self-disables the terminal status edit and flip_status_failed
+# below (both no-op on an empty id), so no other guard is needed for them.
+if [[ $DRY_RUN -eq 0 ]]; then
+  STATUS_COMMENT_ID="$(find_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
   if [[ -n "$STATUS_COMMENT_ID" ]]; then
-    log_info "status comment posted (${STATUS_COMMENT_ID})"
+    STATUS_TRAIL_PRIOR="$(status_comment_body "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" |
+      python3 "$SCRIPT_DIR/status_trail.py" 2>/dev/null || true)"
+  fi
+
+  # The "Reviewing…" render carries the prior trail unchanged — this tick's SHA is
+  # not reviewed yet; the terminal render below folds it in.
+  reviewing_body="$(render_status_comment \
+    "👀 Reviewing $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")…" \
+    "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "" "$STATUS_TRAIL_PRIOR")"
+  if [[ -n "$STATUS_COMMENT_ID" ]]; then
+    edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewing_body"
+    log_info "status comment reused (${STATUS_COMMENT_ID})"
   else
-    log_info "status comment unavailable (non-fatal)"
+    STATUS_COMMENT_ID="$(post_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$reviewing_body")"
+    if [[ -n "$STATUS_COMMENT_ID" ]]; then
+      log_info "status comment posted (${STATUS_COMMENT_ID})"
+    else
+      log_info "status comment unavailable (non-fatal)"
+    fi
   fi
 fi
 
@@ -716,7 +777,14 @@ unanchored_count="$(jq 'length' "$UNANCHORED_FILE")"
 new_findings_total=$((anchored_count + unanchored_count))
 
 review_url=""
-if [[ "$new_findings_total" -gt 0 ]]; then
+if [[ "$new_findings_total" -gt 0 && $DRY_RUN -eq 1 ]]; then
+  # Dry-run posts nothing; it reports where the findings that would post live in
+  # the preserved scratch for the eval harness to read (contract defined at
+  # emit_dryrun_contract in lib.sh). Cost is covered separately by
+  # log_total_review_cost below. Safe on stdout: the daemon never runs dry-run.
+  log_info "dry-run: ${new_findings_total} finding(s), posting nothing (scratch preserved)"
+  emit_dryrun_contract "$new_findings_total"
+elif [[ "$new_findings_total" -gt 0 ]]; then
   post_args=(
     --owner "$BASE_OWNER"
     --repo "$BASE_REPO"
@@ -755,6 +823,12 @@ if [[ "$new_findings_total" -gt 0 ]]; then
   else
     log_ok "posted Pending review${review_id:+ #$review_id}"
   fi
+elif [[ $DRY_RUN -eq 1 ]]; then
+  # Zero findings under dry-run is a real result the harness must record (a recall
+  # miss, not a failure), so it reports the same contract with a zero count. The
+  # payload still exists (summary plus an empty comments array).
+  log_info "dry-run: no findings at $HEAD_OID, posting nothing (scratch preserved)"
+  emit_dryrun_contract 0
 else
   log_info "no new findings at $HEAD_OID; skipping review object (ADR 0020)"
 fi
@@ -769,7 +843,7 @@ STATUS_DONE=1
 # this tick just resolved. Re-review only (LAST_SHA set): a first review has no
 # prior daemon threads. Best-effort; resolution returns 0 on any internal failure,
 # but guard the call too so set -e never trips.
-if [[ -n "$LAST_SHA" ]]; then
+if [[ -n "$LAST_SHA" && $DRY_RUN -eq 0 ]]; then
   log_step "commit-driven resolution"
   resolution || log_info "resolution skipped (non-fatal)"
 fi
@@ -779,29 +853,33 @@ fi
 # tick's posts and resolves. The headline carries scope, not a per-SHA count: the
 # index's rollup replaces that count. All best-effort — a failed fetch or render
 # degrades to a headline-and-scope status, never aborts the landed review.
-log_step "rendering status index"
-index_threads_file="$SCRATCH/.pr-review-index-threads.json"
-index_block=""
-if fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$index_threads_file"; then
-  index_block="$(python3 "$SCRIPT_DIR/findings_index.py" \
-    --threads "$index_threads_file" --operator "$OPERATOR" \
-    --unanchored "$unanchored_count" --review-url "$review_url" \
-    --summary-file "$SUMMARY_FILE" 2>/dev/null || true)"
-else
-  log_info "thread fetch for status index failed (non-fatal)"
+# Skipped wholesale in dry-run: there is no status comment to edit and nothing to
+# post, so the fetch and edit are pure side effects with no dry-run value.
+if [[ $DRY_RUN -eq 0 ]]; then
+  log_step "rendering status index"
+  index_threads_file="$SCRATCH/.pr-review-index-threads.json"
+  index_block=""
+  if fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$index_threads_file"; then
+    index_block="$(python3 "$SCRIPT_DIR/findings_index.py" \
+      --threads "$index_threads_file" --operator "$OPERATOR" \
+      --unanchored "$unanchored_count" --review-url "$review_url" \
+      --summary-file "$SUMMARY_FILE" 2>/dev/null || true)"
+  else
+    log_info "thread fetch for status index failed (non-fatal)"
+  fi
+  # Append this tick's reviewed SHA to the trail (ADR 0021): re-parse the prior
+  # block (held in STATUS_TRAIL_PRIOR) and fold in HEAD with the reviewed-at time,
+  # so the audit record grows by one row rather than being overwritten.
+  status_trail_block="$(printf '%s' "$STATUS_TRAIL_PRIOR" |
+    python3 "$SCRIPT_DIR/status_trail.py" \
+      --add-sha "${HEAD_OID:0:8}" --add-time "$(date -u +'%Y-%m-%d %H:%M UTC')" \
+      2>/dev/null || true)"
+  reviewed_body="$(render_status_comment \
+    "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" \
+    "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block" "$status_trail_block" \
+    "$HEAD_OID")"
+  edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
 fi
-# Append this tick's reviewed SHA to the trail (ADR 0021): re-parse the prior
-# block (held in STATUS_TRAIL_PRIOR) and fold in HEAD with the reviewed-at time,
-# so the audit record grows by one row rather than being overwritten.
-status_trail_block="$(printf '%s' "$STATUS_TRAIL_PRIOR" |
-  python3 "$SCRIPT_DIR/status_trail.py" \
-    --add-sha "${HEAD_OID:0:8}" --add-time "$(date -u +'%Y-%m-%d %H:%M UTC')" \
-    2>/dev/null || true)"
-reviewed_body="$(render_status_comment \
-  "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" \
-  "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block" "$status_trail_block" \
-  "$HEAD_OID")"
-edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
 
 log_total_review_cost
 log_step "done"

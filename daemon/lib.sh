@@ -668,6 +668,25 @@ wait_for_lens_pids() {
   done
 }
 
+# emit_dryrun_contract <count>
+# The machine-readable contract review-pr.sh --dry-run prints so the eval harness
+# can locate the findings that would post, without the review being posted. This
+# is the single source for the contract; call sites reference it rather than
+# restate it. `dryrun_*=<path|count>` follows the repo's `key=value` signal
+# convention (extract_category/extract_truncated_count parse
+# `category=`/`truncated_count=`), but on stdout, not the stderr those Python
+# steps use, because this is review-pr.sh's own report rather than a subprocess's.
+# dryrun_payload is the full edited review object (summary plus comments), so the
+# harness needs no separate summary/anchored/unanchored locators. Reads the
+# run-scoped PAYLOAD_FILE the caller set; extracted into lib.sh, not left inline
+# in review-pr.sh, so a test can source this file and assert the fields (ADR 0026
+# precedent, as wait_for_lens_pids above).
+# shellcheck disable=SC2154  # PAYLOAD_FILE set by the caller
+emit_dryrun_contract() {
+  printf 'dryrun_payload=%s\n' "$PAYLOAD_FILE"
+  printf 'dryrun_count=%s\n' "$1"
+}
+
 # Daemon singleton + heartbeat for the run.sh polling loop (ADR 0009). The loop
 # is the scheduling driver in place of a launchd StartInterval timer; the
 # singleton stops two loops (a foreground run.sh and the KeepAlive one) from both
