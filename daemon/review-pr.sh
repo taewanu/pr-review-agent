@@ -778,14 +778,10 @@ new_findings_total=$((anchored_count + unanchored_count))
 
 review_url=""
 if [[ "$new_findings_total" -gt 0 && $DRY_RUN -eq 1 ]]; then
-  # Dry-run posts nothing; it reports where the findings that WOULD post now live
-  # in the preserved scratch, for the eval harness (A1c) to read. The contract is
-  # machine-readable `dryrun_*=<path|count>` lines on stdout, matching the repo's
-  # `key=value` signal convention (extract_category/extract_truncated_count parse
-  # `category=`/`truncated_count=`). stdout is safe to write here: the daemon never
-  # runs dry-run (harness/manual only), so this cannot pollute a poll.sh capture.
-  # .cost sidecars are summed by log_total_review_cost just below, so cost is
-  # already covered; these lines only locate the findings.
+  # Dry-run posts nothing; it reports where the findings that would post live in
+  # the preserved scratch for the eval harness to read (contract defined at
+  # emit_dryrun_contract in lib.sh). Cost is covered separately by
+  # log_total_review_cost below. Safe on stdout: the daemon never runs dry-run.
   log_info "dry-run: ${new_findings_total} finding(s), posting nothing (scratch preserved)"
   emit_dryrun_contract "$new_findings_total"
 elif [[ "$new_findings_total" -gt 0 ]]; then

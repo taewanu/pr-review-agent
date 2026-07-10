@@ -45,6 +45,10 @@ A stacked PR whose bug lives in code introduced by its base branch fails this
 
 For each fixture, the harness runs the config, then an Opus judge compares the
 config's findings against `bug.summary` at `bug.path`: did it surface the known
-bug (recall), plus false-positive and new-finding counts. Cost comes from the
-`.cost` sidecars in the preserved scratch. A config that misses a fixture's bug
-regresses recall and must not ship (#185 is why the lenses exist).
+bug (recall)? Cost comes from the `.cost` sidecars in the preserved scratch. A
+config that misses a fixture's bug regresses recall and must not ship (#185 is why
+the lenses exist).
+
+Recall and cost only. Precision (false-positive rate) needs negative labels the
+corpus does not carry (one known bug per fixture, nothing marking the other
+findings right or wrong), so it is deferred; see #209 acceptance.

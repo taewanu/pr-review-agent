@@ -1,11 +1,9 @@
 """Tests for review-pr.sh's --dry-run reporting contract (emit_dryrun_contract, #209 A1a).
 
---dry-run runs the full generation pipeline but posts nothing, reporting where the
-findings that would post live so the eval harness can read them. The contract is
-machine-readable `dryrun_*=<path|count>` lines on stdout, matching the repo's
-`key=value` signal convention (category=/truncated_count=). emit_dryrun_contract
-lives in lib.sh, not inline in review-pr.sh, so this test can source it and assert
-the emitted fields, the ADR 0026 pattern used for wait_for_lens_pids.
+emit_dryrun_contract lives in lib.sh, not inline in review-pr.sh, so this test can
+source it and assert the emitted fields, the ADR 0026 pattern used for
+wait_for_lens_pids. The contract itself (the dryrun_*= fields and why) is
+documented at the emitter in lib.sh.
 
 The no-post guards themselves (skipping the status comment, review object, and
 resolution when DRY_RUN=1) are exercised by a manual dry-run smoke against a real
@@ -21,13 +19,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
 
-# Generic scratch paths standing in for the run-scoped globals the caller sets.
-PATHS = {
-    "PAYLOAD_FILE": "/scratch/.pr-review-payload.json",
-    "SUMMARY_FILE": "/scratch/.pr-review-summary.txt",
-    "ANCHORED_FILE": "/scratch/.pr-review-anchored.json",
-    "UNANCHORED_FILE": "/scratch/.pr-review-unanchored.json",
-}
+# Generic scratch path standing in for the run-scoped global the caller sets.
+PATHS = {"PAYLOAD_FILE": "/scratch/.pr-review-payload.json"}
 
 
 def _emit(count: int) -> subprocess.CompletedProcess:
@@ -45,26 +38,17 @@ def _parse(stdout: str) -> dict[str, str]:
     return dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
 
 
-def test_emits_all_five_contract_keys():
+def test_emits_payload_and_count_only():
     result = _emit(3)
     assert result.returncode == 0, result.stderr
-    assert set(_parse(result.stdout)) == {
-        "dryrun_payload",
-        "dryrun_summary",
-        "dryrun_anchored",
-        "dryrun_unanchored",
-        "dryrun_count",
-    }
+    assert set(_parse(result.stdout)) == {"dryrun_payload", "dryrun_count"}
 
 
-def test_paths_are_the_caller_globals_verbatim():
-    # The harness relies on these paths resolving to the exact scratch files, so
-    # the values must be the globals unchanged.
+def test_payload_is_the_caller_global_verbatim():
+    # The harness reads the full review payload from this exact path, so the value
+    # must be the global unchanged.
     kv = _parse(_emit(3).stdout)
     assert kv["dryrun_payload"] == PATHS["PAYLOAD_FILE"]
-    assert kv["dryrun_summary"] == PATHS["SUMMARY_FILE"]
-    assert kv["dryrun_anchored"] == PATHS["ANCHORED_FILE"]
-    assert kv["dryrun_unanchored"] == PATHS["UNANCHORED_FILE"]
 
 
 def test_count_is_reported_verbatim():
