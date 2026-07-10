@@ -41,6 +41,9 @@ REVIEW_PR = REPO_ROOT / "daemon" / "review-pr.sh"
 DEFAULT_FIXTURES = REPO_ROOT / "eval" / "fixtures.jsonl"
 
 JUDGE_MODEL = "opus"
+# Rough observed per-review cost, shown in the startup plan so the operator sees
+# the exposure before committing. Update if model or pricing shifts.
+OBSERVED_REVIEW_COST = "$3-7"
 
 
 # --- pure helpers (unit-tested, no tokens) -----------------------------------
@@ -69,8 +72,9 @@ def sum_cost(scratch_dir: Path) -> float:
 
 
 def should_stop_for_cost(total_cost: float, max_cost: float | None) -> bool:
-    """True when a cost cap is set and cumulative spend has reached it. The guard
-    that stops a runaway full run (the 2026-07 incident: 14 uncapped reviews)."""
+    """True when a cost cap is set and cumulative spend has reached it. A soft cap:
+    checked after each review completes and pays its full cost, so a run can
+    overshoot the ceiling by up to one review."""
     return max_cost is not None and total_cost >= max_cost
 
 
@@ -107,13 +111,15 @@ def fixture_recall(verdicts: list[dict]) -> float:
 
 # --- token-spending steps (run by the operator) ------------------------------
 
-# The in-flight review-pr.sh child, tracked so an interrupt tears down the whole
-# review process group instead of orphaning it. Each review runs in its own
-# session (start_new_session), so its lens subshells and their `claude -p` calls
-# share one killable group. The 2026-07 incident: `pkill -f run_eval` killed the
-# runner but left 9 review/lens processes burning tokens; the SIGTERM handler
-# below now kills the group first. SIGKILL (pkill -9) is uncatchable and will
-# still orphan the tree, so force-stop with `pkill -f 'run_eval|review-pr.sh'`.
+# The in-flight review-pr.sh child, tracked so an interrupt tears down its whole
+# process group instead of orphaning it. Each review runs in its own session, so
+# the review script, its lens subshells, and their `claude -p` calls share one
+# group os.killpg reaps in full; an interrupt that killed only the runner would
+# leave those children burning tokens. SIGKILL (pkill -9) bypasses the handler
+# below and still orphans the tree; recover it by killing the token-burning
+# children directly, whose argv carries neither the runner nor the script name:
+#   pkill -f 'claude -p /review'; pkill -f 'claude -p /edit'; pkill -f 'review-pr.sh --at-sha'
+_TERM_SIGNALS = frozenset({signal.SIGINT, signal.SIGTERM})
 _active_child: subprocess.Popen | None = None
 
 
@@ -138,16 +144,24 @@ def run_review(fixture: dict) -> dict:
     """Run review-pr.sh --dry-run --at-sha for one fixture and collect its
     findings and cost from the preserved scratch. Spends tokens. Runs in its own
     process group so an interrupt kills the whole review tree, not just the
-    runner (see _terminate_active_child)."""
+    runner (see _terminate_active_child). The interrupt signals are blocked across
+    the spawn-and-track step so a term landing between creating the child and
+    recording it cannot orphan it; preexec_fn unblocks them in the child so the
+    review process itself stays killable."""
     global _active_child
-    proc = subprocess.Popen(
-        ["bash", str(REVIEW_PR), "--at-sha", fixture["at_sha"], fixture["pr_url"]],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
-    _active_child = proc
+    signal.pthread_sigmask(signal.SIG_BLOCK, _TERM_SIGNALS)
+    try:
+        proc = subprocess.Popen(
+            ["bash", str(REVIEW_PR), "--at-sha", fixture["at_sha"], fixture["pr_url"]],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_UNBLOCK, _TERM_SIGNALS),
+        )
+        _active_child = proc
+    finally:
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, _TERM_SIGNALS)
     try:
         stdout, stderr = proc.communicate()
     finally:
@@ -283,7 +297,10 @@ def main(argv: list[str] | None = None) -> int:
         "--max-cost",
         type=float,
         default=None,
-        help="stop once cumulative $ spend reaches this (guards a runaway run)",
+        help=(
+            "soft cap: stop before the next review once cumulative spend reaches "
+            "this $ (overshoots by up to one review)"
+        ),
     )
     ap.add_argument(
         "--check-judge",
@@ -310,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         f"plan: {len(fixtures)} fixture(s) x {args.repeats} = {n_runs} review(s); "
-        f"observed ~$3-7 each; cost cap: {cap}",
+        f"observed ~{OBSERVED_REVIEW_COST} each; cost cap: {cap}",
         file=sys.stderr,
     )
 
