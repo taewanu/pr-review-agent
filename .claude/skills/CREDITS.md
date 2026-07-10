@@ -2,20 +2,27 @@
 
 Skills in this directory are vendored from:
 
-https://github.com/mattpocock/skills
+https://github.com/mattpocock/skills (v1.1.0)
 
 Vendored skills (used under the MIT License reproduced below):
 
-- diagnose
+- code-review
+- codebase-design
+- diagnosing-bugs
+- domain-modeling
 - git-guardrails-claude-code
 - grill-with-docs
+- grilling
 - handoff
+- implement
 - improve-codebase-architecture
+- prototype
+- setup-matt-pocock-skills
 - tdd
-- to-issues
-- to-prd
+- to-spec
+- to-tickets
 - triage
-- zoom-out
+- wayfinder
 
 ---
 
