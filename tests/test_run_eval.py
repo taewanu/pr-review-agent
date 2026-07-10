@@ -93,6 +93,19 @@ def test_fixture_recall_single_run():
     assert run_eval.fixture_recall([{"caught": False}]) == 0.0
 
 
+def test_should_stop_for_cost_disabled_when_no_cap():
+    assert run_eval.should_stop_for_cost(9999.0, None) is False
+
+
+def test_should_stop_for_cost_under_cap():
+    assert run_eval.should_stop_for_cost(12.0, 20.0) is False
+
+
+def test_should_stop_for_cost_at_or_over_cap():
+    assert run_eval.should_stop_for_cost(20.0, 20.0) is True
+    assert run_eval.should_stop_for_cost(21.5, 20.0) is True
+
+
 def test_fixture_recall_treats_missing_caught_as_false():
     # A verdict from a failed review/judge may lack "caught"; count it as a miss.
     assert run_eval.fixture_recall([{"rationale": "review failed"}, {"caught": True}]) == 0.5

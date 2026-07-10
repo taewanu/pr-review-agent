@@ -12,18 +12,26 @@ Not hermetic and not for CI: each fixture drives a real `review-pr.sh --dry-run
 manually. The pure helpers (contract parsing, cost summing, aggregation) are
 unit-tested in tests/test_run_eval.py without spending anything.
 
+A full run can spend real money, so it self-guards: --max-cost stops once
+cumulative spend reaches a ceiling, an interrupt (Ctrl-C, or `pkill -f run_eval`)
+tears down the whole review process group instead of orphaning it, and
+--check-judge validates the judge on synthetic cases before a real run.
+
 Usage:
     python3 eval/run_eval.py [--fixtures eval/fixtures.jsonl] [--repeats N]
                              [--filter <id-substring>] [--out results.json]
+                             [--max-cost <dollars>] [--check-judge]
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +68,12 @@ def sum_cost(scratch_dir: Path) -> float:
     return round(total, 4)
 
 
+def should_stop_for_cost(total_cost: float, max_cost: float | None) -> bool:
+    """True when a cost cap is set and cumulative spend has reached it. The guard
+    that stops a runaway full run (the 2026-07 incident: 14 uncapped reviews)."""
+    return max_cost is not None and total_cost >= max_cost
+
+
 def extract_json_object(text: str) -> dict:
     """Best-effort pull of the first JSON object from a model reply, tolerating
     ```json fences and surrounding prose."""
@@ -93,16 +107,54 @@ def fixture_recall(verdicts: list[dict]) -> float:
 
 # --- token-spending steps (run by the operator) ------------------------------
 
+# The in-flight review-pr.sh child, tracked so an interrupt tears down the whole
+# review process group instead of orphaning it. Each review runs in its own
+# session (start_new_session), so its lens subshells and their `claude -p` calls
+# share one killable group. The 2026-07 incident: `pkill -f run_eval` killed the
+# runner but left 9 review/lens processes burning tokens; the SIGTERM handler
+# below now kills the group first. SIGKILL (pkill -9) is uncatchable and will
+# still orphan the tree, so force-stop with `pkill -f 'run_eval|review-pr.sh'`.
+_active_child: subprocess.Popen | None = None
+
+
+def _terminate_active_child() -> None:
+    child = _active_child
+    if child is None or child.poll() is not None:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(os.getpgid(child.pid), signal.SIGTERM)
+
+
+def _install_signal_handlers() -> None:
+    def handler(signum, frame):
+        _terminate_active_child()
+        raise SystemExit(130)
+
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
 
 def run_review(fixture: dict) -> dict:
     """Run review-pr.sh --dry-run --at-sha for one fixture and collect its
-    findings and cost from the preserved scratch. Spends tokens."""
-    proc = subprocess.run(
+    findings and cost from the preserved scratch. Spends tokens. Runs in its own
+    process group so an interrupt kills the whole review tree, not just the
+    runner (see _terminate_active_child)."""
+    global _active_child
+    proc = subprocess.Popen(
         ["bash", str(REVIEW_PR), "--at-sha", fixture["at_sha"], fixture["pr_url"]],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
-    contract = parse_dryrun_contract(proc.stdout)
+    _active_child = proc
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        if proc.poll() is None:
+            _terminate_active_child()
+        _active_child = None
+    contract = parse_dryrun_contract(stdout)
     payload_path = contract.get("dryrun_payload")
     findings: list[dict] = []
     cost = 0.0
@@ -119,7 +171,7 @@ def run_review(fixture: dict) -> dict:
         "count": int(contract.get("dryrun_count", 0)),
         "scratch": str(scratch) if scratch else None,
         "rc": proc.returncode,
-        "stderr_tail": proc.stderr[-800:],
+        "stderr_tail": stderr[-800:],
     }
 
 
@@ -167,6 +219,42 @@ def judge(fixture: dict, findings: list[dict]) -> dict:
     }
 
 
+def check_judge() -> bool:
+    """Sanity-check the judge before trusting a run: an obviously-matching finding
+    must score caught, an obviously-unrelated one must not. Guards against a judge
+    that systematically says False (which would read as a recall collapse that is
+    really a judging bug). Spends 2 judge calls; returns True if both are correct."""
+    fixture = {
+        "bug": {
+            "path": "example.py",
+            "summary": "divides by item count with no empty-list guard, raising ZeroDivisionError",
+        }
+    }
+    matching = [
+        {
+            "path": "example.py",
+            "line": 7,
+            "body": "Divides by len(items) unguarded, so empty input raises ZeroDivisionError.",
+        }
+    ]
+    unrelated = [
+        {
+            "path": "other.py",
+            "line": 3,
+            "body": "Consider renaming this variable to be more descriptive.",
+        }
+    ]
+    pos = judge(fixture, matching)["caught"]
+    neg = judge(fixture, unrelated)["caught"]
+    ok = pos and not neg
+    print(
+        f"judge check: matching->caught={pos} (want True), "
+        f"unrelated->caught={neg} (want False) => {'PASS' if ok else 'FAIL'}",
+        file=sys.stderr,
+    )
+    return ok
+
+
 # --- driver ------------------------------------------------------------------
 
 
@@ -191,15 +279,45 @@ def main(argv: list[str] | None = None) -> int:
         "--filter", dest="id_filter", default=None, help="only fixtures whose id contains this"
     )
     ap.add_argument("--out", type=Path, default=None, help="write full results JSON here")
+    ap.add_argument(
+        "--max-cost",
+        type=float,
+        default=None,
+        help="stop once cumulative $ spend reaches this (guards a runaway run)",
+    )
+    ap.add_argument(
+        "--check-judge",
+        action="store_true",
+        help="run 2 synthetic judge cases and exit (validate the judge before a real run)",
+    )
     args = ap.parse_args(argv)
+
+    _install_signal_handlers()
+
+    if args.check_judge:
+        return 0 if check_judge() else 1
 
     fixtures = load_fixtures(args.fixtures, args.id_filter)
     if not fixtures:
         print("no fixtures matched", file=sys.stderr)
         return 1
 
+    n_runs = len(fixtures) * args.repeats
+    cap = (
+        f"${args.max_cost}"
+        if args.max_cost is not None
+        else "none (pass --max-cost to bound spend)"
+    )
+    print(
+        f"plan: {len(fixtures)} fixture(s) x {args.repeats} = {n_runs} review(s); "
+        f"observed ~$3-7 each; cost cap: {cap}",
+        file=sys.stderr,
+    )
+
     results = []
     total_cost = 0.0
+    runs_done = 0
+    stopped_early = False
     for fixture in fixtures:
         verdicts = []
         costs = []
@@ -207,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
             review = run_review(fixture)
             costs.append(review["cost"])
             total_cost += review["cost"]
+            runs_done += 1
             if not review["ok"]:
                 verdicts.append({"caught": False, "rationale": f"review failed rc={review['rc']}"})
             else:
@@ -215,20 +334,39 @@ def main(argv: list[str] | None = None) -> int:
                 shutil.rmtree(review["scratch"], ignore_errors=True)
             print(
                 f"  {fixture['id']} run{run_i + 1}/{args.repeats}: "
-                f"caught={verdicts[-1]['caught']} cost=${review['cost']}",
+                f"caught={verdicts[-1]['caught']} cost=${review['cost']} "
+                f"(total ${round(total_cost, 2)})",
                 file=sys.stderr,
             )
-        recall = fixture_recall(verdicts)
-        avg_cost = round(sum(costs) / len(costs), 4)
-        results.append(
-            {"id": fixture["id"], "recall": recall, "avg_cost": avg_cost, "verdicts": verdicts}
-        )
+            if should_stop_for_cost(total_cost, args.max_cost):
+                print(
+                    f"cost cap ${args.max_cost} reached at ${round(total_cost, 2)}; "
+                    f"stopping after {runs_done} run(s)",
+                    file=sys.stderr,
+                )
+                stopped_early = True
+                break
+        if verdicts:
+            recall = fixture_recall(verdicts)
+            avg_cost = round(sum(costs) / len(costs), 4)
+            results.append(
+                {"id": fixture["id"], "recall": recall, "avg_cost": avg_cost, "verdicts": verdicts}
+            )
+        if stopped_early:
+            break
+
+    if not results:
+        print("no fixtures completed", file=sys.stderr)
+        return 1
 
     caught = sum(1 for r in results if r["recall"] >= 0.5)
     mean_recall = round(sum(r["recall"] for r in results) / len(results), 3)
-    avg_cost_per_pr = round(total_cost / (len(fixtures) * args.repeats), 3)
+    avg_cost_per_pr = round(total_cost / max(1, runs_done), 3)
     print("\n=== eval summary ===")
-    print(f"fixtures: {len(fixtures)} | repeats: {args.repeats}")
+    banner = f"fixtures completed: {len(results)}/{len(fixtures)} | runs: {runs_done}"
+    if stopped_early:
+        banner += " | STOPPED at cost cap (partial)"
+    print(banner)
     print(f"mean recall: {mean_recall} ({caught}/{len(results)} fixtures at recall>=0.5)")
     print(f"avg cost/review: ${avg_cost_per_pr} | total: ${round(total_cost, 3)}")
     for r in results:
