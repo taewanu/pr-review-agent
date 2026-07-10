@@ -30,11 +30,27 @@ derive_project_identity "$SCRIPT_DIR/.."
 KEEP_SCRATCH=0
 DRY_RUN=0
 LAST_SHA=""
+AT_SHA=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --keep-scratch)
       KEEP_SCRATCH=1
       shift
+      ;;
+    --at-sha)
+      # Review the PR as of an earlier commit (a bug later fixed within the same
+      # PR), for reproducible recall measurement by the eval harness. Overrides
+      # HEAD_OID so the checkout, diff, and anchoring all target that commit, and
+      # diffs base...<sha> via the compare API. Implies --dry-run: findings
+      # anchored to the old commit would mis-anchor if posted to the live PR.
+      if [[ $# -lt 2 ]]; then
+        log_err "--at-sha requires a value"
+        exit 1
+      fi
+      AT_SHA="$2"
+      DRY_RUN=1
+      KEEP_SCRATCH=1
+      shift 2
       ;;
     --dry-run)
       # Measurement / local-preview mode: run the full generation pipeline
@@ -66,7 +82,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $# -ne 1 ]]; then
-  log_err "usage: review-pr.sh [--keep-scratch] [--dry-run] [--last-sha <sha>] <pr-url>"
+  log_err "usage: review-pr.sh [--keep-scratch] [--dry-run] [--at-sha <sha>] [--last-sha <sha>] <pr-url>"
   exit 1
 fi
 
@@ -355,6 +371,15 @@ HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 HEAD_REPO_URL="https://github.com/${HEAD_REPO}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
+# --at-sha pins the review to an earlier PR commit (recall measurement). Override
+# HEAD_OID here, after the live head is logged, so the checkout, diff, and finding
+# anchoring below all target the pinned commit. HEAD_REF stays the live head ref,
+# used only for the PR-head fetch (the pinned commit is fetched by SHA).
+if [[ -n "$AT_SHA" ]]; then
+  HEAD_OID="$AT_SHA"
+  log_info "pinned to ${AT_SHA:0:12} (--at-sha, dry-run)"
+fi
+
 # Own-vs-others gates the submit path (ADR 0008): own PRs auto-submit a COMMENT
 # review, others' stay pending. The operator is the gh-authenticated identity
 # (ADR 0003), as in reply-pr.sh. Derived here, not passed from poll.sh, so the
@@ -406,6 +431,9 @@ gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
   # squash-merged into an unreachable SHA. The `--branch $HEAD_REF` shortcut
   # silently breaks on merged PRs whose branch has since been deleted.
   git fetch --quiet --depth=1 origin "refs/pull/${PR_NUMBER}/head"
+  # --at-sha checks out an earlier PR commit the depth-1 head fetch above doesn't
+  # include; fetch that commit by SHA (GitHub serves reachable SHAs).
+  [[ -n "$AT_SHA" ]] && git fetch --quiet --depth=1 origin "$AT_SHA"
   git checkout --quiet --detach "$HEAD_OID"
 )
 
@@ -466,7 +494,22 @@ log_step "fetching diff"
 # The fast-forward check runs first so a force-push skips the now-pointless
 # fetch; it asks GitHub's compare API, not the shallow local history (#149).
 diff_scoped=0
-if [[ -n "$LAST_SHA" ]]; then
+if [[ -n "$AT_SHA" ]]; then
+  # Pinned-commit review (--at-sha): diff base...<sha> via the compare API, the
+  # at-sha analog of `gh pr diff`. Server-side merge-base diff, so the shallow
+  # clone's missing local merge-base is a non-issue. Same-repo PRs only (the base
+  # lives in BASE_OWNER/BASE_REPO); a fork's base would need a cross-repo compare.
+  GH_API_CALL_TIMEOUT="${GH_API_CALL_TIMEOUT:-90}"
+  at_diff_rc=0
+  run_with_timeout "$GH_API_CALL_TIMEOUT" \
+    gh api "repos/${BASE_OWNER}/${BASE_REPO}/compare/${BASE_REF}...${AT_SHA}" \
+    -H "Accept: application/vnd.github.diff" >"$DIFF_FILE" || at_diff_rc=$?
+  if [[ "$at_diff_rc" -ne 0 ]]; then
+    log_failure "diff-fetch-failed" "$PR_URL" "$HEAD_OID" \
+      "compare ${BASE_REF}...${AT_SHA:0:12} exited $at_diff_rc"
+    exit 1
+  fi
+elif [[ -n "$LAST_SHA" ]]; then
   if is_fast_forward "$HEAD_REPO" "$LAST_SHA" "$HEAD_OID"; then
     if (cd "$SCRATCH" && git fetch --quiet origin "$LAST_SHA" 2>/dev/null); then
       (cd "$SCRATCH" && git diff "$LAST_SHA..HEAD") >"$DIFF_FILE"
@@ -479,7 +522,7 @@ if [[ -n "$LAST_SHA" ]]; then
     log_info "non-fast-forward since ${LAST_SHA:0:12} (force-push/rebase), using full PR diff"
   fi
 fi
-if [[ $diff_scoped -eq 0 ]]; then
+if [[ -z "$AT_SHA" && $diff_scoped -eq 0 ]]; then
   # Explicit timeout (review fix, ADR 0023): PER_PR_TIMEOUT's default grew to
   # cover the 5-lens review-agent leg's worst case, which widened the window
   # before an unrelated, unbounded gh call (this one) gets caught if it hangs.
