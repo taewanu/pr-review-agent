@@ -450,6 +450,13 @@ DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
 # pipeline's input (anchor_findings split, commit-driven resolution).
 NUMBERED_BASENAME=".pr-review-diff-numbered.txt"
 NUMBERED_FILE="$SCRATCH/$NUMBERED_BASENAME"
+# Shared context pack (ADR 0029): built once before the lens fan-out and read by
+# every lens and the editor via --context, in place of each re-investigating the
+# repo. Bare basename like the diff, so the slash-command arg can't split on a
+# $TMPDIR space.
+CONTEXT_BASENAME=".pr-review-context.txt"
+CONTEXT_FILE="$SCRATCH/$CONTEXT_BASENAME"
+CONTEXT_ERR="$SCRATCH/.pr-review-context.err"
 RAW_FILE="$SCRATCH/.pr-review-raw.txt"
 # ADR 0023: parallel independent lenses, each an unaware-of-the-others
 # generator. Their raw outputs are unioned and deduped before the confidence gate
@@ -542,6 +549,19 @@ fi
 
 # Line-numbered diff for the agents (ADR 0018, layer A).
 python3 "$SCRIPT_DIR/anchor_findings.py" number "$DIFF_FILE" >"$NUMBERED_FILE"
+
+# Shared context pack (ADR 0029): gather the changed symbols' references, related
+# tests, and project context once, deterministically (git plus grep, no model
+# call), so the lenses read it instead of each re-investigating. Best-effort: a
+# failed build degrades to an empty pack, never fails the review, since the pack
+# is additive and the lenses keep their own Read/Grep (recall-neutral). Reads the
+# raw diff, not the numbered one, whose `N│` prefixes the diff walker can't parse.
+log_step "building shared context pack"
+if ! python3 "$SCRIPT_DIR/build_context.py" --diff "$DIFF_FILE" --repo-root "$SCRATCH" \
+  >"$CONTEXT_FILE" 2>"$CONTEXT_ERR"; then
+  log_info "context pack build failed (non-fatal); lenses fall back to their own tools"
+  : >"$CONTEXT_FILE"
+fi
 
 # Post (or reuse) the durable status comment before the multi-minute review, so
 # the operator sees the PR is being looked at and the scope being read (#60).
@@ -643,7 +663,7 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
     # unlabeled; it goes to a per-lens sidecar file instead, so nothing is
     # silently lost but the primary log stays legible.
     run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-      claude -p "$lens_cmd $PR_URL --diff $NUMBERED_BASENAME" \
+      claude -p "$lens_cmd $PR_URL --diff $NUMBERED_BASENAME --context $CONTEXT_BASENAME" \
       --output-format stream-json --verbose \
       2>"$lens_raw.stderr" |
       python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
@@ -728,7 +748,7 @@ if [[ "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
     # See the lens loop above: claude's own stderr goes to a sidecar file, not
     # the primary log.
     run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
-      claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" \
+      claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME --context $CONTEXT_BASENAME" \
       --output-format stream-json --verbose \
       2>"$EDIT_RAW_FILE.stderr" |
       python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \

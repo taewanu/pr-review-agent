@@ -10,7 +10,7 @@ Output is consumed by the same deterministic pipeline (`daemon/merge_findings.py
 
 ## Inputs
 
-Identical contract to `review-agent-default`: a PR URL as the first positional arg, `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Read `line` off the leading number; never count lines. Your cwd is the same shallow clone of the PR's HEAD.
+Identical contract to `review-agent-default`: a PR URL as the first positional arg, `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Read `line` off the leading number; never count lines. Your cwd is the same shallow clone of the PR's HEAD. A `--context <path>` shared context pack (ADR 0029) is passed too; read it first for the changed symbols' callers, references, and related tests, and fall back to `Read`/`Grep` only for gaps it misses. See `review-agent-default`'s Inputs for the full contract.
 
 ## Your one job
 
@@ -26,7 +26,7 @@ Do not flag: style, performance, missing tests, or a defensive-coding preference
 
 ## Verify each candidate against the code
 
-For each candidate, read past the diff window: trace the value from its source (request, upload, config) to the sink (query, command, log, response), and construct a concrete exploit scenario (the input an attacker or a misbehaving caller could supply, and what it does at the sink). A candidate where you cannot trace an unbroken path from a real input source to a real sink scores low. This verify step is what separates an exploitable finding from a theoretical "this could be misused."
+For each candidate, read past the diff window: trace the value from its source (request, upload, config) to the sink (query, command, log, response), using the context pack's reference map to find the intermediate call sites before you `Read`/`Grep` for the rest, and construct a concrete exploit scenario (the input an attacker or a misbehaving caller could supply, and what it does at the sink). A candidate where you cannot trace an unbroken path from a real input source to a real sink scores low. This verify step is what separates an exploitable finding from a theoretical "this could be misused."
 
 ## Score confidence 0-100
 

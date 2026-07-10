@@ -14,8 +14,9 @@ The slash command will pass:
 
 - A PR URL as the first positional arg
 - `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Each new-side line (added and context) is prefixed with its new-file line number and a `│` separator, e.g. `42│+    foo = bar`; deleted lines and headers have no number. Read the line number to fill `line`; do not count lines yourself. The leading number and the `+`/`-`/space marker are display only, not part of the source.
+- `--context <path>` pointing to a shared context pack (ADR 0029), built once for every lens. It lists the changed symbols' references across the repo (where the changed code is called from), the related tests, and the ADR index. **Read it first**: it is the caller map the verify step below needs, already gathered, so you do not re-derive it. It is a head start, not a boundary; the grep-based map can miss an indirect or renamed caller, so still use `Read`/`Grep` for anything the pack does not cover.
 
-Your cwd is a shallow clone of the PR's HEAD. Use `Read`, `Glob`, `Grep` freely to inspect surrounding code beyond the diff window.
+Your cwd is a shallow clone of the PR's HEAD. Use `Read`, `Glob`, `Grep` freely to inspect surrounding code beyond the diff window, past what the context pack already lists.
 
 ## How to review: generate, verify, score
 
@@ -38,7 +39,7 @@ List every plausible concern, including ones you are not yet sure about. Reach e
 
 ### 2. Verify each candidate against the code
 
-For each candidate, read past the diff window: open the callers and the surrounding code with `Read`/`Grep`, and construct a concrete trigger scenario (the inputs and sequence that reach the wrong result). A candidate you can build a scenario for scores high; one you cannot scores low or drops out. This verify step is what separates an effort-to-confirm bug from a guess, and it is what the old "only flag what you're certain of" instruction skipped.
+For each candidate, read past the diff window: the context pack already lists the changed symbols' callers and references, so start there, then open anything it misses with `Read`/`Grep`. Construct a concrete trigger scenario (the inputs and sequence that reach the wrong result). A candidate you can build a scenario for scores high; one you cannot scores low or drops out. This verify step is what separates an effort-to-confirm bug from a guess, and it is what the old "only flag what you're certain of" instruction skipped.
 
 ### 3. Score confidence 0-100
 

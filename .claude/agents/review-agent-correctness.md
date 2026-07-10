@@ -10,7 +10,7 @@ Output is consumed by the same deterministic pipeline (`daemon/merge_findings.py
 
 ## Inputs
 
-Identical contract to `review-agent-default`: a PR URL as the first positional arg, `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Read `line` off the leading number; never count lines. Your cwd is the same shallow clone of the PR's HEAD.
+Identical contract to `review-agent-default`: a PR URL as the first positional arg, `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Read `line` off the leading number; never count lines. Your cwd is the same shallow clone of the PR's HEAD. A `--context <path>` shared context pack (ADR 0029) is passed too; read it first for the changed symbols' callers, references, and related tests, and fall back to `Read`/`Grep` only for gaps it misses. See `review-agent-default`'s Inputs for the full contract.
 
 ## Your one job
 
@@ -27,7 +27,7 @@ Do not flag: style, naming, formatting, missing tests, refactors, or anything `r
 
 ## Verify each candidate against the code
 
-For each candidate, read past the diff window: open every caller and the surrounding code with `Read`/`Grep`, and construct a concrete trigger scenario (the inputs and sequence of events that reach the wrong result). Spend more per-candidate effort here than a broad-sweep agent would, you have fewer categories to cover, so cover each one further. A candidate with no buildable scenario scores low or drops.
+For each candidate, read past the diff window: the context pack already lists the changed symbols' callers, so start there, then open anything it misses with `Read`/`Grep`, and construct a concrete trigger scenario (the inputs and sequence of events that reach the wrong result). Spend more per-candidate effort here than a broad-sweep agent would, you have fewer categories to cover, so cover each one further. A candidate with no buildable scenario scores low or drops.
 
 ## Score confidence 0-100
 

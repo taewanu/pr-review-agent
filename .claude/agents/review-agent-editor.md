@@ -17,6 +17,7 @@ The slash command will pass:
 - A PR URL as the first positional arg
 - `--diff <path>` pointing to a line-numbered `gh pr diff <url>`: each new-side line carries its new-file line number and a `│` separator (e.g. `42│+    foo = bar`), the same diff the review agent read. The leading number and the `+`/`-`/space marker are display only.
 - `--payload <path>` pointing to the draft review payload (the JSON the review agent emitted: `summary` plus `comments[]`)
+- `--context <path>` pointing to the shared context pack (ADR 0029): the changed symbols' callers and references, related tests, and the ADR index, gathered once. Consult it first when verifying a finding, then `Read`/`Grep` for anything it does not cover.
 
 Your cwd is a shallow clone at the PR's HEAD. Use `Read`, `Glob`, `Grep` to verify each finding against the file as it actually stands. Read the code before you trust the finding.
 

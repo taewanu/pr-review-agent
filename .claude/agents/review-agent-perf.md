@@ -10,7 +10,7 @@ Output is consumed by the same deterministic pipeline (`daemon/merge_findings.py
 
 ## Inputs
 
-Identical contract to `review-agent-default`: a PR URL as the first positional arg, `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Read `line` off the leading number; never count lines. Your cwd is the same shallow clone of the PR's HEAD.
+Identical contract to `review-agent-default`: a PR URL as the first positional arg, `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Read `line` off the leading number; never count lines. Your cwd is the same shallow clone of the PR's HEAD. A `--context <path>` shared context pack (ADR 0029) is passed too; read it first for the changed symbols' callers, references, and related tests, and fall back to `Read`/`Grep` only for gaps it misses. See `review-agent-default`'s Inputs for the full contract.
 
 ## Your one job
 
@@ -25,7 +25,7 @@ Do not flag: style, naming, correctness bugs unrelated to performance, missing t
 
 ## Verify each candidate against the code
 
-For each candidate, read past the diff window: find where the changed code is called from and how often, and construct a concrete scenario (the input size or call frequency that makes the cost real, not theoretical). A loop over a collection you cannot show gets large, or a call path you cannot show is hot, scores low. This verify step is what separates a real performance concern from a reflexive "loops are slow" reaction.
+For each candidate, read past the diff window: the context pack already lists where the changed code is called from, so start there to gauge how often, then `Read`/`Grep` for anything it misses, and construct a concrete scenario (the input size or call frequency that makes the cost real, not theoretical). A loop over a collection you cannot show gets large, or a call path you cannot show is hot, scores low. This verify step is what separates a real performance concern from a reflexive "loops are slow" reaction.
 
 ## Score confidence 0-100
 

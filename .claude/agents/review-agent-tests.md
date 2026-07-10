@@ -10,7 +10,7 @@ Output is consumed by the same deterministic pipeline (`daemon/merge_findings.py
 
 ## Inputs
 
-Identical contract to `review-agent-default`: a PR URL as the first positional arg, `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Read `line` off the leading number; never count lines. Your cwd is the same shallow clone of the PR's HEAD.
+Identical contract to `review-agent-default`: a PR URL as the first positional arg, `--diff <path>` pointing to a line-numbered `gh pr diff <url>`. Read `line` off the leading number; never count lines. Your cwd is the same shallow clone of the PR's HEAD. A `--context <path>` shared context pack (ADR 0029) is passed too; read it first for the changed symbols' callers, references, and related tests, and fall back to `Read`/`Grep` only for gaps it misses. See `review-agent-default`'s Inputs for the full contract.
 
 ## Your one job
 
@@ -25,7 +25,7 @@ Do not flag: style, performance, correctness bugs the test-quality lens didn't c
 
 ## Verify each candidate against the code
 
-For each candidate, read past the diff window: open the actual test file(s) for the changed code (not just assume from the production diff) and confirm the gap, the flaky pattern, the over-mock, or the weak assertion is really there, not a hypothetical "someone could write this test badly." For a missing-coverage candidate, name the specific input or branch that is unexercised. This verify step is what separates a real test-quality defect from a generic "add more tests" reflex.
+For each candidate, read past the diff window: the context pack lists the related test files, so start from those, open the actual test file(s) for the changed code (not just assume from the production diff), and confirm the gap, the flaky pattern, the over-mock, or the weak assertion is really there, not a hypothetical "someone could write this test badly." For a missing-coverage candidate, name the specific input or branch that is unexercised. This verify step is what separates a real test-quality defect from a generic "add more tests" reflex.
 
 ## Score confidence 0-100
 
