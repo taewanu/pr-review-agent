@@ -230,6 +230,15 @@ log_step "running reply agent via claude -p"
 # land ~60-120s; a reply run does less) and below the runaway. Partial output on
 # timeout is discarded, not parsed.
 REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
+
+# Reasoning model, shared with review-pr.sh's REVIEW_MODEL dial (#209). The reply
+# agent re-checks operator fix claims against HEAD, so it wants the same capable
+# model, not the machine's global ~/.claude/settings.json default; one dial keeps
+# review and reply on the same model. Resolve env, then .env, else claude-opus-4-8.
+REVIEW_MODEL="$(resolve_tunable REVIEW_MODEL "$SCRIPT_DIR/../.env")"
+: "${REVIEW_MODEL:=claude-opus-4-8}"
+export REVIEW_MODEL
+
 reply_rc=0
 (
   # Same shared claude_slot pool as review-pr.sh's lenses/editor/judge-fix
@@ -243,6 +252,7 @@ reply_rc=0
   # to a sidecar file rather than flooding the daemon log unlabeled.
   run_with_timeout "$REPLY_AGENT_TIMEOUT" \
     claude -p "/reply-pr $PR_URL --threads $THREADS_BASENAME" \
+    --model "$REVIEW_MODEL" \
     --output-format stream-json --verbose \
     2>"$RAW_FILE.stderr" |
     python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE" \

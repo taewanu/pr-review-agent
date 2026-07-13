@@ -304,6 +304,7 @@ resolution() {
         # file rather than the primary log; see the lens loop above.
         run_with_timeout "$fix_check_timeout" \
           claude -p "/judge-fix $PR_URL --finding $(basename "$finding_file")" \
+          --model "$REVIEW_MODEL" \
           --output-format stream-json --verbose \
           2>"$judge_raw.stderr" |
           python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$judge_raw" \
@@ -614,6 +615,15 @@ REVIEW_AGENT_TIMEOUT="${REVIEW_AGENT_TIMEOUT:-600}"
 CLAUDE_SLOT_POOL_SIZE="$(resolve_tunable CLAUDE_SLOT_POOL_SIZE "$SCRIPT_DIR/../.env")"
 [[ -n "$CLAUDE_SLOT_POOL_SIZE" ]] && export CLAUDE_SLOT_POOL_SIZE
 
+# Review reasoning model (#209): resolve from env, then .env, else default to a
+# fixed capable model. Every review claude -p (lenses, editor, judge-fix) pins
+# this instead of inheriting the operator's global ~/.claude/settings.json model,
+# which silently ran reviews on whatever the shell defaulted to. Resolved early
+# and exported so the spawned agents all see one value.
+REVIEW_MODEL="$(resolve_tunable REVIEW_MODEL "$SCRIPT_DIR/../.env")"
+: "${REVIEW_MODEL:=claude-opus-4-8}"
+export REVIEW_MODEL
+
 # ADR 0023 (revised): five independent lenses read the same diff, each
 # unaware of the others' output, so a bug one misses another can still catch.
 # Dispatched in parallel, each bounded by the global claude_slot pool
@@ -644,6 +654,7 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
     # silently lost but the primary log stays legible.
     run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
       claude -p "$lens_cmd $PR_URL --diff $NUMBERED_BASENAME" \
+      --model "$REVIEW_MODEL" \
       --output-format stream-json --verbose \
       2>"$lens_raw.stderr" |
       python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
@@ -729,6 +740,7 @@ if [[ "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
     # the primary log.
     run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
       claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" \
+      --model "$REVIEW_MODEL" \
       --output-format stream-json --verbose \
       2>"$EDIT_RAW_FILE.stderr" |
       python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
