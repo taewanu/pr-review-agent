@@ -24,6 +24,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 # Provenance marker on every daemon-authored comment (ADR 0010 §3). Mirrors
 # lib.sh's PROVENANCE_TAG and resolve_threads.py's PROVENANCE_MARKER;
@@ -97,26 +98,25 @@ def _clean_affirmation(summary: str | None) -> str:
     return "\n".join(lines)
 
 
-def _delta_line(new_count: int, fixed_count: int) -> str:
-    """This tick's per-push delta: what the current review posted and resolved,
-    rendered as italic index chrome above the rollup (ADR 0033 Decision 4).
+class Delta(NamedTuple):
+    """This tick's per-push counts (ADR 0033): `new` findings posted, `fixed`
+    threads the commit-driven resolution stamped resolved. The two always travel
+    together (both set on a re-review, neither on a first review), so they ride as
+    one value rather than a pair of parallel params."""
 
-    `new_count` is findings posted this tick, `fixed_count` is threads the
-    commit-driven resolution stamped resolved this tick. Both are >= 0. The caller
-    suppresses the line when this returns "" (no blank line is inserted), so an
-    empty return hides the line and a non-empty one shows it.
+    new: int
+    fixed: int
 
-    The both-zero push renders an explicit `no change` rather than "": a review
-    that ran and moved nothing is a verdict the author should see, the same reason
-    ADR 0020 Decision 6 shows a `No findings` affirmation instead of leaving the
-    slot blank. Counts render as `+N new` (additions carry the `+`) and `M fixed`,
-    joined by the `·` the rollup already uses.
-    """
+
+def _delta_line(delta: Delta) -> str:
+    """Render the per-push delta as italic index chrome above the rollup (ADR 0033
+    Decision 4), or `no change` when the push moved nothing (why the both-zero case
+    affirms rather than blanks: ADR 0033 Decision 4, ADR 0020 Decision 6)."""
     parts = []
-    if new_count > 0:
-        parts.append(f"+{new_count} new")
-    if fixed_count > 0:
-        parts.append(f"{fixed_count} fixed")
+    if delta.new > 0:
+        parts.append(f"+{delta.new} new")
+    if delta.fixed > 0:
+        parts.append(f"{delta.fixed} fixed")
     if not parts:
         return "_no change_"
     return f"_{' · '.join(parts)}_"
@@ -128,27 +128,24 @@ def render_index(
     unanchored_count: int = 0,
     review_url: str | None = None,
     summary: str | None = None,
-    new_count: int | None = None,
-    fixed_count: int | None = None,
+    delta: Delta | None = None,
 ) -> str:
     """The full index block, or the clean-review affirmation (`No findings` +
     optional summary) when the PR has no Findings (ADR 0020 Decision 6).
 
-    `new_count`/`fixed_count` carry this tick's per-push delta (ADR 0033). They are
-    both None on a first review (no prior push to compare) and the delta line is
-    suppressed; on a re-review both are set and `_delta_line` renders them."""
+    `delta` carries this tick's per-push counts (ADR 0033): None on a first review
+    (no prior push to compare) suppresses the line; a re-review passes a `Delta`
+    and `_delta_line` renders it above the rollup."""
     findings = daemon_findings(threads, operator)
     total = len(findings)
     if total == 0 and unanchored_count <= 0:
         return _clean_affirmation(summary)
 
-    delta = ""
-    if new_count is not None and fixed_count is not None:
-        delta = _delta_line(new_count, fixed_count)
+    delta_line = _delta_line(delta) if delta is not None else ""
 
     lines: list[str] = []
-    if delta:
-        lines.append(delta)
+    if delta_line:
+        lines.append(delta_line)
         lines.append("")
     if total > 0:
         resolved = sum(1 for t in findings if t.get("is_resolved"))
@@ -200,14 +197,16 @@ def main() -> int:
         except OSError:
             summary = ""
 
+    # Both counts present → a re-review's delta; either absent → a first review,
+    # so no delta line (ADR 0033 Decision 3).
+    delta = Delta(args.new, args.fixed) if args.new is not None and args.fixed is not None else None
     block = render_index(
         threads,
         args.operator,
         args.unanchored,
         args.review_url or None,
         summary or None,
-        args.new,
-        args.fixed,
+        delta,
     )
     sys.stdout.write(block)
     return 0
