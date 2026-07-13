@@ -117,6 +117,21 @@ def fixture_recall(verdicts: list[dict]) -> float | None:
     return caught / len(valid)
 
 
+def precision_fp(verdicts: list[dict]) -> float | None:
+    """Mean posted-finding count for ONE precision fixture (a clean/cosmetic PR).
+
+    Every finding on a PR with nothing substantive to flag is a false-positive
+    proxy, so lower is better and 0 is ideal. This is a proxy, not true precision:
+    it needs no per-finding labels (the whole PR is the negative), but it can only
+    be trusted on genuinely cosmetic PRs where a real finding is implausible.
+    Errored runs are dropped like in fixture_recall; None if every run errored.
+    """
+    valid = [verdict for verdict in verdicts if not verdict.get("error")]
+    if not valid:
+        return None
+    return round(sum(verdict["findings_count"] for verdict in valid) / len(valid), 3)
+
+
 # --- token-spending steps (run by the operator) ------------------------------
 
 # The in-flight review-pr.sh child, tracked so an interrupt tears down its whole
@@ -149,18 +164,27 @@ def _install_signal_handlers() -> None:
 
 
 def run_review(fixture: dict) -> dict:
-    """Run review-pr.sh --dry-run --at-sha for one fixture and collect its
-    findings and cost from the preserved scratch. Spends tokens. Runs in its own
-    process group so an interrupt kills the whole review tree, not just the
-    runner (see _terminate_active_child). The interrupt signals are blocked across
-    the spawn-and-track step so a term landing between creating the child and
+    """Run one review-pr.sh --dry-run for a fixture and collect its findings and
+    cost from the preserved scratch. Spends tokens. Runs in its own process group
+    so an interrupt kills the whole review tree, not just the runner (see
+    _terminate_active_child). The interrupt signals are blocked across the
+    spawn-and-track step so a term landing between creating the child and
     recording it cannot orphan it; preexec_fn unblocks them in the child so the
-    review process itself stays killable."""
+    review process itself stays killable.
+
+    A recall fixture carries an at_sha and is reviewed pinned to that pre-fix
+    commit (base...at_sha compare). A precision fixture carries no at_sha and is
+    reviewed at the PR's current HEAD via plain --dry-run (gh pr diff), which
+    works on a merged PR where base...merge_sha would be an empty compare."""
+    if fixture.get("at_sha"):
+        cmd = ["bash", str(REVIEW_PR), "--at-sha", fixture["at_sha"], fixture["pr_url"]]
+    else:
+        cmd = ["bash", str(REVIEW_PR), "--dry-run", fixture["pr_url"]]
     global _active_child
     signal.pthread_sigmask(signal.SIG_BLOCK, _TERM_SIGNALS)
     try:
         proc = subprocess.Popen(
-            ["bash", str(REVIEW_PR), "--at-sha", fixture["at_sha"], fixture["pr_url"]],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -345,6 +369,9 @@ def main(argv: list[str] | None = None) -> int:
     runs_errored = 0
     stopped_early = False
     for fixture in fixtures:
+        # A fixture with no known "bug" is a precision fixture: a clean/cosmetic
+        # PR reviewed at HEAD, where any posted finding is a false-positive proxy.
+        is_precision = "bug" not in fixture
         verdicts = []
         costs = []
         for run_i in range(args.repeats):
@@ -354,21 +381,19 @@ def main(argv: list[str] | None = None) -> int:
             runs_done += 1
             if not review["ok"]:
                 runs_errored += 1
-                verdicts.append(
-                    {
-                        "caught": False,
-                        "error": True,
-                        "rationale": f"review failed rc={review['rc']}",
-                    }
-                )
+                verdicts.append({"error": True, "rationale": f"review failed rc={review['rc']}"})
+                label = "ERR"
+            elif is_precision:
+                verdicts.append({"findings_count": review["count"]})
+                label = f"findings={review['count']}"
             else:
                 verdicts.append(judge(fixture, review["findings"]))
+                label = f"caught={verdicts[-1]['caught']}"
             if review["scratch"] and os.path.isdir(review["scratch"]):
                 shutil.rmtree(review["scratch"], ignore_errors=True)
             print(
                 f"  {fixture['id']} run{run_i + 1}/{args.repeats}: "
-                f"caught={verdicts[-1]['caught']} cost=${review['cost']} "
-                f"(total ${round(total_cost, 2)})",
+                f"{label} cost=${review['cost']} (total ${round(total_cost, 2)})",
                 file=sys.stderr,
             )
             if should_stop_for_cost(total_cost, args.max_cost):
@@ -380,11 +405,27 @@ def main(argv: list[str] | None = None) -> int:
                 stopped_early = True
                 break
         if verdicts:
-            recall = fixture_recall(verdicts)
             avg_cost = round(sum(costs) / len(costs), 4)
-            results.append(
-                {"id": fixture["id"], "recall": recall, "avg_cost": avg_cost, "verdicts": verdicts}
-            )
+            if is_precision:
+                results.append(
+                    {
+                        "id": fixture["id"],
+                        "mode": "precision",
+                        "false_positives": precision_fp(verdicts),
+                        "avg_cost": avg_cost,
+                        "verdicts": verdicts,
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "id": fixture["id"],
+                        "mode": "recall",
+                        "recall": fixture_recall(verdicts),
+                        "avg_cost": avg_cost,
+                        "verdicts": verdicts,
+                    }
+                )
         if stopped_early:
             break
 
@@ -392,28 +433,47 @@ def main(argv: list[str] | None = None) -> int:
         print("no fixtures completed", file=sys.stderr)
         return 1
 
-    scored = [r for r in results if r["recall"] is not None]
+    recall_results = [r for r in results if r["mode"] == "recall"]
+    precision_results = [r for r in results if r["mode"] == "precision"]
+    scored = [r for r in recall_results if r["recall"] is not None]
     caught = sum(1 for r in scored if r["recall"] >= 0.5)
-    mean_recall = round(sum(r["recall"] for r in scored) / len(scored), 3) if scored else 0.0
+    mean_recall = round(sum(r["recall"] for r in scored) / len(scored), 3) if scored else None
+    fp_scored = [r for r in precision_results if r["false_positives"] is not None]
+    mean_fp = (
+        round(sum(r["false_positives"] for r in fp_scored) / len(fp_scored), 3)
+        if fp_scored
+        else None
+    )
     avg_cost_per_pr = round(total_cost / max(1, runs_done), 3)
+
     print("\n=== eval summary ===")
     banner = f"fixtures completed: {len(results)}/{len(fixtures)} | runs: {runs_done}"
     if runs_errored:
-        banner += f" ({runs_errored} errored, excluded from recall)"
+        banner += f" ({runs_errored} errored, excluded)"
     if stopped_early:
         banner += " | STOPPED at cost cap (partial)"
     print(banner)
-    print(f"mean recall: {mean_recall} ({caught}/{len(scored)} scored fixtures at recall>=0.5)")
+    if recall_results:
+        print(f"mean recall: {mean_recall} ({caught}/{len(scored)} scored fixtures at recall>=0.5)")
+        for r in recall_results:
+            rec = "ERR " if r["recall"] is None else f"{r['recall']:.2f}"
+            print(f"  recall    {rec}  ${r['avg_cost']:<7} {r['id']}")
+    if precision_results:
+        print(f"mean false-positives/PR: {mean_fp} (lower is better; clean PRs, 0 ideal)")
+        for r in precision_results:
+            fp = "ERR " if r["false_positives"] is None else f"{r['false_positives']:.2f}"
+            print(f"  precision {fp}  ${r['avg_cost']:<7} {r['id']}")
     print(f"avg cost/review: ${avg_cost_per_pr} | total: ${round(total_cost, 3)}")
-    for r in results:
-        rec = "ERR " if r["recall"] is None else f"{r['recall']:.2f}"
-        print(f"  {rec}  ${r['avg_cost']:<7} {r['id']}")
 
     if args.out:
         args.out.write_text(
             json.dumps(
                 {
-                    "summary": {"mean_recall": mean_recall, "avg_cost_per_pr": avg_cost_per_pr},
+                    "summary": {
+                        "mean_recall": mean_recall,
+                        "mean_false_positives": mean_fp,
+                        "avg_cost_per_pr": avg_cost_per_pr,
+                    },
                     "results": results,
                 },
                 indent=2,

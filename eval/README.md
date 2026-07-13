@@ -1,8 +1,9 @@
-# eval — recall/cost harness fixtures (#209 A1)
+# eval — recall/precision/cost harness fixtures (#209 A1)
 
-Labeled PRs where the correct finding is known, used to measure whether a review
-config still catches real bugs (recall) and at what token cost, before a
-cost-cutting change ships. "Measure, do not guess" (the CodeRabbit eval-harness
+Labeled PRs used to measure whether a review config still catches real bugs
+(recall, `fixtures.jsonl`), how often it flags clean code (false positives,
+`precision_fixtures.jsonl`), and at what token cost, before a cost-cutting change
+ships. "Measure, do not guess" (the CodeRabbit eval-harness
 discipline); one fixture passing once is not confidence, so the corpus grows to a
 handful of independent cases.
 
@@ -49,6 +50,22 @@ bug (recall)? Cost comes from the `.cost` sidecars in the preserved scratch. A
 config that misses a fixture's bug regresses recall and must not ship (#185 is why
 the lenses exist).
 
-Recall and cost only. Precision (false-positive rate) needs negative labels the
-corpus does not carry (one known bug per fixture, nothing marking the other
-findings right or wrong), so it is deferred; see #209 acceptance.
+## precision_fixtures.jsonl
+
+Cosmetic merged PRs (version bumps, one-line docs) where nothing substantive is
+there to flag, so **every posted finding is a false positive**. A precision
+fixture carries no `bug` and no `at_sha`; the harness reviews it at the PR's
+current HEAD via plain `review-pr.sh --dry-run` (`gh pr diff`, which works on a
+merged PR where a `base...merge_sha` compare would be empty). The score is the
+mean posted-finding count per PR (lower is better, 0 ideal) — a proxy, not true
+precision: it needs no per-finding labels because the whole PR is the negative,
+but it is only trustworthy on genuinely cosmetic PRs where a real finding is
+implausible. Run it the same way, pointing `--fixtures` at this file.
+
+| field | meaning |
+|---|---|
+| `id` | stable slug, `<repo>-<pr>-<short-topic>` |
+| `pr_url` | the merged PR, reviewed at HEAD (no `at_sha`) |
+| `kind` | `precision` (documents intent; the harness keys off the absent `bug`) |
+| `note` | why this PR is a clean negative |
+| `source` | provenance |

@@ -130,3 +130,20 @@ def test_fixture_recall_all_errored_is_none():
     # Every run failed: recall is undefined, so the fixture is reported but left
     # out of the corpus mean rather than counted as a 0.
     assert run_eval.fixture_recall([{"error": True}, {"error": True}]) is None
+
+
+def test_precision_fp_is_mean_finding_count():
+    # A clean PR's findings are all false positives; the score is their mean count.
+    verdicts = [{"findings_count": 0}, {"findings_count": 2}]
+    assert run_eval.precision_fp(verdicts) == 1.0
+
+
+def test_precision_fp_excludes_errored_runs():
+    # A failed review is dropped, not counted as zero findings (which would flatter
+    # the FP rate): 1 error + 1 run with 2 findings scores 2.0, not 1.0.
+    verdicts = [{"findings_count": 2}, {"error": True}]
+    assert run_eval.precision_fp(verdicts) == 2.0
+
+
+def test_precision_fp_all_errored_is_none():
+    assert run_eval.precision_fp([{"error": True}, {"error": True}]) is None
