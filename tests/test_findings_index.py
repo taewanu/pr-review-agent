@@ -148,3 +148,56 @@ def test_render_findings_then_unanchored_pointer_separated():
     )
     assert out.splitlines()[-1] == "_+ 1 outside the diff → [review](https://gh/review)_"
     assert "**1 finding · 1 open · 0 resolved**" in out
+
+
+# --- _delta_line: per-push delta wording (ADR 0033) --------------------------
+
+
+def test_delta_line_both_nonzero():
+    assert fi._delta_line(2, 1) == "_+2 new · 1 fixed_"
+
+
+def test_delta_line_new_only_carries_plus():
+    assert fi._delta_line(3, 0) == "_+3 new_"
+
+
+def test_delta_line_fixed_only_has_no_plus():
+    assert fi._delta_line(0, 2) == "_2 fixed_"
+
+
+def test_delta_line_both_zero_reads_no_change():
+    # A push that ran and moved nothing is a verdict, not silence (ADR 0033,
+    # mirroring ADR 0020 Decision 6's affirmation over a blank slot).
+    assert fi._delta_line(0, 0) == "_no change_"
+
+
+# --- render_index: delta placement + suppression -----------------------------
+
+
+def test_render_prepends_delta_above_rollup():
+    out = fi.render_index(
+        [_thread("1", "a.py", 1, url="https://gh/o")], OPERATOR, new_count=1, fixed_count=0
+    )
+    lines = out.splitlines()
+    # Delta is italic chrome on the first line, rollup (bold) below it.
+    assert lines[0] == "_+1 new_"
+    assert lines[2] == "**1 finding · 1 open · 0 resolved**"
+
+
+def test_render_suppresses_delta_when_counts_absent():
+    # First review passes no counts (None): the delta line is omitted entirely,
+    # rollup stays the first line.
+    out = fi.render_index([_thread("1", "a.py", 1, url="https://gh/o")], OPERATOR)
+    assert out.splitlines()[0] == "**1 finding · 1 open · 0 resolved**"
+
+
+def test_render_no_change_delta_still_shows_on_a_quiet_reReview():
+    out = fi.render_index(
+        [_thread("1", "a.py", 1, resolved=True, url="https://gh/o")],
+        OPERATOR,
+        new_count=0,
+        fixed_count=0,
+    )
+    lines = out.splitlines()
+    assert lines[0] == "_no change_"
+    assert lines[2] == "**1 finding · 0 open · 1 resolved**"

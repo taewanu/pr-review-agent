@@ -97,21 +97,59 @@ def _clean_affirmation(summary: str | None) -> str:
     return "\n".join(lines)
 
 
+def _delta_line(new_count: int, fixed_count: int) -> str:
+    """This tick's per-push delta: what the current review posted and resolved,
+    rendered as italic index chrome above the rollup (ADR 0033 Decision 4).
+
+    `new_count` is findings posted this tick, `fixed_count` is threads the
+    commit-driven resolution stamped resolved this tick. Both are >= 0. The caller
+    suppresses the line when this returns "" (no blank line is inserted), so an
+    empty return hides the line and a non-empty one shows it.
+
+    The both-zero push renders an explicit `no change` rather than "": a review
+    that ran and moved nothing is a verdict the author should see, the same reason
+    ADR 0020 Decision 6 shows a `No findings` affirmation instead of leaving the
+    slot blank. Counts render as `+N new` (additions carry the `+`) and `M fixed`,
+    joined by the `·` the rollup already uses.
+    """
+    parts = []
+    if new_count > 0:
+        parts.append(f"+{new_count} new")
+    if fixed_count > 0:
+        parts.append(f"{fixed_count} fixed")
+    if not parts:
+        return "_no change_"
+    return f"_{' · '.join(parts)}_"
+
+
 def render_index(
     threads: list[dict],
     operator: str,
     unanchored_count: int = 0,
     review_url: str | None = None,
     summary: str | None = None,
+    new_count: int | None = None,
+    fixed_count: int | None = None,
 ) -> str:
     """The full index block, or the clean-review affirmation (`No findings` +
-    optional summary) when the PR has no Findings (ADR 0020 Decision 6)."""
+    optional summary) when the PR has no Findings (ADR 0020 Decision 6).
+
+    `new_count`/`fixed_count` carry this tick's per-push delta (ADR 0033). They are
+    both None on a first review (no prior push to compare) and the delta line is
+    suppressed; on a re-review both are set and `_delta_line` renders them."""
     findings = daemon_findings(threads, operator)
     total = len(findings)
     if total == 0 and unanchored_count <= 0:
         return _clean_affirmation(summary)
 
+    delta = ""
+    if new_count is not None and fixed_count is not None:
+        delta = _delta_line(new_count, fixed_count)
+
     lines: list[str] = []
+    if delta:
+        lines.append(delta)
+        lines.append("")
     if total > 0:
         resolved = sum(1 for t in findings if t.get("is_resolved"))
         open_count = total - resolved
@@ -140,6 +178,10 @@ def main() -> int:
     ap.add_argument(
         "--summary-file", default="", help="review summary, quoted in the clean affirmation"
     )
+    # Per-push delta (ADR 0033): both set on a re-review, both absent on a first
+    # review so the delta line is suppressed (no prior push to compare against).
+    ap.add_argument("--new", type=int, default=None, help="findings posted this tick")
+    ap.add_argument("--fixed", type=int, default=None, help="threads resolved this tick")
     args = ap.parse_args()
 
     # Best-effort: an unreadable or malformed thread file yields an empty index
@@ -159,7 +201,13 @@ def main() -> int:
             summary = ""
 
     block = render_index(
-        threads, args.operator, args.unanchored, args.review_url or None, summary or None
+        threads,
+        args.operator,
+        args.unanchored,
+        args.review_url or None,
+        summary or None,
+        args.new,
+        args.fixed,
     )
     sys.stdout.write(block)
     return 0

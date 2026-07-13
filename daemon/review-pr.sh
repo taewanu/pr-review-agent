@@ -848,6 +848,18 @@ if [[ -n "$LAST_SHA" && $DRY_RUN -eq 0 ]]; then
   resolution || log_info "resolution skipped (non-fatal)"
 fi
 
+# Per-push delta counts (ADR 0033): findings posted and threads resolved THIS
+# tick, both first-hand pipeline state rather than a diff of rendered comments.
+# Passed to the index only on a re-review (LAST_SHA set); a first review has no
+# prior push to compare, so leaving the array empty suppresses the delta line.
+# `fixed` is the length of resolution's stamps file (the threads it stamped
+# resolved this tick, ADR 0017/0019), best-effort 0 when the file is absent.
+delta_args=()
+if [[ -n "$LAST_SHA" && $DRY_RUN -eq 0 ]]; then
+  push_fixed="$(jq 'length' "$SCRATCH/.pr-review-stamps.json" 2>/dev/null || printf 0)"
+  delta_args=(--new "$new_findings_total" --fixed "$push_fixed")
+fi
+
 # Edit the status comment into its terminal state (#60) with the cumulative
 # findings index (ADR 0020), read fresh from the PR's threads so it reflects this
 # tick's posts and resolves. The headline carries scope, not a per-SHA count: the
@@ -863,7 +875,8 @@ if [[ $DRY_RUN -eq 0 ]]; then
     index_block="$(python3 "$SCRIPT_DIR/findings_index.py" \
       --threads "$index_threads_file" --operator "$OPERATOR" \
       --unanchored "$unanchored_count" --review-url "$review_url" \
-      --summary-file "$SUMMARY_FILE" 2>/dev/null || true)"
+      --summary-file "$SUMMARY_FILE" \
+      ${delta_args[@]+"${delta_args[@]}"} 2>/dev/null || true)"
   else
     log_info "thread fetch for status index failed (non-fatal)"
   fi
