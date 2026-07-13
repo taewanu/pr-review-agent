@@ -100,18 +100,15 @@ def _clean_affirmation(summary: str | None) -> str:
 
 class Delta(NamedTuple):
     """This tick's per-push counts (ADR 0033): `new` findings posted, `fixed`
-    threads the commit-driven resolution stamped resolved. The two always travel
-    together (both set on a re-review, neither on a first review), so they ride as
-    one value rather than a pair of parallel params."""
+    threads the commit-driven resolution stamped resolved."""
 
     new: int
     fixed: int
 
 
 def _delta_line(delta: Delta) -> str:
-    """Render the per-push delta as italic index chrome above the rollup (ADR 0033
-    Decision 4), or `no change` when the push moved nothing (why the both-zero case
-    affirms rather than blanks: ADR 0033 Decision 4, ADR 0020 Decision 6)."""
+    """Render the per-push delta as italic index chrome, or `no change` when the
+    push moved nothing (why affirm rather than blank: ADR 0033 Decision 4)."""
     parts = []
     if delta.new > 0:
         parts.append(f"+{delta.new} new")
@@ -133,9 +130,7 @@ def render_index(
     """The full index block, or the clean-review affirmation (`No findings` +
     optional summary) when the PR has no Findings (ADR 0020 Decision 6).
 
-    `delta` carries this tick's per-push counts (ADR 0033): None on a first review
-    (no prior push to compare) suppresses the line; a re-review passes a `Delta`
-    and `_delta_line` renders it above the rollup."""
+    `delta` is this tick's per-push counts (ADR 0033), or None to omit the line."""
     findings = daemon_findings(threads, operator)
     total = len(findings)
     if total == 0 and unanchored_count <= 0:
@@ -175,8 +170,6 @@ def main() -> int:
     ap.add_argument(
         "--summary-file", default="", help="review summary, quoted in the clean affirmation"
     )
-    # Per-push delta (ADR 0033): both set on a re-review, both absent on a first
-    # review so the delta line is suppressed (no prior push to compare against).
     ap.add_argument("--new", type=int, default=None, help="findings posted this tick")
     ap.add_argument("--fixed", type=int, default=None, help="threads resolved this tick")
     args = ap.parse_args()
@@ -197,8 +190,8 @@ def main() -> int:
         except OSError:
             summary = ""
 
-    # Both counts present → a re-review's delta; either absent → a first review,
-    # so no delta line (ADR 0033 Decision 3).
+    # A re-review passes both counts; a first review passes neither and gets no
+    # delta line (ADR 0033 Decision 3).
     delta = Delta(args.new, args.fixed) if args.new is not None and args.fixed is not None else None
     block = render_index(
         threads,

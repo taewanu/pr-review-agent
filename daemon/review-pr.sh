@@ -848,12 +848,10 @@ if [[ -n "$LAST_SHA" && $DRY_RUN -eq 0 ]]; then
   resolution || log_info "resolution skipped (non-fatal)"
 fi
 
-# Per-push delta counts (ADR 0033): findings posted and threads resolved THIS
-# tick, both first-hand pipeline state rather than a diff of rendered comments.
-# Passed to the index only on a re-review (LAST_SHA set); a first review has no
-# prior push to compare, so leaving the array empty suppresses the delta line.
-# `fixed` is the length of resolution's stamps file (the threads it stamped
-# resolved this tick, ADR 0017/0019), best-effort 0 when the file is absent.
+# Per-push delta counts (ADR 0033 Decision 3): findings posted and threads
+# resolved THIS tick, first-hand pipeline state rather than a diff of rendered
+# comments. Set only on a re-review (LAST_SHA); an empty array omits the line.
+# `fixed` reads resolution's stamps file (ADR 0017/0019), best-effort 0 if absent.
 delta_args=()
 if [[ -n "$LAST_SHA" && $DRY_RUN -eq 0 ]]; then
   push_fixed="$(jq 'length' "$SCRATCH/.pr-review-stamps.json" 2>/dev/null || printf 0)"
