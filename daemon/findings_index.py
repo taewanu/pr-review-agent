@@ -24,6 +24,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 # Provenance marker on every daemon-authored comment (ADR 0010 §3). Mirrors
 # lib.sh's PROVENANCE_TAG and resolve_threads.py's PROVENANCE_MARKER;
@@ -97,21 +98,50 @@ def _clean_affirmation(summary: str | None) -> str:
     return "\n".join(lines)
 
 
+class Delta(NamedTuple):
+    """This tick's per-push counts (ADR 0033): `new` findings posted, `fixed`
+    threads the commit-driven resolution stamped resolved."""
+
+    new: int
+    fixed: int
+
+
+def _delta_line(delta: Delta) -> str:
+    """Render the per-push delta as italic index chrome, or `no change` when the
+    push moved nothing (why affirm rather than blank: ADR 0033 Decision 4)."""
+    parts = []
+    if delta.new > 0:
+        parts.append(f"+{delta.new} new")
+    if delta.fixed > 0:
+        parts.append(f"{delta.fixed} fixed")
+    if not parts:
+        return "_no change_"
+    return f"_{' · '.join(parts)}_"
+
+
 def render_index(
     threads: list[dict],
     operator: str,
     unanchored_count: int = 0,
     review_url: str | None = None,
     summary: str | None = None,
+    delta: Delta | None = None,
 ) -> str:
     """The full index block, or the clean-review affirmation (`No findings` +
-    optional summary) when the PR has no Findings (ADR 0020 Decision 6)."""
+    optional summary) when the PR has no Findings (ADR 0020 Decision 6).
+
+    `delta` is this tick's per-push counts (ADR 0033), or None to omit the line."""
     findings = daemon_findings(threads, operator)
     total = len(findings)
     if total == 0 and unanchored_count <= 0:
         return _clean_affirmation(summary)
 
+    delta_line = _delta_line(delta) if delta is not None else ""
+
     lines: list[str] = []
+    if delta_line:
+        lines.append(delta_line)
+        lines.append("")
     if total > 0:
         resolved = sum(1 for t in findings if t.get("is_resolved"))
         open_count = total - resolved
@@ -140,6 +170,8 @@ def main() -> int:
     ap.add_argument(
         "--summary-file", default="", help="review summary, quoted in the clean affirmation"
     )
+    ap.add_argument("--new", type=int, default=None, help="findings posted this tick")
+    ap.add_argument("--fixed", type=int, default=None, help="threads resolved this tick")
     args = ap.parse_args()
 
     # Best-effort: an unreadable or malformed thread file yields an empty index
@@ -158,8 +190,16 @@ def main() -> int:
         except OSError:
             summary = ""
 
+    # A re-review passes both counts; a first review passes neither and gets no
+    # delta line (ADR 0033 Decision 3).
+    delta = Delta(args.new, args.fixed) if args.new is not None and args.fixed is not None else None
     block = render_index(
-        threads, args.operator, args.unanchored, args.review_url or None, summary or None
+        threads,
+        args.operator,
+        args.unanchored,
+        args.review_url or None,
+        summary or None,
+        delta,
     )
     sys.stdout.write(block)
     return 0
