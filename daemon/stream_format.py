@@ -113,6 +113,19 @@ def run(stream, raw_out: Path, label: str | None = None, cost_out: Path | None =
                 cost = event.get("total_cost_usd")
                 if isinstance(cost, (int, float)):
                     cost_out.write_text(str(cost))
+                # Tokens sidecar (#209): the rate-limit an operator actually hits
+                # is tokens, not dollars, so record the call's total token count
+                # (all four buckets — input, output, and both cache tiers all draw
+                # on the limit) next to the cost, for the caller to sum the same
+                # way. Written parallel to .cost, so a timeout leaves neither.
+                usage = event.get("usage")
+                if isinstance(usage, dict):
+                    tokens = sum(
+                        v
+                        for k, v in usage.items()
+                        if k.endswith("_tokens") and isinstance(v, (int, float))
+                    )
+                    cost_out.with_suffix(".tokens").write_text(str(int(tokens)))
         rendered = render_event(event)
         if rendered is not None:
             _emit(rendered, label=label)

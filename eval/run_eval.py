@@ -71,6 +71,23 @@ def sum_cost(scratch_dir: Path) -> float:
     return round(total, 4)
 
 
+def sum_tokens(scratch_dir: Path) -> int:
+    """Sum the per-agent `.tokens` sidecars (total tokens across all review calls).
+
+    Tokens, not dollars, are the rate-limit an operator hits (#209), so this is
+    the primary cost metric: dollars vary by model price, tokens are what the
+    subscription caps. Same summing shape as sum_cost, over the sibling sidecars.
+    """
+    total = 0
+    for tokens_file in Path(scratch_dir).glob("*.tokens"):
+        text = tokens_file.read_text().strip()
+        try:
+            total += int(text or 0)
+        except ValueError:
+            continue
+    return total
+
+
 def should_stop_for_cost(total_cost: float, max_cost: float | None) -> bool:
     """True when a cost cap is set and cumulative spend has reached it. A soft cap:
     checked after each review completes and pays its full cost, so a run can
@@ -204,16 +221,19 @@ def run_review(fixture: dict) -> dict:
     payload_path = contract.get("dryrun_payload")
     findings: list[dict] = []
     cost = 0.0
+    tokens = 0
     scratch: Path | None = None
     if payload_path and os.path.exists(payload_path):
         scratch = Path(payload_path).parent
         payload = json.loads(Path(payload_path).read_text())
         findings = payload.get("comments", [])
         cost = sum_cost(scratch)
+        tokens = sum_tokens(scratch)
     return {
         "ok": proc.returncode == 0 and payload_path is not None,
         "findings": findings,
         "cost": cost,
+        "tokens": tokens,
         "count": int(contract.get("dryrun_count", 0)),
         "scratch": str(scratch) if scratch else None,
         "rc": proc.returncode,
@@ -365,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
 
     results = []
     total_cost = 0.0
+    total_tokens = 0
     runs_done = 0
     runs_errored = 0
     stopped_early = False
@@ -374,10 +395,13 @@ def main(argv: list[str] | None = None) -> int:
         is_precision = "bug" not in fixture
         verdicts = []
         costs = []
+        tokens_list = []
         for run_i in range(args.repeats):
             review = run_review(fixture)
             costs.append(review["cost"])
+            tokens_list.append(review["tokens"])
             total_cost += review["cost"]
+            total_tokens += review["tokens"]
             runs_done += 1
             if not review["ok"]:
                 runs_errored += 1
@@ -393,7 +417,8 @@ def main(argv: list[str] | None = None) -> int:
                 shutil.rmtree(review["scratch"], ignore_errors=True)
             print(
                 f"  {fixture['id']} run{run_i + 1}/{args.repeats}: "
-                f"{label} cost=${review['cost']} (total ${round(total_cost, 2)})",
+                f"{label} tokens={review['tokens']} cost=${review['cost']} "
+                f"(total {total_tokens} tok / ${round(total_cost, 2)})",
                 file=sys.stderr,
             )
             if should_stop_for_cost(total_cost, args.max_cost):
@@ -406,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
                 break
         if verdicts:
             avg_cost = round(sum(costs) / len(costs), 4)
+            avg_tokens = round(sum(tokens_list) / len(tokens_list))
             if is_precision:
                 results.append(
                     {
@@ -413,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
                         "mode": "precision",
                         "false_positives": precision_fp(verdicts),
                         "avg_cost": avg_cost,
+                        "avg_tokens": avg_tokens,
                         "verdicts": verdicts,
                     }
                 )
@@ -423,6 +450,7 @@ def main(argv: list[str] | None = None) -> int:
                         "mode": "recall",
                         "recall": fixture_recall(verdicts),
                         "avg_cost": avg_cost,
+                        "avg_tokens": avg_tokens,
                         "verdicts": verdicts,
                     }
                 )
@@ -445,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
         else None
     )
     avg_cost_per_pr = round(total_cost / max(1, runs_done), 3)
+    avg_tokens_per_pr = round(total_tokens / max(1, runs_done))
 
     print("\n=== eval summary ===")
     banner = f"fixtures completed: {len(results)}/{len(fixtures)} | runs: {runs_done}"
@@ -457,12 +486,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mean recall: {mean_recall} ({caught}/{len(scored)} scored fixtures at recall>=0.5)")
         for r in recall_results:
             rec = "ERR " if r["recall"] is None else f"{r['recall']:.2f}"
-            print(f"  recall    {rec}  ${r['avg_cost']:<7} {r['id']}")
+            print(f"  recall    {rec}  {r['avg_tokens']:>8} tok  ${r['avg_cost']:<7} {r['id']}")
     if precision_results:
         print(f"mean false-positives/PR: {mean_fp} (lower is better; clean PRs, 0 ideal)")
         for r in precision_results:
             fp = "ERR " if r["false_positives"] is None else f"{r['false_positives']:.2f}"
-            print(f"  precision {fp}  ${r['avg_cost']:<7} {r['id']}")
+            print(f"  precision {fp}  {r['avg_tokens']:>8} tok  ${r['avg_cost']:<7} {r['id']}")
+    # Tokens are the rate-limit metric (#209); dollars are secondary (model-priced).
+    print(f"avg tokens/review: {avg_tokens_per_pr} | total: {total_tokens}")
     print(f"avg cost/review: ${avg_cost_per_pr} | total: ${round(total_cost, 3)}")
 
     if args.out:
@@ -472,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
                     "summary": {
                         "mean_recall": mean_recall,
                         "mean_false_positives": mean_fp,
+                        "avg_tokens_per_pr": avg_tokens_per_pr,
                         "avg_cost_per_pr": avg_cost_per_pr,
                     },
                     "results": results,

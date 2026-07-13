@@ -723,8 +723,11 @@ TRUNCATED_COUNT="$(extract_truncated_count "$EXTRACT_ERR")"
 # and refines the draft (drop weak findings, sharpen survivors, reconcile the
 # summary) before posting. Skipped on a zero-finding draft, where there is
 # nothing to refine; apply_edits.py still runs the moved voice gate either way.
+# SKIP_EDITOR=1 also bypasses it (#209 token measurement): apply_edits then posts
+# the merged, gated draft directly, testing whether the editor's precision cleanup
+# earns its separate claude -p or the gated lens output already suffices.
 EDIT_ARGS=(--author "$AUTHOR_FILE" --truncated-count "$TRUNCATED_COUNT")
-if [[ "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
+if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
   log_step "running editor agent via claude -p"
   # Same unbounded `claude -p` shape and backstop as the review agent, raised
   # to 600s for the same dogfood-observed reason. Not backgrounded (nothing to

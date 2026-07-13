@@ -51,6 +51,20 @@ def test_sum_cost_tolerates_empty_or_garbage(tmp_path):
     assert run_eval.sum_cost(tmp_path) == 0.5
 
 
+def test_sum_tokens_adds_sidecars(tmp_path):
+    (tmp_path / ".pr-review-raw.txt.tokens").write_text("120000")
+    (tmp_path / ".pr-review-raw-perf.txt.tokens").write_text("80000")
+    (tmp_path / "not-a-token.txt").write_text("99")
+    assert run_eval.sum_tokens(tmp_path) == 200000
+
+
+def test_sum_tokens_tolerates_empty_or_garbage(tmp_path):
+    (tmp_path / "a.tokens").write_text("")
+    (tmp_path / "b.tokens").write_text("garbage")
+    (tmp_path / "c.tokens").write_text("500")
+    assert run_eval.sum_tokens(tmp_path) == 500
+
+
 def test_sum_cost_zero_when_no_sidecars(tmp_path):
     assert run_eval.sum_cost(tmp_path) == 0.0
 
