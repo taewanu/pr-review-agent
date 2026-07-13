@@ -91,7 +91,7 @@ def extract_json_object(text: str) -> dict:
     return json.loads(candidate)
 
 
-def fixture_recall(verdicts: list[dict]) -> float:
+def fixture_recall(verdicts: list[dict]) -> float | None:
     """Collapse the per-repeat judge verdicts for ONE fixture into a recall score
     in [0, 1]: the fraction of runs that caught the fixture's known bug.
 
@@ -102,11 +102,19 @@ def fixture_recall(verdicts: list[dict]) -> float:
     hides flakiness (any-caught) nor over-punishes it (all-caught), which is the
     honest answer to "caught once != always catches". It also matches how the
     references report recall at the corpus level (issues caught / total) and how
-    the summary reads a fixture as caught at recall >= 0.5. Assume verdicts is
-    non-empty.
+    the summary reads a fixture as caught at recall >= 0.5.
+
+    Runs whose review never completed (timeout/crash, marked "error") are dropped
+    from both numerator and denominator: a review that failed to run is not the
+    config missing the bug, and scoring a $0 600s-timeout as a miss deflates
+    recall. Returns None when every run errored, so the fixture is still reported
+    but left out of the corpus mean rather than counted as a 0.
     """
-    caught = sum(1 for verdict in verdicts if verdict.get("caught"))
-    return caught / len(verdicts)
+    valid = [verdict for verdict in verdicts if not verdict.get("error")]
+    if not valid:
+        return None
+    caught = sum(1 for verdict in valid if verdict.get("caught"))
+    return caught / len(valid)
 
 
 # --- token-spending steps (run by the operator) ------------------------------
@@ -334,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     total_cost = 0.0
     runs_done = 0
+    runs_errored = 0
     stopped_early = False
     for fixture in fixtures:
         verdicts = []
@@ -344,7 +353,14 @@ def main(argv: list[str] | None = None) -> int:
             total_cost += review["cost"]
             runs_done += 1
             if not review["ok"]:
-                verdicts.append({"caught": False, "rationale": f"review failed rc={review['rc']}"})
+                runs_errored += 1
+                verdicts.append(
+                    {
+                        "caught": False,
+                        "error": True,
+                        "rationale": f"review failed rc={review['rc']}",
+                    }
+                )
             else:
                 verdicts.append(judge(fixture, review["findings"]))
             if review["scratch"] and os.path.isdir(review["scratch"]):
@@ -376,18 +392,22 @@ def main(argv: list[str] | None = None) -> int:
         print("no fixtures completed", file=sys.stderr)
         return 1
 
-    caught = sum(1 for r in results if r["recall"] >= 0.5)
-    mean_recall = round(sum(r["recall"] for r in results) / len(results), 3)
+    scored = [r for r in results if r["recall"] is not None]
+    caught = sum(1 for r in scored if r["recall"] >= 0.5)
+    mean_recall = round(sum(r["recall"] for r in scored) / len(scored), 3) if scored else 0.0
     avg_cost_per_pr = round(total_cost / max(1, runs_done), 3)
     print("\n=== eval summary ===")
     banner = f"fixtures completed: {len(results)}/{len(fixtures)} | runs: {runs_done}"
+    if runs_errored:
+        banner += f" ({runs_errored} errored, excluded from recall)"
     if stopped_early:
         banner += " | STOPPED at cost cap (partial)"
     print(banner)
-    print(f"mean recall: {mean_recall} ({caught}/{len(results)} fixtures at recall>=0.5)")
+    print(f"mean recall: {mean_recall} ({caught}/{len(scored)} scored fixtures at recall>=0.5)")
     print(f"avg cost/review: ${avg_cost_per_pr} | total: ${round(total_cost, 3)}")
     for r in results:
-        print(f"  {r['recall']:.2f}  ${r['avg_cost']:<7} {r['id']}")
+        rec = "ERR " if r["recall"] is None else f"{r['recall']:.2f}"
+        print(f"  {rec}  ${r['avg_cost']:<7} {r['id']}")
 
     if args.out:
         args.out.write_text(

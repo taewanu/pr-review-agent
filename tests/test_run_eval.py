@@ -107,5 +107,26 @@ def test_should_stop_for_cost_at_or_over_cap():
 
 
 def test_fixture_recall_treats_missing_caught_as_false():
-    # A verdict from a failed review/judge may lack "caught"; count it as a miss.
-    assert run_eval.fixture_recall([{"rationale": "review failed"}, {"caught": True}]) == 0.5
+    # A judge verdict may lack "caught" (parse quirk); absent the error flag it
+    # still counts as a miss. A failed *review* is marked error instead (below).
+    assert run_eval.fixture_recall([{"rationale": "judge quirk"}, {"caught": True}]) == 0.5
+
+
+def test_fixture_recall_excludes_errored_runs():
+    # A review that never completed (timeout/crash, error=True) is dropped from
+    # both numerator and denominator, not scored as a miss: 1 error + 1 caught is
+    # full recall over the one run that actually ran.
+    verdicts = [{"caught": True}, {"caught": False, "error": True}]
+    assert run_eval.fixture_recall(verdicts) == 1.0
+
+
+def test_fixture_recall_partial_error_keeps_valid_miss():
+    # An error alongside a real miss scores the miss (0/1), not 0/2.
+    verdicts = [{"caught": False}, {"caught": False, "error": True}]
+    assert run_eval.fixture_recall(verdicts) == 0.0
+
+
+def test_fixture_recall_all_errored_is_none():
+    # Every run failed: recall is undefined, so the fixture is reported but left
+    # out of the corpus mean rather than counted as a 0.
+    assert run_eval.fixture_recall([{"error": True}, {"error": True}]) is None
