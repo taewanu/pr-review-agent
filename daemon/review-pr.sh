@@ -615,14 +615,15 @@ REVIEW_AGENT_TIMEOUT="${REVIEW_AGENT_TIMEOUT:-600}"
 CLAUDE_SLOT_POOL_SIZE="$(resolve_tunable CLAUDE_SLOT_POOL_SIZE "$SCRIPT_DIR/../.env")"
 [[ -n "$CLAUDE_SLOT_POOL_SIZE" ]] && export CLAUDE_SLOT_POOL_SIZE
 
-# Review reasoning model (#209): resolve from env, then .env, else default to a
-# fixed capable model. Every review claude -p (lenses, editor, judge-fix) pins
-# this instead of inheriting the operator's global ~/.claude/settings.json model,
-# which silently ran reviews on whatever the shell defaulted to. Resolved early
-# and exported so the spawned agents all see one value.
-REVIEW_MODEL="$(resolve_tunable REVIEW_MODEL "$SCRIPT_DIR/../.env")"
-: "${REVIEW_MODEL:=claude-opus-4-8}"
-export REVIEW_MODEL
+# Review reasoning model (#209). Every claude -p below pins this instead of
+# inheriting the operator's global ~/.claude/settings.json model, which silently
+# reviewed on whatever their shell happened to prefer. Resolved once here so the
+# lenses, editor, and judge-fix can't drift onto different models mid-review.
+REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
+# Named in the log because an unpinned model is invisible from the outside: a
+# review on the wrong one still reads like a review, which is how the original
+# defect survived weeks of dogfood. The dial is only trustworthy if it says so.
+log_info "model: ${REVIEW_MODEL}"
 
 # ADR 0023 (revised): five independent lenses read the same diff, each
 # unaware of the others' output, so a bug one misses another can still catch.

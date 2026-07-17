@@ -231,13 +231,12 @@ log_step "running reply agent via claude -p"
 # timeout is discarded, not parsed.
 REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
 
-# Reasoning model, shared with review-pr.sh's REVIEW_MODEL dial (#209). The reply
-# agent re-checks operator fix claims against HEAD, so it wants the same capable
-# model, not the machine's global ~/.claude/settings.json default; one dial keeps
-# review and reply on the same model. Resolve env, then .env, else claude-opus-4-8.
-REVIEW_MODEL="$(resolve_tunable REVIEW_MODEL "$SCRIPT_DIR/../.env")"
-: "${REVIEW_MODEL:=claude-opus-4-8}"
-export REVIEW_MODEL
+# The reply agent re-checks operator fix claims against HEAD, reasoning the review
+# lenses' equal, so it shares their REVIEW_MODEL dial (#209) rather than carrying
+# its own.
+REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
+# Named in the log for the reason review-pr.sh gives: an unnamed model fails silently.
+log_info "model: ${REVIEW_MODEL}"
 
 reply_rc=0
 (
