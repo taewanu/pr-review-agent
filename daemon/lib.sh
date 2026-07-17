@@ -199,6 +199,19 @@ resolve_tunable() {
   printf '%s' "$val"
 }
 
+# resolve_review_model <dotenv-path>
+# Resolve the reasoning model every daemon claude -p pins (#209), printing it.
+# The default lives here alone: it reaches the agents as a --model argument the
+# callers expand, never as an environment variable, so a script that resolved it
+# separately would be free to drift onto a different model. Unlike the dials
+# resolve_tunable serves, an empty value is not a usable default here (`--model
+# ""` is a broken flag), so this one defaults in the shell rather than downstream.
+resolve_review_model() {
+  local model
+  model="$(resolve_tunable REVIEW_MODEL "$1")"
+  printf '%s' "${model:-claude-opus-4-8}"
+}
+
 # warn_env_drift <dotenv-path> <template-path>
 # One boot-time line naming every key the template carries but the live .env
 # lacks — those knobs silently run on their code defaults (#201). The concrete

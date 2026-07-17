@@ -230,6 +230,14 @@ log_step "running reply agent via claude -p"
 # land ~60-120s; a reply run does less) and below the runaway. Partial output on
 # timeout is discarded, not parsed.
 REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
+
+# The reply agent re-checks operator fix claims against HEAD, reasoning the review
+# lenses' equal, so it shares their REVIEW_MODEL dial (#209) rather than carrying
+# its own.
+REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
+# Named in the log for the reason review-pr.sh gives: an unnamed model fails silently.
+log_info "model: ${REVIEW_MODEL}"
+
 reply_rc=0
 (
   # Same shared claude_slot pool as review-pr.sh's lenses/editor/judge-fix
@@ -243,6 +251,7 @@ reply_rc=0
   # to a sidecar file rather than flooding the daemon log unlabeled.
   run_with_timeout "$REPLY_AGENT_TIMEOUT" \
     claude -p "/reply-pr $PR_URL --threads $THREADS_BASENAME" \
+    --model "$REVIEW_MODEL" \
     --output-format stream-json --verbose \
     2>"$RAW_FILE.stderr" |
     python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE" \
