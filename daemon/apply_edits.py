@@ -114,13 +114,24 @@ def apply_edits(author: dict, edits: EditorPayload) -> dict:
 
 
 def _gate(payload: dict, *, check_fidelity: bool) -> None:
-    violations = voice.check_payload(
-        payload["summary"],
-        [c["body"] for c in payload["comments"]],
-        check_fidelity=check_fidelity,
-    )
-    if violations:
-        raise ApplyError("style-violation", "; ".join(violations))
+    """Fail on a corrupt payload; warn (never fail) on a cosmetic voice miss.
+
+    A style violation — a forbidden opener, an em dash, a bullet count — is not a
+    reason to discard a review that correctly found a real bug; it posts with a
+    warning instead (CR treats tone as customizable, never a gate that drops
+    findings). Only a reserialization corruption (an HTML-escaped character, a
+    literal backslash-n; #133), which malforms the text the reader sees, stays
+    fail-closed — and only post-Editor, where re-emission can introduce it. The
+    warning goes to stderr so it reaches the daemon log without touching stdout,
+    which carries the final payload.
+    """
+    summary = payload["summary"]
+    bodies = [c["body"] for c in payload["comments"]]
+    if check_fidelity and (corruptions := voice.fidelity_violations(summary, bodies)):
+        raise ApplyError("edit-fidelity", "; ".join(corruptions))
+    style = voice.check_payload(summary, bodies)  # cosmetic only; fidelity handled above
+    if style:
+        print(f"voice-warning: posting despite {'; '.join(style)}", file=sys.stderr)
 
 
 def finalize(author: dict, edits_raw: str | None) -> dict:

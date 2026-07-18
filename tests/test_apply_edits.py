@@ -200,7 +200,9 @@ def test_finalize_applies_and_gates_clean():
     assert final["comments"][0]["body"] == "**Sharp.** It throws on null."
 
 
-def test_finalize_gate_rejects_em_dash_rewrite():
+def test_finalize_posts_despite_cosmetic_voice_miss_in_rewrite(capsys):
+    # A cosmetic voice miss (em dash) must not discard a review that found a real
+    # bug; it posts with a stderr warning instead. Style is polished, not gated.
     author = _author("**Vague.** Could break.")
     edits = _fence(
         {
@@ -210,12 +212,14 @@ def test_finalize_gate_rejects_em_dash_rewrite():
             ],
         }
     )
-    with pytest.raises(ApplyError) as exc:
-        apply_edits.finalize(author, edits)
-    assert exc.value.category == "style-violation"
+    final = apply_edits.finalize(author, edits)
+    assert final["comments"][0]["body"] == "**Sharp.** It breaks — here."
+    assert "voice-warning" in capsys.readouterr().err
 
 
-def test_finalize_gate_rejects_fidelity_corruption_in_rewrite():
+def test_finalize_gate_rejects_fidelity_corruption_keeps_failing(capsys):
+    # Corruption (HTML-escaped char) malforms what the reader sees, so it stays
+    # fail-closed even as cosmetic misses are downgraded to warnings.
     author = _author("**Vague.** Could break.")
     edits = _fence(
         {
@@ -227,7 +231,7 @@ def test_finalize_gate_rejects_fidelity_corruption_in_rewrite():
     )
     with pytest.raises(ApplyError) as exc:
         apply_edits.finalize(author, edits)
-    assert exc.value.category == "style-violation"
+    assert exc.value.category == "edit-fidelity"
 
 
 def test_finalize_no_edits_is_identity_and_skips_fidelity():
@@ -238,11 +242,13 @@ def test_finalize_no_edits_is_identity_and_skips_fidelity():
     assert final == author
 
 
-def test_finalize_no_edits_still_gates_summary_voice():
+def test_finalize_no_edits_posts_despite_summary_voice_miss(capsys):
+    # Even on the zero-edit path, a cosmetic summary miss warns rather than fails:
+    # the review still posts. (No findings here, but the gate must not raise.)
     author = {"summary": "This change is risky.", "comments": []}
-    with pytest.raises(ApplyError) as exc:
-        apply_edits.finalize(author, None)
-    assert exc.value.category == "style-violation"
+    final = apply_edits.finalize(author, None)
+    assert final == author
+    assert "voice-warning" in capsys.readouterr().err
 
 
 # --- append_truncation_note (ADR 0023, post-merge cap truncation) -----------

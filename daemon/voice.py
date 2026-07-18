@@ -238,3 +238,25 @@ def check_payload(summary: str, bodies: list[str], *, check_fidelity: bool = Fal
             label=f"comments[{i}].body",
         )
     return violations
+
+
+def fidelity_violations(summary: str, bodies: list[str]) -> list[str]:
+    """Return only the reserialization-corruption violations for a final payload.
+
+    The subset of check_payload that signals a genuinely broken payload (an
+    Editor that HTML-escaped a character or wrote a literal backslash-n for a
+    newline, #133) rather than a cosmetic voice miss (a forbidden opener, an em
+    dash, a bullet count). The post-Editor gate fails the review on these but
+    only warns on the cosmetic rest: a review that correctly found a real bug
+    must not be discarded because its summary opens with "The" — style is a thing
+    to polish, not a gate that drops findings. Corruption is different: it means
+    the text the reader would see is malformed, so it stays fail-closed.
+    """
+    out = []
+    for label, text in [
+        ("summary", summary),
+        *((f"comments[{i}].body", b) for i, b in enumerate(bodies)),
+    ]:
+        if (msg := fidelity_violation(text)) is not None:
+            out.append(f"{label} {msg}")
+    return out
