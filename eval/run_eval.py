@@ -162,6 +162,13 @@ def precision_fp(verdicts: list[dict]) -> float | None:
 _TERM_SIGNALS = frozenset({signal.SIGINT, signal.SIGTERM})
 _active_child: subprocess.Popen | None = None
 
+# Wall-clock ceiling per review, above review-pr.sh's own REVIEW_AGENT_TIMEOUT.
+# The in-review timeout is a perl alarm that does not reliably kill claude (a
+# fanout run's stuck subagent hung the tree for an hour), so the harness enforces
+# its own hard ceiling and kills the process group. A normal review is 6-9 min;
+# 20 min leaves headroom for a heavy PR while cutting a genuine hang.
+_REVIEW_TIMEOUT_SECONDS = int(os.environ.get("EVAL_REVIEW_TIMEOUT", "1200"))
+
 
 def _terminate_active_child() -> None:
     child = _active_child
@@ -211,12 +218,34 @@ def run_review(fixture: dict) -> dict:
         _active_child = proc
     finally:
         signal.pthread_sigmask(signal.SIG_UNBLOCK, _TERM_SIGNALS)
+    timed_out = False
     try:
+        stdout, stderr = proc.communicate(timeout=_REVIEW_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # A review-pr.sh whose own REVIEW_AGENT_TIMEOUT failed to reap its child —
+        # a fanout run holds one claude -p that spawns five subagents, and the
+        # perl-alarm timeout does not always kill claude, so a stuck subagent can
+        # hang the whole tree for an hour. Kill the process group and record it as
+        # an errored run (excluded from recall, like any other failed review)
+        # rather than letting the eval stall indefinitely.
+        timed_out = True
+        _terminate_active_child()
         stdout, stderr = proc.communicate()
     finally:
         if proc.poll() is None:
             _terminate_active_child()
         _active_child = None
+    if timed_out:
+        return {
+            "ok": False,
+            "findings": [],
+            "cost": 0.0,
+            "tokens": 0,
+            "count": 0,
+            "scratch": None,
+            "rc": -1,  # ERR, distinct from a real review's rc; -1 == wall-clock kill
+            "stderr_tail": f"review exceeded {_REVIEW_TIMEOUT_SECONDS}s wall-clock; killed",
+        }
     contract = parse_dryrun_contract(stdout)
     payload_path = contract.get("dryrun_payload")
     findings: list[dict] = []

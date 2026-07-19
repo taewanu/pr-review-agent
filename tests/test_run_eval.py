@@ -161,3 +161,25 @@ def test_precision_fp_excludes_errored_runs():
 
 def test_precision_fp_all_errored_is_none():
     assert run_eval.precision_fp([{"error": True}, {"error": True}]) is None
+
+
+def test_run_review_kills_a_review_over_the_wall_clock_ceiling(tmp_path, monkeypatch):
+    # A review-pr.sh whose own timeout fails to reap its child (a fanout run's
+    # stuck subagent hung the tree for an hour) must not hang the eval: the harness
+    # enforces its own wall-clock ceiling, kills the process group, and records the
+    # run as errored (ok=False, rc=-1), which fixture_recall then excludes.
+    slow = tmp_path / "slow-review.sh"
+    slow.write_text("#!/bin/bash\nsleep 60\n")
+    slow.chmod(0o755)
+    monkeypatch.setattr(run_eval, "REVIEW_PR", slow)
+    monkeypatch.setattr(run_eval, "_REVIEW_TIMEOUT_SECONDS", 1)
+
+    import time
+
+    start = time.monotonic()
+    result = run_eval.run_review({"pr_url": "https://example/pull/1", "at_sha": "deadbeef"})
+    elapsed = time.monotonic() - start
+
+    assert result["ok"] is False
+    assert result["rc"] == -1
+    assert elapsed < 10  # killed near the 1s ceiling, not after sleep 60
