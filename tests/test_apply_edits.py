@@ -186,7 +186,7 @@ def test_bad_json_is_edit_parse_error():
 # --- finalize: gate ----------------------------------------------------------
 
 
-def test_finalize_applies_and_gates_clean():
+def test_finalize_applies_and_gates_clean(capsys):
     author = _author("**Vague.** Could break.")
     edits = _fence(
         {
@@ -198,6 +198,9 @@ def test_finalize_applies_and_gates_clean():
     )
     final = apply_edits.finalize(author, edits)
     assert final["comments"][0]["body"] == "**Sharp.** It throws on null."
+    # The downgrade warns only on a miss; clean text must stay silent, or a gate
+    # that warned on every payload would still pass this suite.
+    assert "voice-warning" not in capsys.readouterr().err
 
 
 def test_finalize_posts_despite_cosmetic_voice_miss_in_rewrite(capsys):

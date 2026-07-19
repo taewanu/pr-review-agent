@@ -208,8 +208,8 @@ def check_text(
     return violations
 
 
-def check_payload(summary: str, bodies: list[str], *, check_fidelity: bool = False) -> list[str]:
-    """Return all voice violations for a final review payload.
+def check_payload(summary: str, bodies: list[str]) -> list[str]:
+    """Return the cosmetic voice violations for a final review payload.
 
     Centralizes the two-field shape every review gate shares: the summary stays
     plain prose (FORBIDDEN_SUMMARY_PREFIXES, no bold lead), and each comment body
@@ -217,24 +217,17 @@ def check_payload(summary: str, bodies: list[str], *, check_fidelity: bool = Fal
     `extract_json.py` (author parse) and `apply_edits.py` (post-Editor gate) call
     this so the rules live in one place.
 
-    `check_fidelity` adds the reserialization-corruption rule to every field; the
-    post-Editor gate sets it, the author parse leaves it off (the author emits a
-    single fence the pipeline already parses, so it cannot smuggle an escaped
-    entity past JSON the way a re-emitting Editor can).
+    Reserialization corruption is not checked here; `fidelity_violations` owns that
+    rule, and the post-Editor gate routes it there separately so a corruption
+    fails the review while a cosmetic miss only warns.
     """
-    violations = check_text(
-        summary,
-        prefixes=FORBIDDEN_SUMMARY_PREFIXES,
-        check_fidelity=check_fidelity,
-        label="summary",
-    )
+    violations = check_text(summary, prefixes=FORBIDDEN_SUMMARY_PREFIXES, label="summary")
     for i, body in enumerate(bodies):
         violations += check_text(
             body,
             prefixes=FORBIDDEN_PREFIXES,
             strip_bold=True,
             check_bullets=True,
-            check_fidelity=check_fidelity,
             label=f"comments[{i}].body",
         )
     return violations
