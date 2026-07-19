@@ -36,7 +36,8 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 | Trailing JSON fence missing | system | exit non-zero, no post |
 | JSON parse error | system | exit non-zero, no post |
 | Schema invalid (required missing, enum off) | system | exit non-zero, no post |
-| Style violation: `style-violation` (em dash, forbidden opener, task-scoped ref, or a reserialization-fidelity corruption in a summary, comment body, or reply body; shared rules in `voice.py` per ADR 0010 and ADR 0016) | system | exit non-zero, no post |
+| Reserialization-fidelity corruption in a post-Editor summary or comment body: `edit-fidelity` (HTML-escaped entity or literal `\n`; ADR 0016) | system | exit non-zero, no post |
+| Cosmetic voice miss in a posted payload: `style-violation` (em dash, forbidden opener, task-scoped ref; shared rules in `voice.py` per ADR 0010) | degrade | warn to the daemon log, post anyway |
 | Editor stage failed: timeout, empty output, or an unparseable, schema-invalid, or non-covering decision set (`edit-*`, ADR 0016) | system | exit non-zero, no post |
 | Forbidden combo (`polish + important`) | per-finding | drop, note in summary, post remaining |
 | `line` outside diff | per-finding | move body to summary's `## Findings outside the diff` section, post remaining |
@@ -68,3 +69,11 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 > failed → Reviewing → Reviewed. Pre-comment preflight failures (auth, `git
 > remote`, identity) stay silent: there is no live comment to update, and the
 > author cannot act on an operator-environment error.
+
+> **Amended 2026-07-19 (#220).** The post-Editor voice gate splits (the two rows
+> replacing the old single `style-violation` row). A reserialization-fidelity
+> corruption still fails the review (`edit-fidelity`, exit non-zero, no post),
+> but a cosmetic style miss no longer discards a review that found a real bug: it
+> posts with a `voice-warning` forwarded to the daemon log instead (CodeRabbit
+> treats tone as customizable, never a gate that drops findings). This adds a
+> third action, "warn and post", to the system/per-finding pair above.

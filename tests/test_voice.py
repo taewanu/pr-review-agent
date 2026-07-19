@@ -310,17 +310,31 @@ def test_check_payload_flags_summary_and_body():
     assert any(v.startswith("summary ") and "forbidden prefix" in v for v in out)
 
 
-def test_check_payload_fidelity_only_when_requested():
-    clean_off = voice.check_payload("Summary holds.", ["**Cover `a &lt;= b`.** Untested."])
-    assert clean_off == []
-    on = voice.check_payload(
-        "Summary holds.", ["**Cover `a &lt;= b`.** Untested."], check_fidelity=True
-    )
-    assert len(on) == 1 and on[0].startswith("comments[0].body ")
+def test_check_payload_no_longer_checks_fidelity():
+    # Fidelity moved to fidelity_violations; check_payload sees only cosmetics, so
+    # an escaped entity in an otherwise clean payload is not its concern.
+    assert voice.check_payload("Summary holds.", ["**Cover `a &lt;= b`.** Untested."]) == []
 
 
 def test_check_payload_body_index_in_label():
-    out = voice.check_payload(
-        "Clean lead.", ["**Good.** Ships.", "**Bad.**\n\n- lone"], check_fidelity=True
-    )
+    out = voice.check_payload("Clean lead.", ["**Good.** Ships.", "**Bad.**\n\n- lone"])
     assert any(v.startswith("comments[1].body ") for v in out)
+
+
+# --- fidelity_violations (the plural wrapper, the post-Editor fail-closed set) ---
+
+
+def test_fidelity_violations_clean_payload_is_empty():
+    assert voice.fidelity_violations("Summary holds.", ["**Good.** Ships clean."]) == []
+
+
+def test_fidelity_violations_flags_a_corrupt_body_with_index():
+    out = voice.fidelity_violations("Summary holds.", ["**Cover `a &lt;= b`.** Untested."])
+    assert len(out) == 1 and out[0].startswith("comments[0].body ")
+
+
+def test_fidelity_violations_flags_a_corrupt_summary():
+    # The case the post-Editor gate most wants fail-closed: the Editor HTML-escapes
+    # the reconciled summary while every body stays clean.
+    out = voice.fidelity_violations("Cover `a &lt;= b` in the guard.", ["**Good.** Ships clean."])
+    assert len(out) == 1 and out[0].startswith("summary ")

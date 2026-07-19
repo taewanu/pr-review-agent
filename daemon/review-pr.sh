@@ -768,6 +768,11 @@ if ! python3 "$SCRIPT_DIR/apply_edits.py" "${EDIT_ARGS[@]}" >"$PAYLOAD_FILE" 2>"
   log_failure "$(extract_category "$EDIT_ERR")" "$PR_URL" "$HEAD_OID" "apply_edits.py exited non-zero"
   exit 1
 fi
+# apply_edits.py exits zero when it downgrades a cosmetic voice miss to a warning,
+# so the failure path above never sees it. Forward $EDIT_ERR here too, before
+# cleanup() removes $SCRATCH, so a warn-and-post run still names the missed rule
+# in the daemon log (the same forwarding the extract step gets at its own gate).
+log_degradation_warnings "$EDIT_ERR"
 
 log_step "anchoring findings"
 python3 "$SCRIPT_DIR/anchor_findings.py" split \

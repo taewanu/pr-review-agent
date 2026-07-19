@@ -1,11 +1,12 @@
 """Tests for lib.sh's `log_degradation_warnings` (#196).
 
-review-pr.sh captures merge_findings.py stderr into a file and, before this
-fix, read it only on the failure branch. The quality-degradation warnings
-(merge-skip / finding-skip / confidence-gate) are emitted on the SUCCESS path,
-so a lens silently dropping every run never reached the daemon log. These
-tests drive the real chain: a malformed lens payload through merge_findings.py,
-its captured stderr through the bash forwarder, into log output.
+review-pr.sh captures a stage's stderr into a file and, before this fix, read it
+only on the failure branch. The quality-degradation warnings are emitted on the
+SUCCESS path, so their signal never reached the daemon log: merge-skip /
+finding-skip / confidence-gate from merge_findings.py (a lens silently dropping
+every run), and voice-warning from apply_edits.py (a cosmetic style miss
+downgraded to warn-and-post). These tests drive the real chain: a captured
+stderr through the bash forwarder, into log output.
 """
 
 from __future__ import annotations
@@ -81,6 +82,14 @@ def test_forwards_all_three_warning_kinds(tmp_path):
     assert "merge-skip: perf payload failed" in log
     assert "finding-skip: comments[2] failed validation" in log
     assert "confidence-gate: dropped 3 finding(s)" in log
+
+
+def test_voice_warning_from_the_edit_stage_is_forwarded(tmp_path):
+    # apply_edits.py prints this on its SUCCESS path when it downgrades a cosmetic
+    # voice miss to warn-and-post; review-pr.sh reads $EDIT_ERR only on failure, so
+    # the forwarder is the only thing that surfaces the missed rule.
+    log = _forward("voice-warning: posting despite summary opens with a forbidden word\n", tmp_path)
+    assert "voice-warning: posting despite summary opens with a forbidden word" in log
 
 
 def test_unrelated_stderr_noise_is_not_forwarded(tmp_path):
