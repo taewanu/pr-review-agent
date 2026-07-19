@@ -58,19 +58,20 @@ log_ok() {
 }
 
 # log_degradation_warnings <captured-stderr-file>
-# Forwards merge-stage quality-degradation warnings (merge-skip / finding-skip
-# / confidence-gate) to the daemon log. merge_findings.py emits them on its
-# SUCCESS path, and review-pr.sh read the captured stderr only on failure, so
-# a lens whose output shape broke every run degraded the review from five
-# lenses to four with no signal anywhere (#196). Lives in lib.sh, not inline,
-# so test_degradation_warnings.py can source it (same rationale as
+# Forwards quality-degradation warnings a stage prints on its SUCCESS path to the
+# daemon log, because review-pr.sh reads each captured stderr only on failure:
+# merge-skip / finding-skip / confidence-gate from merge_findings.py (#196), and
+# voice-warning from apply_edits.py (a cosmetic style miss downgraded to warn-and-
+# post). Without this a lens silently dropped to four (#196), or a missed voice
+# rule left no signal before cleanup() removed the scratch. Lives in lib.sh, not
+# inline, so test_degradation_warnings.py can source it (same rationale as
 # wait_for_lens_pids, ADR 0026).
 log_degradation_warnings() {
   local stderr_file="$1" line
   [[ -r "$stderr_file" ]] || return 0
   while IFS= read -r line; do
     log_info "$line"
-  done < <(grep -E '^(merge-skip|finding-skip|confidence-gate)' "$stderr_file" || true)
+  done < <(grep -E '^(merge-skip|finding-skip|confidence-gate|voice-warning)' "$stderr_file" || true)
 }
 
 # log_failure <category> <pr-url> <head-sha> <reason>
