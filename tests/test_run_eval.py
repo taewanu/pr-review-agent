@@ -51,6 +51,20 @@ def test_sum_cost_tolerates_empty_or_garbage(tmp_path):
     assert run_eval.sum_cost(tmp_path) == 0.5
 
 
+def test_sum_tokens_adds_sidecars(tmp_path):
+    (tmp_path / ".pr-review-raw.txt.tokens").write_text("120000")
+    (tmp_path / ".pr-review-raw-perf.txt.tokens").write_text("80000")
+    (tmp_path / "not-a-token.txt").write_text("99")
+    assert run_eval.sum_tokens(tmp_path) == 200000
+
+
+def test_sum_tokens_tolerates_empty_or_garbage(tmp_path):
+    (tmp_path / "a.tokens").write_text("")
+    (tmp_path / "b.tokens").write_text("garbage")
+    (tmp_path / "c.tokens").write_text("500")
+    assert run_eval.sum_tokens(tmp_path) == 500
+
+
 def test_sum_cost_zero_when_no_sidecars(tmp_path):
     assert run_eval.sum_cost(tmp_path) == 0.0
 
@@ -107,5 +121,66 @@ def test_should_stop_for_cost_at_or_over_cap():
 
 
 def test_fixture_recall_treats_missing_caught_as_false():
-    # A verdict from a failed review/judge may lack "caught"; count it as a miss.
-    assert run_eval.fixture_recall([{"rationale": "review failed"}, {"caught": True}]) == 0.5
+    # A judge verdict may lack "caught" (parse quirk); absent the error flag it
+    # still counts as a miss. A failed *review* is marked error instead (below).
+    assert run_eval.fixture_recall([{"rationale": "judge quirk"}, {"caught": True}]) == 0.5
+
+
+def test_fixture_recall_excludes_errored_runs():
+    # A review that never completed (timeout/crash, error=True) is dropped from
+    # both numerator and denominator, not scored as a miss: 1 error + 1 caught is
+    # full recall over the one run that actually ran.
+    verdicts = [{"caught": True}, {"caught": False, "error": True}]
+    assert run_eval.fixture_recall(verdicts) == 1.0
+
+
+def test_fixture_recall_partial_error_keeps_valid_miss():
+    # An error alongside a real miss scores the miss (0/1), not 0/2.
+    verdicts = [{"caught": False}, {"caught": False, "error": True}]
+    assert run_eval.fixture_recall(verdicts) == 0.0
+
+
+def test_fixture_recall_all_errored_is_none():
+    # Every run failed: recall is undefined, so the fixture is reported but left
+    # out of the corpus mean rather than counted as a 0.
+    assert run_eval.fixture_recall([{"error": True}, {"error": True}]) is None
+
+
+def test_precision_fp_is_mean_judged_noise_count():
+    # The score counts judged-noise findings, not every finding: a run whose three
+    # findings were all ruled legitimate scores 0, same as a silent run.
+    verdicts = [{"findings_count": 3, "noise_count": 0}, {"findings_count": 2, "noise_count": 2}]
+    assert run_eval.precision_fp(verdicts) == 1.0
+
+
+def test_precision_fp_excludes_errored_runs():
+    # A failed review is dropped, not counted as zero noise (which would flatter the
+    # score): 1 error + 1 run with 2 noisy findings scores 2.0, not 1.0.
+    verdicts = [{"findings_count": 2, "noise_count": 2}, {"error": True}]
+    assert run_eval.precision_fp(verdicts) == 2.0
+
+
+def test_precision_fp_all_errored_is_none():
+    assert run_eval.precision_fp([{"error": True}, {"error": True}]) is None
+
+
+def test_run_review_kills_a_review_over_the_wall_clock_ceiling(tmp_path, monkeypatch):
+    # A review-pr.sh whose own timeout fails to reap its child (a fanout run's
+    # stuck subagent hung the tree for an hour) must not hang the eval: the harness
+    # enforces its own wall-clock ceiling, kills the process group, and records the
+    # run as errored (ok=False, rc=-1), which fixture_recall then excludes.
+    slow = tmp_path / "slow-review.sh"
+    slow.write_text("#!/bin/bash\nsleep 60\n")
+    slow.chmod(0o755)
+    monkeypatch.setattr(run_eval, "REVIEW_PR", slow)
+    monkeypatch.setattr(run_eval, "_REVIEW_TIMEOUT_SECONDS", 1)
+
+    import time
+
+    start = time.monotonic()
+    result = run_eval.run_review({"pr_url": "https://example/pull/1", "at_sha": "deadbeef"})
+    elapsed = time.monotonic() - start
+
+    assert result["ok"] is False
+    assert result["rc"] == -1
+    assert elapsed < 10  # killed near the 1s ceiling, not after sleep 60

@@ -113,6 +113,32 @@ def run(stream, raw_out: Path, label: str | None = None, cost_out: Path | None =
                 cost = event.get("total_cost_usd")
                 if isinstance(cost, (int, float)):
                     cost_out.write_text(str(cost))
+                # Tokens sidecar (#209): the rate-limit an operator actually hits
+                # is tokens, not dollars, so record the call's total token count
+                # next to the cost, for the caller to sum the same way. Written
+                # parallel to .cost, so a timeout leaves neither.
+                #
+                # Read from modelUsage, not the sibling `usage`: `usage` counts
+                # only the top-level conversation, and every lens spends nearly
+                # all of its tokens inside a subagent, so summing `usage` here
+                # measured the dispatcher and ignored the reviewer. modelUsage
+                # agrees with total_cost_usd, which is how the discrepancy
+                # surfaced. Fields are named explicitly because modelUsage also
+                # carries maxOutputTokens, a ceiling rather than a spend.
+                tokens = 0
+                for per_model in (event.get("modelUsage") or {}).values():
+                    if not isinstance(per_model, dict):
+                        continue
+                    for field in (
+                        "inputTokens",
+                        "outputTokens",
+                        "cacheReadInputTokens",
+                        "cacheCreationInputTokens",
+                    ):
+                        value = per_model.get(field)
+                        if isinstance(value, (int, float)):
+                            tokens += value
+                cost_out.with_suffix(".tokens").write_text(str(int(tokens)))
         rendered = render_event(event)
         if rendered is not None:
             _emit(rendered, label=label)

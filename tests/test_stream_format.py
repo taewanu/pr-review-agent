@@ -139,6 +139,70 @@ def test_run_writes_cost_to_cost_out(tmp_path):
     assert cost.read_text() == "0.446"
 
 
+def test_tokens_sidecar_counts_the_subagent(tmp_path):
+    # A lens spends nearly all of its tokens inside a subagent, and the sibling
+    # `usage` field counts only the top-level conversation. Reading it here
+    # measured the dispatcher and ignored the reviewer: a probe spawning three
+    # subagents summed the same as one. modelUsage agrees with total_cost_usd,
+    # so the two disagreeing is what exposed the gap. Numbers below are a real
+    # result event's, shortened.
+    raw = tmp_path / "raw.txt"
+    cost = tmp_path / "raw.txt.cost"
+    sf.run(
+        _ndjson(
+            {
+                "type": "result",
+                "result": "ok",
+                "total_cost_usd": 0.247,
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 162,
+                    "cache_creation_input_tokens": 12650,
+                    "cache_read_input_tokens": 47671,
+                },
+                "modelUsage": {
+                    "claude-opus-4-8": {
+                        "inputTokens": 6,
+                        "outputTokens": 166,
+                        "cacheReadInputTokens": 53179,
+                        "cacheCreationInputTokens": 27053,
+                        "maxOutputTokens": 64000,
+                        "contextWindow": 1000000,
+                    }
+                },
+            }
+        ),
+        raw,
+        cost_out=cost,
+    )
+    # modelUsage's four spend fields, not usage's 60,487 and not a sum that
+    # swept in maxOutputTokens or contextWindow alongside them.
+    assert (tmp_path / "raw.txt.tokens").read_text() == "80404"
+
+
+def test_tokens_sidecar_sums_every_model(tmp_path):
+    # A call that falls back or delegates to a second model reports one entry
+    # per model; the operator's limit is drawn on by all of them.
+    raw = tmp_path / "raw.txt"
+    cost = tmp_path / "raw.txt.cost"
+    sf.run(
+        _ndjson(
+            {
+                "type": "result",
+                "result": "ok",
+                "total_cost_usd": 0.1,
+                "modelUsage": {
+                    "claude-opus-4-8": {"inputTokens": 10, "outputTokens": 1},
+                    "claude-haiku-4-5": {"inputTokens": 100, "outputTokens": 2},
+                },
+            }
+        ),
+        raw,
+        cost_out=cost,
+    )
+    assert (tmp_path / "raw.txt.tokens").read_text() == "113"
+
+
 def test_run_without_cost_out_writes_nothing(tmp_path):
     raw = tmp_path / "raw.txt"
     sf.run(_ndjson({"type": "result", "result": "ok", "total_cost_usd": 0.446}), raw)
