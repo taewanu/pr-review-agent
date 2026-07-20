@@ -88,6 +88,31 @@ def sum_tokens(scratch_dir: Path) -> int:
     return total
 
 
+# The dials that select which review config runs. REVIEW_MODE and REVIEW_LENSES
+# are orthogonal (ADR 0032 vs ADR 0030): mode sets how each lens runs, the lens
+# set how many. `REVIEW_MODE=combo` with REVIEW_LENSES unset is five lean lenses,
+# not one, so a results file naming only the mode cannot say what it measured.
+# Recording the resolved dials makes each results JSON self-describing.
+REVIEW_CONFIG_VARS = (
+    "REVIEW_MODE",
+    "REVIEW_LENSES",
+    "REVIEW_FANOUT",
+    "REVIEW_MODEL",
+    "LEAN_REVIEW",
+    "LEAN_TOOLS",
+    "LEAN_KEEP_BASE",
+    "SKIP_EDITOR",
+)
+
+
+def review_config_env(environ: dict) -> dict:
+    """The review-selecting env vars that are set, as they reach review-pr.sh.
+    Unset vars are omitted rather than recorded as null: review-pr.sh defaults on
+    absence (size-based routing, the full lens set), so a null would read as a
+    value someone chose."""
+    return {name: environ[name] for name in REVIEW_CONFIG_VARS if environ.get(name)}
+
+
 def should_stop_for_cost(total_cost: float, max_cost: float | None) -> bool:
     """True when a cost cap is set and cumulative spend has reached it. A soft cap:
     checked after each review completes and pays its full cost, so a run can
@@ -401,6 +426,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     n_runs = len(fixtures) * args.repeats
+    config = review_config_env(os.environ)
+    print(
+        "config: "
+        + (
+            " ".join(f"{k}={v}" for k, v in config.items())
+            if config
+            else "none set (review-pr.sh defaults: agentic, all five lenses)"
+        ),
+        file=sys.stderr,
+    )
     cap = (
         f"${args.max_cost}"
         if args.max_cost is not None
@@ -530,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "summary": {
+                        "config": config,
                         "mean_recall": mean_recall,
                         "mean_false_positives": mean_fp,
                         "avg_tokens_per_pr": avg_tokens_per_pr,
