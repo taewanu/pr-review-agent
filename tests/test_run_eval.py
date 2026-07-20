@@ -146,16 +146,17 @@ def test_fixture_recall_all_errored_is_none():
     assert run_eval.fixture_recall([{"error": True}, {"error": True}]) is None
 
 
-def test_precision_fp_is_mean_finding_count():
-    # A clean PR's findings are all false positives; the score is their mean count.
-    verdicts = [{"findings_count": 0}, {"findings_count": 2}]
+def test_precision_fp_is_mean_judged_noise_count():
+    # The score counts judged-noise findings, not every finding: a run whose three
+    # findings were all ruled legitimate scores 0, same as a silent run.
+    verdicts = [{"findings_count": 3, "noise_count": 0}, {"findings_count": 2, "noise_count": 2}]
     assert run_eval.precision_fp(verdicts) == 1.0
 
 
 def test_precision_fp_excludes_errored_runs():
-    # A failed review is dropped, not counted as zero findings (which would flatter
-    # the FP rate): 1 error + 1 run with 2 findings scores 2.0, not 1.0.
-    verdicts = [{"findings_count": 2}, {"error": True}]
+    # A failed review is dropped, not counted as zero noise (which would flatter the
+    # score): 1 error + 1 run with 2 noisy findings scores 2.0, not 1.0.
+    verdicts = [{"findings_count": 2, "noise_count": 2}, {"error": True}]
     assert run_eval.precision_fp(verdicts) == 2.0
 
 

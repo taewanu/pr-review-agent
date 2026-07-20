@@ -105,6 +105,21 @@ REVIEW_CONFIG_VARS = (
 )
 
 
+def summarize_finding(finding: dict) -> dict:
+    """A finding reduced to what a human needs to judge whether it is noise: where
+    it landed and its leading claim. The scratch is deleted after every review, so
+    anything not carried into the results here is lost — and a precision score that
+    is only a count cannot distinguish a noisy reviewer from a fixture that was
+    never clean. The body's first line is the 두괄식 claim sentence by construction
+    (ADR 0010), so it identifies the finding without carrying the whole comment."""
+    body = (finding.get("body") or "").strip()
+    return {
+        "path": finding.get("path"),
+        "line": finding.get("line"),
+        "claim": body.splitlines()[0][:300] if body else "",
+    }
+
+
 def review_config_env(environ: dict) -> dict:
     """The review-selecting env vars that are set, as they reach review-pr.sh.
     Unset vars are omitted rather than recorded as null: review-pr.sh defaults on
@@ -160,18 +175,21 @@ def fixture_recall(verdicts: list[dict]) -> float | None:
 
 
 def precision_fp(verdicts: list[dict]) -> float | None:
-    """Mean posted-finding count for ONE precision fixture (a clean/cosmetic PR).
+    """Mean judged-noise count for ONE precision fixture, so lower is better and 0
+    is ideal.
 
-    Every finding on a PR with nothing substantive to flag is a false-positive
-    proxy, so lower is better and 0 is ideal. This is a proxy, not true precision:
-    it needs no per-finding labels (the whole PR is the negative), but it can only
-    be trusted on genuinely cosmetic PRs where a real finding is implausible.
+    Counts only findings the judge ruled noise, not every finding posted. The
+    count-everything proxy this replaced was wrong in the direction that matters:
+    on two of the five fixtures every finding was verifiably true, so an accurate
+    reviewer scored as a noisy one. Judging per finding also frees the corpus from
+    needing implausibly-clean PRs — a substantive PR works as a fixture, because
+    the question is whether a claim is junk rather than whether the reviewer spoke.
     Errored runs are dropped like in fixture_recall; None if every run errored.
     """
     valid = [verdict for verdict in verdicts if not verdict.get("error")]
     if not valid:
         return None
-    return round(sum(verdict["findings_count"] for verdict in valid) / len(valid), 3)
+    return round(sum(verdict["noise_count"] for verdict in valid) / len(valid), 3)
 
 
 # --- token-spending steps (run by the operator) ------------------------------
@@ -264,6 +282,7 @@ def run_review(fixture: dict) -> dict:
         return {
             "ok": False,
             "findings": [],
+            "diff": "",
             "cost": 0.0,
             "tokens": 0,
             "count": 0,
@@ -277,15 +296,23 @@ def run_review(fixture: dict) -> dict:
     cost = 0.0
     tokens = 0
     scratch: Path | None = None
+    diff = ""
     if payload_path and os.path.exists(payload_path):
         scratch = Path(payload_path).parent
         payload = json.loads(Path(payload_path).read_text())
         findings = payload.get("comments", [])
         cost = sum_cost(scratch)
         tokens = sum_tokens(scratch)
+        # The precision judge grades each finding against the diff it was made on,
+        # and the caller deletes the scratch as soon as this returns, so the diff
+        # has to be carried out with the findings rather than re-fetched.
+        diff_file = scratch / ".pr-review-diff.txt"
+        if diff_file.exists():
+            diff = diff_file.read_text()
     return {
         "ok": proc.returncode == 0 and payload_path is not None,
         "findings": findings,
+        "diff": diff,
         "cost": cost,
         "tokens": tokens,
         "count": int(contract.get("dryrun_count", 0)),
@@ -339,6 +366,55 @@ def judge(fixture: dict, findings: list[dict]) -> dict:
     }
 
 
+def judge_finding_noise(diff: str, finding: dict) -> dict:
+    """Ask the judge model whether one finding is noise, grading it against the diff
+    it was made on. Counting every finding on a "clean" PR as a false positive was
+    wrong: two of the five precision fixtures drew findings that were all verifiably
+    true (a stale `poll.sh` header, a README config list missing a key), so the
+    metric was scoring an accurate reviewer as noisy. Judging findings one at a time
+    lets a substantive PR serve as a precision fixture, since the question becomes
+    "is this particular claim junk" rather than "did the reviewer speak at all".
+
+    The verdict is only comparable across configs if the bar stays fixed, so keep
+    the criteria below stable once set; a moved bar invalidates every earlier number.
+    Spends tokens."""
+    prompt = (
+        "You are grading ONE code-review finding for whether it is noise.\n\n"
+        f"THE DIFF UNDER REVIEW:\n{diff[:60000]}\n\n"
+        "THE FINDING:\n"
+        f"  file: {finding.get('path')}\n"
+        f"  line: {finding.get('line')}\n"
+        f"  body: {finding.get('body')}\n\n"
+        "Rule it NOISE only if one of these holds: the diff contradicts the claim; "
+        "the claim is factually wrong; the code shown already handles what it asks "
+        "for; or it proposes no actionable change (a bare impression). A claim that "
+        "is TRUE is not noise however minor it is, and a claim resting on code "
+        "outside this diff is not noise merely because you cannot see that code — "
+        "rule on it only if the diff itself refutes it.\n"
+        "When you are unsure, answer false. The noise verdict carries the burden of "
+        "proof, so this count is a lower bound on noise; it is compared across "
+        "review configurations, where a consistent bar matters more than a strict "
+        "one.\n\n"
+        "Reply with ONLY a JSON object:\n"
+        '{"noise": true|false, "rationale": "<one line>"}'
+    )
+    proc = subprocess.run(
+        ["claude", "-p", prompt, "--model", JUDGE_MODEL],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return {"noise": None, "rationale": f"judge failed rc={proc.returncode}"}
+    try:
+        verdict = extract_json_object(proc.stdout)
+    except ValueError as exc:
+        return {"noise": None, "rationale": f"unparseable judge reply: {exc}"}
+    return {
+        "noise": bool(verdict.get("noise")),
+        "rationale": str(verdict.get("rationale", "")),
+    }
+
+
 def check_judge() -> bool:
     """Sanity-check the judge before trusting a run: an obviously-matching finding
     must score caught, an obviously-unrelated one must not. Guards against a judge
@@ -370,6 +446,43 @@ def check_judge() -> bool:
     print(
         f"judge check: matching->caught={pos} (want True), "
         f"unrelated->caught={neg} (want False) => {'PASS' if ok else 'FAIL'}",
+        file=sys.stderr,
+    )
+    return ok and check_noise_judge()
+
+
+def check_noise_judge() -> bool:
+    """Sanity-check the precision judge on the failure that motivated it: a true
+    but minor finding must NOT be scored as noise, while a claim the diff refutes
+    must be. A judge biased toward calling everything noise would reproduce the
+    original defect, where an accurate reviewer read as a sloppy one. Spends 2
+    judge calls; returns True if both are correct."""
+    diff = (
+        "diff --git a/example.py b/example.py\n"
+        "@@ -1,3 +1,5 @@\n"
+        " def mean(items):\n"
+        "+    if not items:\n"
+        "+        return 0\n"
+        "     return sum(items) / len(items)\n"
+    )
+    true_minor = {
+        "path": "example.py",
+        "line": 2,
+        "body": "**Returning 0 for an empty list conflates 'no data' with 'average 0'.** "
+        "Callers cannot tell the two apart.",
+    }
+    refuted = {
+        "path": "example.py",
+        "line": 4,
+        "body": "**Guard the empty-list case.** `len(items)` is zero for empty input, "
+        "so this raises ZeroDivisionError.",
+    }
+    minor_noise = judge_finding_noise(diff, true_minor)["noise"]
+    refuted_noise = judge_finding_noise(diff, refuted)["noise"]
+    ok = minor_noise is False and refuted_noise is True
+    print(
+        f"noise judge check: true-but-minor->noise={minor_noise} (want False), "
+        f"diff-refuted->noise={refuted_noise} (want True) => {'PASS' if ok else 'FAIL'}",
         file=sys.stderr,
     )
     return ok
@@ -472,8 +585,22 @@ def main(argv: list[str] | None = None) -> int:
                 verdicts.append({"error": True, "rationale": f"review failed rc={review['rc']}"})
                 label = "ERR"
             elif is_precision:
-                verdicts.append({"findings_count": review["count"]})
-                label = f"findings={review['count']}"
+                graded = [
+                    {
+                        **summarize_finding(f),
+                        **judge_finding_noise(review["diff"], f),
+                    }
+                    for f in review["findings"]
+                ]
+                noise_count = sum(1 for g in graded if g["noise"])
+                verdicts.append(
+                    {
+                        "findings_count": review["count"],
+                        "noise_count": noise_count,
+                        "findings": graded,
+                    }
+                )
+                label = f"findings={review['count']} noise={noise_count}"
             else:
                 verdicts.append(judge(fixture, review["findings"]))
                 label = f"caught={verdicts[-1]['caught']}"
@@ -552,7 +679,7 @@ def main(argv: list[str] | None = None) -> int:
             rec = "ERR " if r["recall"] is None else f"{r['recall']:.2f}"
             print(f"  recall    {rec}  {r['avg_tokens']:>8} tok  ${r['avg_cost']:<7} {r['id']}")
     if precision_results:
-        print(f"mean false-positives/PR: {mean_fp} (lower is better; clean PRs, 0 ideal)")
+        print(f"mean judged-noise findings/PR: {mean_fp} (lower is better; 0 ideal)")
         for r in precision_results:
             fp = "ERR " if r["false_positives"] is None else f"{r['false_positives']:.2f}"
             print(f"  precision {fp}  {r['avg_tokens']:>8} tok  ${r['avg_cost']:<7} {r['id']}")
