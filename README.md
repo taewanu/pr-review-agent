@@ -62,9 +62,9 @@ The background job is invisible and bound to this checkout's working tree, so ke
 
 One file at the repo root:
 
-- **`.env`** (required): repos, GitHub user, poll interval, review concurrency, opt-out label, confidence gate, findings cap. See `templates/.env.example`.
+- **`.env`** (required): which repos to watch, your GitHub user, and the daemon's tunables. Copy `templates/.env.example` and edit it — every key is documented there, which is why this list does not repeat them.
 
-V1 only reviews PRs in repos where you've checked in the `.claude/agents/` and `.claude/commands/` files (forks of this repo have them by default). See [ADR 0004](docs/adr/0004-own-pr-review-default.md).
+Watched repos need nothing checked in. The daemon bundles its own agent and slash-command definitions into each per-PR clone before it reviews ([ADR 0007](docs/adr/0007-operator-bundled-agents.md)); a repo that wants different behaviour can carry its own file at the same path and the bundle leaves it alone.
 
 ### Skip a single PR
 
