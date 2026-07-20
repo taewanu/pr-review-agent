@@ -468,6 +468,38 @@ LENS_RAW_FILES=(
   "$SCRATCH/.pr-review-raw-security.txt"
   "$SCRATCH/.pr-review-raw-tests.txt"
 )
+# ADR 0034: restrict the active lens set via REVIEW_LENSES, a space-separated list
+# of labels (e.g. "default" or "default correctness"). Collapsing to fewer lenses
+# is the one lever that cuts review cost proportionally, trading the recall that
+# independent reads buy (ADR 0022/0023): measured, one lens misses the hard
+# co-varying-state class the five catch. Unset keeps all five (ADR 0023 default).
+# Filtering the three parallel arrays together preserves their index alignment;
+# the merge and gate are already lens-count-agnostic (ADR 0023 Decision 3).
+REVIEW_LENSES="$(resolve_tunable REVIEW_LENSES "$SCRIPT_DIR/../.env")"
+if [[ -n "${REVIEW_LENSES:-}" ]]; then
+  _sel_cmds=()
+  _sel_labels=()
+  _sel_raws=()
+  for _i in "${!LENS_LABELS[@]}"; do
+    for _want in $REVIEW_LENSES; do
+      if [[ "${LENS_LABELS[$_i]}" == "$_want" ]]; then
+        _sel_cmds+=("${LENS_COMMANDS[$_i]}")
+        _sel_labels+=("${LENS_LABELS[$_i]}")
+        _sel_raws+=("${LENS_RAW_FILES[$_i]}")
+        break
+      fi
+    done
+  done
+  if [[ ${#_sel_labels[@]} -eq 0 ]]; then
+    log_err "REVIEW_LENSES='$REVIEW_LENSES' matched no known lens (default correctness perf security tests)"
+    exit 1
+  fi
+  LENS_COMMANDS=("${_sel_cmds[@]}")
+  LENS_LABELS=("${_sel_labels[@]}")
+  LENS_RAW_FILES=("${_sel_raws[@]}")
+  log_info "REVIEW_LENSES active: ${LENS_LABELS[*]}"
+fi
+
 # The editor agent reads the draft from cwd by basename (like the diff), so the
 # author payload lives in the scratch under a bare name (#133).
 AUTHOR_BASENAME=".pr-review-author.json"
@@ -636,6 +668,32 @@ log_info "model: ${REVIEW_MODEL}"
 # bounded by its own REVIEW_AGENT_TIMEOUT; the slot is released in the same
 # subshell that acquired it, so a killed lens's slot is freed immediately
 # rather than waiting for stale-reclaim.
+# ADR 0034: REVIEW_MODE picks how each lens runs, orthogonally to REVIEW_LENSES
+# picking how many. `agentic` (the default, unchanged) dispatches a subagent per
+# lens; `direct` runs the lens in the process that already isolates it, dropping
+# the subagent layer that only forwarded stdout. The two dials are independent:
+# `direct` with REVIEW_LENSES unset is five direct lenses, not one.
+#
+# The mode deliberately touches nothing else. An earlier draft also lowered
+# CONFIDENCE_THRESHOLD here, which silently overrode the operator's own .env
+# value and made two modes incomparable in measurement: the cheaper mode was
+# scored behind a looser gate than the one it was being compared against.
+REVIEW_MODE="$(resolve_tunable REVIEW_MODE "$SCRIPT_DIR/../.env")"
+case "${REVIEW_MODE:-agentic}" in
+  direct)
+    DIRECT_REVIEW=1
+    ;;
+  agentic | "")
+    DIRECT_REVIEW=0
+    ;;
+  *)
+    log_err "REVIEW_MODE='$REVIEW_MODE' is not a known mode (agentic direct)"
+    exit 1
+    ;;
+esac
+export DIRECT_REVIEW
+[[ -n "${REVIEW_MODE:-}" ]] && log_info "review mode: ${REVIEW_MODE}"
+
 lens_i=0
 lens_count="${#LENS_COMMANDS[@]}"
 lens_pids=()
@@ -653,15 +711,50 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
     # bypassing stream_format.py's labeling and flooding the daemon log
     # unlabeled; it goes to a per-lens sidecar file instead, so nothing is
     # silently lost but the primary log stays legible.
-    run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-      claude -p "$lens_cmd $PR_URL --diff $NUMBERED_BASENAME" \
-      --model "$REVIEW_MODEL" \
-      --output-format stream-json --verbose \
-      2>"$lens_raw.stderr" |
-      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
-        --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
-        --cost-out "$lens_raw.cost" ||
-      rc=$?
+    if [[ "${DIRECT_REVIEW:-0}" -eq 1 ]]; then
+      # ADR 0034: run the lens in this process instead of through a subagent. The
+      # slash command an agentic lens invokes does nothing but dispatch one
+      # subagent and forward its stdout, so the parent's harness load buys no
+      # isolation the separate process does not already give. The agent's own body
+      # (yaml frontmatter stripped) is appended to the base prompt, keeping the
+      # investigation scaffolding the verify step needs, and slash commands are
+      # disabled because the prompt below IS the instruction: a dispatch command
+      # would re-enter the subagent path this mode exists to skip.
+      direct_sys="$SCRATCH/.pr-review-direct-sys-$lens_label.md"
+      awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
+        ".claude/agents/review-agent-$lens_label.md" >"$direct_sys"
+      # The diff goes by path, not inlined: inlining it and saying "reason over
+      # this" made the model treat the context as complete and skip opening the
+      # callers, which is the verify step's whole substance (ADR 0022).
+      direct_prompt="$SCRATCH/.pr-review-direct-prompt-$lens_label.txt"
+      {
+        printf 'Review this PR per your instructions and emit the JSON payload.\n'
+        printf 'The line-numbered diff is at: %s\n' "$NUMBERED_BASENAME"
+        printf 'Read it, then investigate the surrounding code with your tools '
+        printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
+      } >"$direct_prompt"
+      run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
+        claude -p --append-system-prompt-file "$direct_sys" \
+        --model "$REVIEW_MODEL" \
+        --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
+        --disable-slash-commands \
+        --output-format stream-json --verbose <"$direct_prompt" \
+        2>"$lens_raw.stderr" |
+        python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
+          --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
+          --cost-out "$lens_raw.cost" ||
+        rc=$?
+    else
+      run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
+        claude -p "$lens_cmd $PR_URL --diff $NUMBERED_BASENAME" \
+        --model "$REVIEW_MODEL" \
+        --output-format stream-json --verbose \
+        2>"$lens_raw.stderr" |
+        python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
+          --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
+          --cost-out "$lens_raw.cost" ||
+        rc=$?
+    fi
     release_claude_slot "$slot"
     exit "$rc"
   ) &
@@ -742,15 +835,45 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
     rc=0
     # See the lens loop above: claude's own stderr goes to a sidecar file, not
     # the primary log.
-    run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
-      claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" \
-      --model "$REVIEW_MODEL" \
-      --output-format stream-json --verbose \
-      2>"$EDIT_RAW_FILE.stderr" |
-      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
-        --label "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" \
-        --cost-out "$EDIT_RAW_FILE.cost" ||
-      rc=$?
+    if [[ "${DIRECT_REVIEW:-0}" -eq 1 ]]; then
+      # The editor runs in the same shape as the lenses under this mode, and for
+      # the same reason: its slash command only dispatches the editor subagent.
+      # It keeps its tools because ADR 0016's verify-at-HEAD step needs them, and
+      # because a tools-free editor could not reliably emit its decisions JSON on
+      # a complex draft.
+      editor_sys="$SCRATCH/.pr-review-direct-sys-editor.md"
+      awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
+        ".claude/agents/review-agent-editor.md" >"$editor_sys"
+      editor_prompt="$SCRATCH/.pr-review-direct-editor-prompt.txt"
+      {
+        printf 'Edit this draft review and emit your decisions JSON per your instructions.\n\n'
+        printf '=== DRAFT PAYLOAD (findings to keep/drop/rewrite) ===\n'
+        cat "$AUTHOR_BASENAME"
+        printf '\n\n=== DIFF (line-numbered) ===\n'
+        cat "$NUMBERED_BASENAME"
+      } >"$editor_prompt"
+      run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
+        claude -p --append-system-prompt-file "$editor_sys" \
+        --model "$REVIEW_MODEL" \
+        --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
+        --disable-slash-commands \
+        --output-format stream-json --verbose <"$editor_prompt" \
+        2>"$EDIT_RAW_FILE.stderr" |
+        python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
+          --label "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" \
+          --cost-out "$EDIT_RAW_FILE.cost" ||
+        rc=$?
+    else
+      run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
+        claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" \
+        --model "$REVIEW_MODEL" \
+        --output-format stream-json --verbose \
+        2>"$EDIT_RAW_FILE.stderr" |
+        python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
+          --label "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" \
+          --cost-out "$EDIT_RAW_FILE.cost" ||
+        rc=$?
+    fi
     release_claude_slot "$slot"
     exit "$rc"
   ) || edit_rc=$?
