@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — register the launchd job for poll.sh. Re-runnable; reinstall
+# install.sh — register the launchd job for run.sh. Re-runnable; reinstall
 # replaces the existing plist and reloads.
 
 set -euo pipefail
