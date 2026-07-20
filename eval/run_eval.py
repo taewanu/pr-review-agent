@@ -273,7 +273,16 @@ def run_review(fixture: dict) -> dict:
         # rather than letting the eval stall indefinitely.
         timed_out = True
         _terminate_active_child()
-        stdout, stderr = proc.communicate()
+        # SIGTERM is a request. The case this ceiling exists for is a claude that
+        # already ignored its own alarm, so give the group a few seconds to go
+        # and then SIGKILL it; an unbounded communicate() here would reproduce
+        # the very hang the ceiling was added to cut.
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            stdout, stderr = proc.communicate()
     finally:
         if proc.poll() is None:
             _terminate_active_child()
@@ -448,7 +457,11 @@ def check_judge() -> bool:
         f"unrelated->caught={neg} (want False) => {'PASS' if ok else 'FAIL'}",
         file=sys.stderr,
     )
-    return ok and check_noise_judge()
+    # Both judges are checked on every invocation, and the recall result does not
+    # short-circuit the noise one: a failing recall judge is the case where you
+    # most want to know whether the other is also broken.
+    noise_ok = check_noise_judge()
+    return ok and noise_ok
 
 
 def check_noise_judge() -> bool:
@@ -593,14 +606,24 @@ def main(argv: list[str] | None = None) -> int:
                     for f in review["findings"]
                 ]
                 noise_count = sum(1 for g in graded if g["noise"])
-                verdicts.append(
-                    {
-                        "findings_count": review["count"],
-                        "noise_count": noise_count,
-                        "findings": graded,
-                    }
-                )
+                # A judge that failed or replied unparseably returns noise=None,
+                # which is falsy and would otherwise be summed as "not noise" —
+                # flattering the score in exactly the direction this metric was
+                # rewritten to stop. Mark the run errored instead, so precision_fp
+                # drops it the way it drops a review that never completed.
+                ungraded = sum(1 for g in graded if g["noise"] is None)
+                verdict = {
+                    "findings_count": review["count"],
+                    "noise_count": noise_count,
+                    "findings": graded,
+                }
+                if ungraded:
+                    verdict["error"] = True
+                    verdict["rationale"] = f"{ungraded} finding(s) the judge could not grade"
+                verdicts.append(verdict)
                 label = f"findings={review['count']} noise={noise_count}"
+                if ungraded:
+                    label += f" ({ungraded} ungraded, run excluded)"
             else:
                 verdicts.append(judge(fixture, review["findings"]))
                 label = f"caught={verdicts[-1]['caught']}"

@@ -52,15 +52,25 @@ the lenses exist).
 
 ## precision_fixtures.jsonl
 
-Cosmetic merged PRs (version bumps, one-line docs) where nothing substantive is
-there to flag, so **every posted finding is a false positive**. A precision
-fixture carries no `bug` and no `at_sha`; the harness reviews it at the PR's
-current HEAD via plain `review-pr.sh --dry-run` (`gh pr diff`, which works on a
-merged PR where a `base...merge_sha` compare would be empty). The score is the
-mean posted-finding count per PR (lower is better, 0 ideal) — a proxy, not true
-precision: it needs no per-finding labels because the whole PR is the negative,
-but it is only trustworthy on genuinely cosmetic PRs where a real finding is
-implausible. Run it the same way, pointing `--fixtures` at this file.
+Merged PRs reviewed for noise rather than for a known bug. A precision fixture
+carries no `bug` and no `at_sha`; the harness reviews it at the PR's current HEAD
+via plain `review-pr.sh --dry-run` (`gh pr diff`, which works on a merged PR
+where a `base...merge_sha` compare would be empty). Run it the same way, pointing
+`--fixtures` at this file.
+
+**The score counts findings a judge ruled noise, not findings posted.** Each
+finding is graded against the diff it was made on: noise only if the diff
+refutes it, it is factually wrong, the code already handles it, or it proposes
+no actionable change. A true claim is not noise however minor, and a claim
+resting on code outside the diff is not noise merely because the judge cannot
+see that code. Uncertain calls resolve to "not noise", so the score is a lower
+bound, kept comparable across configs by holding that bar fixed.
+
+Counting every finding instead was the original design and it ran backwards: two
+of these five fixtures drew findings that were all verifiable (a stale `poll.sh`
+header, a README config list missing a key), so the most accurate reviewer
+scored as the noisiest. Grading per finding also means a fixture no longer has
+to be implausibly clean to be usable.
 
 | field | meaning |
 |---|---|
