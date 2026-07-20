@@ -1085,3 +1085,32 @@ edit_status_comment() {
   done
   log_info "status comment edit failed after 3 attempts (comment ${comment_id})"
 }
+
+# route_review_mode <diff-file>
+# Auto-router for REVIEW_MODE=auto (ADR 0032, #209): print "lean" for a TINY diff,
+# else "combo". Size is only a weak proxy for difficulty, and the real distinction
+# is difficulty, not size: 152 is tiny AND easy (lean is right), but 165 is
+# normal-sized AND a hard cross-component bug (lean would miss it, combo catches it).
+# So this routes only clearly-trivial diffs to lean and defaults everything else to
+# combo, which catches investigation-type hard bugs at ~1/3 full-agentic cost, so
+# over-routing to it is a cost cost, not a recall cost. A real difficulty classifier
+# (a cheap-model pass, CR's cascade shape) is the next step; this size gate is the
+# conservative placeholder. Thresholds are env-tunable and UNCALIBRATED.
+route_review_mode() {
+  local diff_file="$1"
+  local max_lines="${LEAN_MAX_DIFF_LINES:-40}"
+  local max_files="${LEAN_MAX_FILES:-2}"
+  [[ -r "$diff_file" ]] || {
+    printf 'combo'
+    return 0
+  }
+  local added files
+  # `^+[^+]` counts added lines while skipping the `+++` new-file header.
+  added="$(grep -c '^+[^+]' "$diff_file" 2>/dev/null || printf 0)"
+  files="$(grep -c '^diff --git ' "$diff_file" 2>/dev/null || printf 0)"
+  if [[ "$added" -le "$max_lines" && "$files" -le "$max_files" ]]; then
+    printf 'lean'
+  else
+    printf 'combo'
+  fi
+}
