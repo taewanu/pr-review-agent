@@ -714,7 +714,7 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
     # silently lost but the primary log stays legible.
     if [[ "${SINGLE_AGENT_REVIEW:-0}" -eq 1 ]]; then
       # ADR 0034: run the lens in this process instead of through a subagent. The
-      # slash command an agentic lens invokes does nothing but dispatch one
+      # slash command a subagent-mode lens invokes does nothing but dispatch one
       # subagent and forward its stdout, so the parent's harness load buys no
       # isolation the separate process does not already give. The agent's own body
       # (yaml frontmatter stripped) is appended to the base prompt, keeping the
