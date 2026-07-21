@@ -782,65 +782,27 @@ write_heartbeat() {
 # outlive both the failing review process and a daemon restart, and because both
 # run shapes (foreground run.sh, launchd KeepAlive) then honour it with no extra
 # wiring.
-#
-# Override $PR_REVIEW_STATE_DIR for tests.
 _session_pause_path() {
   printf '%s/session-pause.epoch' "$(_state_dir)"
 }
 
-# Fallback pause when the sentinel carries no readable reset time. One hour
-# bounds both errors: it collapses a retry storm that otherwise runs every cycle
-# for hours, while a pause that overshoots an already-passed reset costs at most
-# one hour of review latency.
-SESSION_PAUSE_FALLBACK_SECONDS=3600
+# Fallback pause when merge_findings.py could not resolve a reset time from the
+# sentinel. One hour bounds both errors: it collapses a retry storm that
+# otherwise runs every cycle for hours, while a pause that overshoots an
+# already-passed reset costs at most one hour of review latency. Overridable
+# like every other tunable in this file.
+SESSION_PAUSE_FALLBACK_SECONDS="${SESSION_PAUSE_FALLBACK_SECONDS:-3600}"
 
-# _session_pause_deadline <reset-text> <now-epoch>
-# Resolves the sentinel's human reset time ("5pm", "3:30am") to an absolute epoch
-# second, falling back to now + SESSION_PAUSE_FALLBACK_SECONDS when it carries no
-# clock time. The time is read as local: the quota message is printed by the same
-# machine the daemon runs on. Python does the date arithmetic because `date`
-# differs between BSD and GNU on exactly the flags this needs.
-_SESSION_PAUSE_PY='
-import datetime as dt, re, sys
-text, now_epoch = sys.argv[1], int(sys.argv[2])
-now = dt.datetime.fromtimestamp(now_epoch)
-m = re.search(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?", text, re.IGNORECASE)
-if m:
-    hour = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "p" else 0)
-    minute = int(m.group(2) or 0)
-else:
-    m = re.search(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)", text)
-    hour, minute = (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
-if not (0 <= hour <= 23 and 0 <= minute <= 59):
-    raise SystemExit(1)
-reset = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-# A reset time that already reads as past belongs to tomorrow: the window rolls.
-if reset <= now:
-    reset += dt.timedelta(days=1)
-# A minute of slack, so the first cycle back does not race the reset itself.
-print(int(reset.timestamp()) + 60)
-'
-
-_session_pause_deadline() {
-  local resolved
-  resolved="$(python3 -c "$_SESSION_PAUSE_PY" "$1" "$2" 2>/dev/null || true)"
-  if [[ "$resolved" =~ ^[0-9]+$ ]]; then
-    printf '%s' "$resolved"
-  else
-    printf '%s' "$(($2 + SESSION_PAUSE_FALLBACK_SECONDS))"
-  fi
-}
-
-# session_pause_write <reset-text>
-# Records the pause and prints its deadline epoch. An absolute epoch is stored,
-# never the sentinel's text, so the reader compares two numbers instead of
-# re-parsing a human time string.
+# session_pause_write [deadline-epoch]
+# Records the pause and prints the deadline it stored. merge_findings.py resolves
+# the sentinel's reset time, so an empty or non-numeric argument means it could
+# not, and the fixed fallback applies.
 session_pause_write() {
-  local now deadline dir
-  now="$(date +%s)"
-  deadline="$(_session_pause_deadline "${1:-}" "$now")"
-  dir="$(_state_dir)"
-  mkdir -p "$dir"
+  local deadline="${1:-}"
+  if ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+    deadline="$(($(date +%s) + SESSION_PAUSE_FALLBACK_SECONDS))"
+  fi
+  mkdir -p "$(_state_dir)"
   printf '%s\n' "$deadline" >"$(_session_pause_path)"
   printf '%s\n' "$deadline"
 }

@@ -15,6 +15,7 @@ single-sourced."""
 import difflib
 import re
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # daemon/ is not a package and this runs by path, so add its own dir before
@@ -74,6 +75,44 @@ def session_limit_reset(raw: str) -> str | None:
         return None
     reset = _SESSION_LIMIT_RESET_RE.search(text)
     return reset.group("when").strip() if reset else ""
+
+
+# Local time throughout: the quota message is printed by the same machine the
+# daemon runs on. Matches `5pm`, `3:30 a.m.`, and 24-hour `23:15`.
+_CLOCK_12H_RE = re.compile(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?", re.IGNORECASE)
+_CLOCK_24H_RE = re.compile(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)")
+# So the first cycle back does not race the reset itself.
+_RESET_SLACK_SECONDS = 60
+
+
+def session_limit_deadline(reset_text: str, now: datetime) -> int | None:
+    """Resolve a sentinel's human reset time to an absolute epoch second, or None
+    when it carries no readable clock time and the caller should fall back to a
+    fixed backoff.
+
+    Resolving here rather than in the shell keeps the parsing beside the sentinel
+    matcher that produced the text, under the same tests. `date` differs between
+    BSD and GNU on exactly the flags this needs, which is the shell's problem to
+    avoid, not to work around."""
+    match = _CLOCK_12H_RE.search(reset_text)
+    if match:
+        # A 12-hour clock has no 13th hour; reading one as 13:00 would invent a
+        # deadline out of a string nobody wrote.
+        if not 1 <= int(match.group(1)) <= 12:
+            return None
+        hour = int(match.group(1)) % 12 + (12 if match.group(3).lower() == "p" else 0)
+        minute = int(match.group(2) or 0)
+    elif match := _CLOCK_24H_RE.search(reset_text):
+        hour, minute = int(match.group(1)), int(match.group(2))
+    else:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    reset = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # A reset time that already reads as past belongs to tomorrow: the window rolls.
+    if reset <= now:
+        reset += timedelta(days=1)
+    return int(reset.timestamp()) + _RESET_SLACK_SECONDS
 
 
 def _merge_summaries(summaries: list[str]) -> str:
@@ -266,11 +305,14 @@ def main() -> int:
     except ExtractError as exc:
         print(f"category={exc.category}", file=sys.stderr)
         if exc.category == SESSION_LIMIT_CATEGORY:
-            # Second machine-readable line, so review-pr.sh can pause until the
-            # reset rather than re-parsing the human message. Empty value means
-            # the sentinel was there but its time was not readable; the caller
-            # falls back to a fixed interval.
-            print(f"session_limit_reset={session_limit_reset(raws[0]) or ''}", file=sys.stderr)
+            # Second machine-readable line, so review-pr.sh pauses by comparing
+            # two integers. Empty value means the sentinel was there but its time
+            # was not readable; the caller falls back to a fixed interval.
+            deadline = session_limit_deadline(session_limit_reset(raws[0]) or "", datetime.now())
+            print(
+                f"session_limit_deadline={deadline if deadline is not None else ''}",
+                file=sys.stderr,
+            )
         print(f"merge_findings: {exc}", file=sys.stderr)
         return 1
     print(merged.model_dump_json())

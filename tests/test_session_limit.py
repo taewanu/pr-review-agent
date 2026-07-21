@@ -15,10 +15,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -152,15 +154,61 @@ def test_captured_session_limit_log_pauses_where_a_parse_failure_does_not(tmp_pa
     broken = _run_merge(tmp_path / "broken", PARSE_FAILURE)
     assert limited.returncode == 1 and broken.returncode == 1
     assert "category=session-limit" in limited.stderr
-    assert "session_limit_reset=5pm" in limited.stderr
+    assert re.search(r"session_limit_deadline=\d+", limited.stderr)
     assert "category=all-lenses-failed" in broken.stderr
-    assert "session_limit_reset=" not in broken.stderr
+    assert "session_limit_deadline=" not in broken.stderr
 
 
-def test_unreadable_reset_still_reports_the_category_with_an_empty_time(tmp_path: Path):
+def test_unreadable_reset_still_reports_the_category_with_an_empty_deadline(tmp_path: Path):
     r = _run_merge(tmp_path, "You've hit your session limit")
     assert "category=session-limit" in r.stderr
-    assert "session_limit_reset=\n" in r.stderr
+    assert "session_limit_deadline=\n" in r.stderr
+
+
+# --- reset time to deadline ------------------------------------------------
+
+
+def _at(hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 7, 21, hour, minute, 0)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_hour", "expected_minute"),
+    [
+        ("5pm", 17, 0),
+        ("5 PM", 17, 0),
+        ("3:30am", 3, 30),
+        ("3:30 a.m.", 3, 30),
+        ("23:15", 23, 15),
+        ("12am", 0, 0),
+        ("12pm", 12, 0),
+    ],
+)
+def test_clock_forms_resolve(text: str, expected_hour: int, expected_minute: int):
+    now = _at(1)
+    deadline = merge_findings.session_limit_deadline(text, now)
+    assert deadline is not None
+    landed = datetime.fromtimestamp(deadline - 60)
+    assert (landed.hour, landed.minute) == (expected_hour, expected_minute)
+
+
+@pytest.mark.parametrize("text", ["", "soon", "later today", "25:00", "13pm"])
+def test_unreadable_times_return_none_so_the_caller_falls_back(text: str):
+    assert merge_findings.session_limit_deadline(text, _at(1)) is None
+
+
+def test_a_reset_already_past_rolls_to_tomorrow():
+    now = _at(18)
+    deadline = merge_findings.session_limit_deadline("5pm", now)
+    assert deadline is not None
+    assert datetime.fromtimestamp(deadline - 60).day == now.day + 1
+
+
+def test_the_deadline_carries_slack_past_the_reset_itself():
+    # Resuming exactly at the reset races it; a minute of slack is deliberate.
+    now = _at(1)
+    deadline = merge_findings.session_limit_deadline("5pm", now)
+    assert deadline == int(_at(17).timestamp()) + 60
 
 
 # --- pause file --------------------------------------------------------------
@@ -182,7 +230,7 @@ def _pause_file(state_dir: Path) -> Path:
 
 
 def test_pause_round_trip_stores_an_epoch_and_reads_back_active(tmp_path: Path):
-    r = _sh(tmp_path, 'session_pause_write "5pm"')
+    r = _sh(tmp_path, f"session_pause_write {int(time.time()) + 900}")
     assert r.returncode == 0
     written = r.stdout.strip()
     assert written.isdigit()
@@ -192,16 +240,38 @@ def test_pause_round_trip_stores_an_epoch_and_reads_back_active(tmp_path: Path):
     assert back.stdout.strip() == written
 
 
-def test_unreadable_reset_falls_back_to_the_bounded_interval(tmp_path: Path):
+def test_an_absent_deadline_falls_back_to_the_bounded_interval(tmp_path: Path):
     r = _sh(tmp_path, 'session_pause_write ""')
     ahead = int(r.stdout.strip()) - int(time.time())
     assert 3500 < ahead <= 3600
 
 
-def test_a_parsed_reset_lands_within_the_next_day(tmp_path: Path):
+def test_a_non_numeric_deadline_also_falls_back(tmp_path: Path):
+    # merge_findings.py emits an empty value it could not resolve, but the shell
+    # must not store junk it was handed either.
     r = _sh(tmp_path, 'session_pause_write "5pm"')
     ahead = int(r.stdout.strip()) - int(time.time())
-    assert 0 < ahead <= 24 * 3600 + 120
+    assert 3500 < ahead <= 3600
+
+
+def test_the_fallback_interval_is_operator_overridable(tmp_path: Path):
+    env = os.environ.copy()
+    env["PR_REVIEW_STATE_DIR"] = str(tmp_path)
+    env["SESSION_PAUSE_FALLBACK_SECONDS"] = "120"
+    r = subprocess.run(
+        ["bash", "-c", f'source {LIB}; session_pause_write ""'],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    ahead = int(r.stdout.strip()) - int(time.time())
+    assert 60 < ahead <= 120
+
+
+def test_a_resolved_deadline_is_stored_verbatim(tmp_path: Path):
+    deadline = int(time.time()) + 4242
+    r = _sh(tmp_path, f"session_pause_write {deadline}")
+    assert int(r.stdout.strip()) == deadline
 
 
 def test_passed_pause_reads_inactive_and_clears_the_file(tmp_path: Path):

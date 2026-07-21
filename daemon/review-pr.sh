@@ -132,6 +132,11 @@ STATUS_DONE=0
 # into the failed status head-line's reason (#180).
 LAST_FAILURE_CATEGORY=""
 
+# Deadline epoch of a session-limit pause, set only on that failure (#231). The
+# failed status comment reads it so the author sees when polling resumes rather
+# than the generic next-cycle retry.
+STATUS_PAUSE_UNTIL=""
+
 # Per-PR lock path (#67); set once acquired, released by cleanup().
 LOCK_FILE=""
 
@@ -189,7 +194,13 @@ flip_status_failed() {
   [[ -n "${STATUS_COMMENT_ID:-}" ]] || return 0
   local reason failed_head failed_block failed_body
   reason="$(status_failure_reason "${LAST_FAILURE_CATEGORY:-unknown}" || true)"
-  failed_head="⚠️ Review failed for $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID"), will retry next cycle"
+  # "next cycle" is a promise the daemon cannot keep while polling is paused, so
+  # a session-limit failure names the resume time instead (#231).
+  if [[ -n "${STATUS_PAUSE_UNTIL:-}" ]]; then
+    failed_head="⚠️ Review paused for $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID"), retrying after $(format_clock_time "$STATUS_PAUSE_UNTIL")"
+  else
+    failed_head="⚠️ Review failed for $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID"), will retry next cycle"
+  fi
   # Reason rides the body-block slot as a blockquote, where a clean review's
   # verdict sits, so the failed comment keeps the Reviewed comment's rhythm (#180).
   failed_block=""
@@ -214,13 +225,13 @@ extract_category() {
   [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
 }
 
-# Parse the `session_limit_reset=<time>` second stderr line merge_findings.py
+# Parse the `session_limit_deadline=<epoch>` second stderr line merge_findings.py
 # emits alongside a session-limit category (#231). Empty means the sentinel was
 # there but its reset time was unreadable, which the pause treats as its fixed
-# fallback. `-f2-` keeps a time that itself contains `=`.
-extract_session_limit_reset() {
+# fallback.
+extract_session_limit_deadline() {
   local stderr_path="$1"
-  grep -m1 '^session_limit_reset=' "$stderr_path" 2>/dev/null | cut -d= -f2- || true
+  grep -m1 '^session_limit_deadline=' "$stderr_path" 2>/dev/null | cut -d= -f2- || true
 }
 
 # Parse the `truncated_count=<n>` line merge_findings.py emits on a successful
@@ -399,6 +410,18 @@ OWN_PR=0
 if [[ -n "$PR_AUTHOR" && "$PR_AUTHOR" == "$OPERATOR" ]]; then
   OWN_PR=1
   log_info "own PR (author == operator '$OPERATOR'): auto-submitting a COMMENT review"
+fi
+
+# A pause written by whichever PR tripped the quota this cycle (#231). poll.sh
+# gates the next cycle, but the PRs already dispatched in this one would each
+# clone, run every lens into the same wall, and flip their own status comment.
+# Checked before the status comment goes live so a paused PR churns nothing;
+# non-zero, so the state file does not advance and the PR is genuinely re-reviewed
+# after the reset. A review already past this point still finishes into the wall:
+# stopping it would mean killing live subprocesses, which buys one comment flip.
+if PAUSE_DEADLINE="$(session_pause_active)"; then
+  log_info "session limit pause active until $(format_clock_time "$PAUSE_DEADLINE"), skipping review"
+  exit 1
 fi
 
 # Take the per-PR lock before any work, skipping if a review of this PR is
@@ -816,8 +839,11 @@ if ! python3 "$SCRIPT_DIR/merge_findings.py" --no-style "${LENS_RAW_FILES[@]}" \
   if [[ "$MERGE_CATEGORY" == "session-limit" ]]; then
     # Every lens hit the subscription quota, so every PR this cycle and the next
     # would hit the same wall; pause polling until the reset instead (#231).
-    PAUSE_UNTIL="$(session_pause_write "$(extract_session_limit_reset "$EXTRACT_ERR")")"
+    PAUSE_UNTIL="$(session_pause_write "$(extract_session_limit_deadline "$EXTRACT_ERR")")"
     log_info "session limit hit, pausing polling until $(format_clock_time "$PAUSE_UNTIL")"
+    # Carried into the failed status comment so the author reads the resume time,
+    # not the head-line's default promise of a retry next cycle.
+    STATUS_PAUSE_UNTIL="$PAUSE_UNTIL"
   fi
   log_failure "$MERGE_CATEGORY" "$PR_URL" "$HEAD_OID" "merge_findings.py exited non-zero"
   exit 1
