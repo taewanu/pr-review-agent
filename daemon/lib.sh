@@ -776,6 +776,103 @@ write_heartbeat() {
   fi
 }
 
+# Session-limit backoff (#231). When every lens hits the subscription quota, the
+# next cycle cannot pass either, so review-pr.sh records a deadline here and
+# poll.sh honours it before doing any work. A file, because the pause must
+# outlive both the failing review process and a daemon restart, and because both
+# run shapes (foreground run.sh, launchd KeepAlive) then honour it with no extra
+# wiring.
+#
+# Override $PR_REVIEW_STATE_DIR for tests.
+_session_pause_path() {
+  printf '%s/session-pause.epoch' "$(_state_dir)"
+}
+
+# Fallback pause when the sentinel carries no readable reset time. One hour
+# bounds both errors: it collapses a retry storm that otherwise runs every cycle
+# for hours, while a pause that overshoots an already-passed reset costs at most
+# one hour of review latency.
+SESSION_PAUSE_FALLBACK_SECONDS=3600
+
+# _session_pause_deadline <reset-text> <now-epoch>
+# Resolves the sentinel's human reset time ("5pm", "3:30am") to an absolute epoch
+# second, falling back to now + SESSION_PAUSE_FALLBACK_SECONDS when it carries no
+# clock time. The time is read as local: the quota message is printed by the same
+# machine the daemon runs on. Python does the date arithmetic because `date`
+# differs between BSD and GNU on exactly the flags this needs.
+_SESSION_PAUSE_PY='
+import datetime as dt, re, sys
+text, now_epoch = sys.argv[1], int(sys.argv[2])
+now = dt.datetime.fromtimestamp(now_epoch)
+m = re.search(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?", text, re.IGNORECASE)
+if m:
+    hour = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "p" else 0)
+    minute = int(m.group(2) or 0)
+else:
+    m = re.search(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)", text)
+    hour, minute = (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
+if not (0 <= hour <= 23 and 0 <= minute <= 59):
+    raise SystemExit(1)
+reset = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+# A reset time that already reads as past belongs to tomorrow: the window rolls.
+if reset <= now:
+    reset += dt.timedelta(days=1)
+# A minute of slack, so the first cycle back does not race the reset itself.
+print(int(reset.timestamp()) + 60)
+'
+
+_session_pause_deadline() {
+  local resolved
+  resolved="$(python3 -c "$_SESSION_PAUSE_PY" "$1" "$2" 2>/dev/null || true)"
+  if [[ "$resolved" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$resolved"
+  else
+    printf '%s' "$(($2 + SESSION_PAUSE_FALLBACK_SECONDS))"
+  fi
+}
+
+# session_pause_write <reset-text>
+# Records the pause and prints its deadline epoch. An absolute epoch is stored,
+# never the sentinel's text, so the reader compares two numbers instead of
+# re-parsing a human time string.
+session_pause_write() {
+  local now deadline dir
+  now="$(date +%s)"
+  deadline="$(_session_pause_deadline "${1:-}" "$now")"
+  dir="$(_state_dir)"
+  mkdir -p "$dir"
+  printf '%s\n' "$deadline" >"$(_session_pause_path)"
+  printf '%s\n' "$deadline"
+}
+
+# session_pause_active
+# Returns 0 and prints the deadline epoch while a recorded pause is still in the
+# future; returns 1 otherwise, clearing a passed or unreadable file so a stale
+# deadline can never wedge polling.
+session_pause_active() {
+  local path deadline now
+  path="$(_session_pause_path)"
+  [[ -r "$path" ]] || return 1
+  read -r deadline <"$path" 2>/dev/null || deadline=""
+  now="$(date +%s)"
+  if [[ "$deadline" =~ ^[0-9]+$ && "$deadline" -gt "$now" ]]; then
+    printf '%s\n' "$deadline"
+    return 0
+  fi
+  rm -f "$path"
+  return 1
+}
+
+# format_clock_time <epoch>
+# Renders an epoch as a local HH:MM for a log line. Tries the BSD flag then the
+# GNU one, and prints the raw epoch if neither works, so a log line is never lost
+# to a date-flag difference.
+format_clock_time() {
+  date -r "$1" '+%H:%M' 2>/dev/null ||
+    date -d "@$1" '+%H:%M' 2>/dev/null ||
+    printf '%s' "$1"
+}
+
 # bundle_operator_agents <scratch-dir>
 # Copies operator's agent + slash-command files from this repo's .claude/ into
 # the scratch clone's .claude/ so claude -p (which loads from cwd) finds them
@@ -1006,6 +1103,11 @@ status_failure_reason() {
       ;;
     pending-conflict)
       printf 'An earlier review is still pending on this PR.'
+      ;;
+    session-limit)
+      # The one failure whose cause the author can place: an external quota, not
+      # a defect in this PR or in the pipeline, with the retry already scheduled.
+      printf 'The review agent ran out of its usage quota, and a retry is scheduled for after the quota resets.'
       ;;
     diff-fetch-timeout)
       printf 'Fetching the PR diff timed out.'

@@ -214,6 +214,15 @@ extract_category() {
   [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
 }
 
+# Parse the `session_limit_reset=<time>` second stderr line merge_findings.py
+# emits alongside a session-limit category (#231). Empty means the sentinel was
+# there but its reset time was unreadable, which the pause treats as its fixed
+# fallback. `-f2-` keeps a time that itself contains `=`.
+extract_session_limit_reset() {
+  local stderr_path="$1"
+  grep -m1 '^session_limit_reset=' "$stderr_path" 2>/dev/null | cut -d= -f2- || true
+}
+
 # Parse the `truncated_count=<n>` line merge_findings.py emits on a successful
 # (non-error) run whose post-cap truncation dropped findings (ADR 0023). Falls
 # back to 0 so an absent line (no truncation happened) is indistinguishable
@@ -803,7 +812,14 @@ log_step "merging lens payloads"
 if ! python3 "$SCRIPT_DIR/merge_findings.py" --no-style "${LENS_RAW_FILES[@]}" \
   >"$AUTHOR_FILE" 2>"$EXTRACT_ERR"; then
   cat "$EXTRACT_ERR" >&2
-  log_failure "$(extract_category "$EXTRACT_ERR")" "$PR_URL" "$HEAD_OID" "merge_findings.py exited non-zero"
+  MERGE_CATEGORY="$(extract_category "$EXTRACT_ERR")"
+  if [[ "$MERGE_CATEGORY" == "session-limit" ]]; then
+    # Every lens hit the subscription quota, so every PR this cycle and the next
+    # would hit the same wall; pause polling until the reset instead (#231).
+    PAUSE_UNTIL="$(session_pause_write "$(extract_session_limit_reset "$EXTRACT_ERR")")"
+    log_info "session limit hit, pausing polling until $(format_clock_time "$PAUSE_UNTIL")"
+  fi
+  log_failure "$MERGE_CATEGORY" "$PR_URL" "$HEAD_OID" "merge_findings.py exited non-zero"
   exit 1
 fi
 # The merge succeeded, but its stderr may still carry quality-degradation

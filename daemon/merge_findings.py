@@ -13,6 +13,7 @@ on the merged set, reusing extract_json so the filter semantics stay
 single-sourced."""
 
 import difflib
+import re
 import sys
 from pathlib import Path
 
@@ -21,6 +22,58 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import extract_json  # noqa: E402
 from extract_json import ExtractError, Finding, ReviewPayload  # noqa: E402
+
+# Its own failure category, separate from all-lenses-failed (#231). The two look
+# identical from the outside (no lens produced a parseable payload) but mean
+# opposite things: all-lenses-failed says the agents ran and their output would
+# not parse, a pipeline defect to go debug; session-limit says the agents never
+# ran at all, an external quota with a known reset. Conflating them sends the
+# operator to the wrong place and, worse, leaves the daemon retrying every cycle
+# against a wall it cannot pass.
+SESSION_LIMIT_CATEGORY = "session-limit"
+
+# Matched from `hit your` onward: the sentinel opens with a contraction
+# (`You've`), and which apostrophe character it uses is not worth guessing.
+# `usage` is accepted alongside `session` because the two are used
+# interchangeably for the same quota in Claude's own wording.
+_SESSION_LIMIT_RE = re.compile(r"\bhit your (?:session|usage) limit\b", re.IGNORECASE)
+# Everything after `resets`, punctuation and spacing between them ignored.
+_SESSION_LIMIT_RESET_RE = re.compile(r"\bresets?\b[\s·:,-]*(?P<when>\S.*)\Z", re.IGNORECASE | re.S)
+# A limited lens does no work and prints one line. Anything longer is a real
+# payload, so this bound is what keeps the phrase quoted inside reviewed code
+# from being read as a quota hit.
+_SESSION_LIMIT_MAX_CHARS = 200
+
+
+def session_limit_reset(raw: str) -> str | None:
+    """Return the reset time carried by a session-limit sentinel in `raw`, or
+    None when `raw` is not one. An empty string when the sentinel is present but
+    the reset time cannot be read, which the caller treats as "limited, reset
+    unknown" and backs off a fixed interval instead of until a parsed time.
+
+    A lens that hit the subscription limit produces this instead of a payload:
+
+        You've hit your session limit · resets 5pm
+
+    Both halves of the answer are load-bearing. Returning None too readily leaves
+    the daemon in the retry storm this exists to end. Returning non-None too
+    readily is the worse error: a genuine pipeline defect would be relabelled as
+    a quota pause, and polling would stop for hours while the real defect hides.
+
+    Two things guard against that. The phrase match starts after the contraction,
+    so the apostrophe (`'` or `'`) never has to be guessed. And the whole output
+    must be short: a limited lens prints one line having done no work, while a
+    review payload that merely failed to parse runs to thousands of characters,
+    so the bound is what stops the phrase quoted inside reviewed code or a
+    finding body from reading as a quota hit.
+    """
+    text = raw.strip()
+    if not text or len(text) > _SESSION_LIMIT_MAX_CHARS:
+        return None
+    if not _SESSION_LIMIT_RE.search(text):
+        return None
+    reset = _SESSION_LIMIT_RESET_RE.search(text)
+    return reset.group("when").strip() if reset else ""
 
 
 def _merge_summaries(summaries: list[str]) -> str:
@@ -163,6 +216,17 @@ def merge(
         except ExtractError as exc:
             print(f"merge-skip: {label} payload failed ({exc.category}): {exc}", file=sys.stderr)
     if not payloads:
+        # Every lens limited is a quota pause, not a pipeline defect (#231). The
+        # test is the sentinel on every raw, never the count of failed lenses: a
+        # real defect that broke all five would otherwise be misread as a quota
+        # hit and stop polling for hours. A lens that timed out writes an empty
+        # raw, which is not a sentinel, so a mixed run stays all-lenses-failed.
+        resets = [session_limit_reset(raw) for raw in raws]
+        if all(reset is not None for reset in resets):
+            raise ExtractError(
+                SESSION_LIMIT_CATEGORY,
+                f"all {len(raws)} lenses hit the session limit, resets {resets[0] or 'unknown'}",
+            )
         raise ExtractError(
             "all-lenses-failed", f"every one of {len(raws)} lens payload(s) failed to parse"
         )
@@ -201,6 +265,12 @@ def main() -> int:
         merged = merge(raws, validate_style=validate_style, labels=labels)
     except ExtractError as exc:
         print(f"category={exc.category}", file=sys.stderr)
+        if exc.category == SESSION_LIMIT_CATEGORY:
+            # Second machine-readable line, so review-pr.sh can pause until the
+            # reset rather than re-parsing the human message. Empty value means
+            # the sentinel was there but its time was not readable; the caller
+            # falls back to a fixed interval.
+            print(f"session_limit_reset={session_limit_reset(raws[0]) or ''}", file=sys.stderr)
         print(f"merge_findings: {exc}", file=sys.stderr)
         return 1
     print(merged.model_dump_json())
