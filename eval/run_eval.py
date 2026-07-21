@@ -98,9 +98,6 @@ REVIEW_CONFIG_VARS = (
     "REVIEW_LENSES",
     "REVIEW_FANOUT",
     "REVIEW_MODEL",
-    "LEAN_REVIEW",
-    "LEAN_TOOLS",
-    "LEAN_KEEP_BASE",
     "SKIP_EDITOR",
     # The confidence gate decides which findings survive to be scored at all, so
     # two runs at different thresholds are not comparable. Recorded because a mode

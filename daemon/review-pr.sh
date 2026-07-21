@@ -669,29 +669,30 @@ log_info "model: ${REVIEW_MODEL}"
 # subshell that acquired it, so a killed lens's slot is freed immediately
 # rather than waiting for stale-reclaim.
 # ADR 0034: REVIEW_MODE picks how each lens runs, orthogonally to REVIEW_LENSES
-# picking how many. `agentic` (the default, unchanged) dispatches a subagent per
-# lens; `direct` runs the lens in the process that already isolates it, dropping
-# the subagent layer that only forwarded stdout. The two dials are independent:
-# `direct` with REVIEW_LENSES unset is five direct lenses, not one.
+# picking how many. `subagent` dispatches a subagent per lens (Anthropic's
+# orchestrator-worker shape); `single-agent` runs the lens in the process that
+# already isolates it, dropping the subagent layer that only forwarded its
+# stdout. The two dials are independent: `single-agent` with REVIEW_LENSES unset
+# is five single-agent lenses, not one.
 #
 # The mode deliberately touches nothing else. An earlier draft also lowered
 # CONFIDENCE_THRESHOLD here, which silently overrode the operator's own .env
 # value and made two modes incomparable in measurement: the cheaper mode was
 # scored behind a looser gate than the one it was being compared against.
 REVIEW_MODE="$(resolve_tunable REVIEW_MODE "$SCRIPT_DIR/../.env")"
-case "${REVIEW_MODE:-agentic}" in
-  direct)
-    DIRECT_REVIEW=1
+case "${REVIEW_MODE:-subagent}" in
+  single-agent)
+    SINGLE_AGENT_REVIEW=1
     ;;
-  agentic | "")
-    DIRECT_REVIEW=0
+  subagent | "")
+    SINGLE_AGENT_REVIEW=0
     ;;
   *)
-    log_err "REVIEW_MODE='$REVIEW_MODE' is not a known mode (agentic direct)"
+    log_err "REVIEW_MODE='$REVIEW_MODE' is not a known mode (subagent single-agent)"
     exit 1
     ;;
 esac
-export DIRECT_REVIEW
+export SINGLE_AGENT_REVIEW
 [[ -n "${REVIEW_MODE:-}" ]] && log_info "review mode: ${REVIEW_MODE}"
 
 lens_i=0
@@ -711,7 +712,7 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
     # bypassing stream_format.py's labeling and flooding the daemon log
     # unlabeled; it goes to a per-lens sidecar file instead, so nothing is
     # silently lost but the primary log stays legible.
-    if [[ "${DIRECT_REVIEW:-0}" -eq 1 ]]; then
+    if [[ "${SINGLE_AGENT_REVIEW:-0}" -eq 1 ]]; then
       # ADR 0034: run the lens in this process instead of through a subagent. The
       # slash command an agentic lens invokes does nothing but dispatch one
       # subagent and forward its stdout, so the parent's harness load buys no
@@ -720,25 +721,25 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
       # investigation scaffolding the verify step needs, and slash commands are
       # disabled because the prompt below IS the instruction: a dispatch command
       # would re-enter the subagent path this mode exists to skip.
-      direct_sys="$SCRATCH/.pr-review-direct-sys-$lens_label.md"
+      single_sys="$SCRATCH/.pr-review-single-sys-$lens_label.md"
       awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
-        ".claude/agents/review-agent-$lens_label.md" >"$direct_sys"
+        ".claude/agents/review-agent-$lens_label.md" >"$single_sys"
       # The diff goes by path, not inlined: inlining it and saying "reason over
       # this" made the model treat the context as complete and skip opening the
       # callers, which is the verify step's whole substance (ADR 0022).
-      direct_prompt="$SCRATCH/.pr-review-direct-prompt-$lens_label.txt"
+      single_prompt="$SCRATCH/.pr-review-single-prompt-$lens_label.txt"
       {
         printf 'Review this PR per your instructions and emit the JSON payload.\n'
         printf 'The line-numbered diff is at: %s\n' "$NUMBERED_BASENAME"
         printf 'Read it, then investigate the surrounding code with your tools '
         printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
-      } >"$direct_prompt"
+      } >"$single_prompt"
       run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-        claude -p --append-system-prompt-file "$direct_sys" \
+        claude -p --append-system-prompt-file "$single_sys" \
         --model "$REVIEW_MODEL" \
         --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
         --disable-slash-commands \
-        --output-format stream-json --verbose <"$direct_prompt" \
+        --output-format stream-json --verbose <"$single_prompt" \
         2>"$lens_raw.stderr" |
         python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
           --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
@@ -835,16 +836,16 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
     rc=0
     # See the lens loop above: claude's own stderr goes to a sidecar file, not
     # the primary log.
-    if [[ "${DIRECT_REVIEW:-0}" -eq 1 ]]; then
+    if [[ "${SINGLE_AGENT_REVIEW:-0}" -eq 1 ]]; then
       # The editor runs in the same shape as the lenses under this mode, and for
       # the same reason: its slash command only dispatches the editor subagent.
       # It keeps its tools because ADR 0016's verify-at-HEAD step needs them, and
       # because a tools-free editor could not reliably emit its decisions JSON on
       # a complex draft.
-      editor_sys="$SCRATCH/.pr-review-direct-sys-editor.md"
+      editor_sys="$SCRATCH/.pr-review-single-sys-editor.md"
       awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
         ".claude/agents/review-agent-editor.md" >"$editor_sys"
-      editor_prompt="$SCRATCH/.pr-review-direct-editor-prompt.txt"
+      editor_prompt="$SCRATCH/.pr-review-single-editor-prompt.txt"
       {
         printf 'Edit this draft review and emit your decisions JSON per your instructions.\n\n'
         printf '=== DRAFT PAYLOAD (findings to keep/drop/rewrite) ===\n'
