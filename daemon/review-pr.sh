@@ -721,6 +721,8 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
       # investigation scaffolding the verify step needs, and slash commands are
       # disabled because the prompt below IS the instruction: a dispatch command
       # would re-enter the subagent path this mode exists to skip.
+      # One file, no includes: an agent's body is its whole system prompt, so a
+      # pointer at another agent's prompt resolves to nothing at runtime.
       single_sys="$SCRATCH/.pr-review-single-sys-$lens_label.md"
       awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
         ".claude/agents/review-agent-$lens_label.md" >"$single_sys"

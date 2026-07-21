@@ -290,7 +290,7 @@ def test_bold_lead_body_passes_style_check():
 
 def test_single_bullet_comment_body_raises_style_violation():
     # 2b (#100): a lone bullet is a sentence with extra weight. Bodies carry
-    # 0 or 2–4 bullets, never one (review-agent-default §Body shape).
+    # 0 or 2–4 bullets, never one (review-agent-editor §Voice).
     f = _minimal_finding(body="**Split it.**\n\n- only one point")
     raw = _wrap({"summary": "x", "comments": [f]})
     with pytest.raises(ExtractError) as exc_info:

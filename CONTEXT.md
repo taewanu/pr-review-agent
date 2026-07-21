@@ -45,7 +45,7 @@ A review agent's identity profile = its Voice + Tone variation rules + Nuance pa
 _Avoid_: style (overloaded with visual/UI design)
 
 **Voice**:
-A review agent's fixed identity, "who it is." Constant across all findings in a review. V1 default voice: see `.claude/agents/review-agent-default.md` (Slack-style "X but never Y" pattern). Part of Persona.
+A review agent's fixed identity, "who it is." Constant across all findings in a review. Defined in `.claude/agents/review-agent-editor.md` (Slack-style "X but never Y" pattern), the agent that authors the prose that posts. Part of Persona.
 _Avoid_: tone (voice is invariant; tone varies)
 
 **Tone**:

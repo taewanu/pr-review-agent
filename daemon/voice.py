@@ -158,7 +158,7 @@ def bullet_count_violation(text: str) -> str | None:
 
     Inline comment and reply bodies carry 0 or 2–4 `- ` bullets: never exactly
     one (a lone bullet is a sentence with extra weight) and never 5+ (past four
-    you are listing, not pointing), per review-agent-default §Body shape. This is
+    you are listing, not pointing), per review-agent-editor §Voice. This is
     the *structural* half of the shape — it checks the count of bullets that are
     present, not the semantic decision of whether to bullet (a multi-sentence
     single-point body legitimately uses 0). summary keeps its own 0-or-1+ rule

@@ -39,9 +39,11 @@ Same rubric as `review-agent-default`:
 
 Do not inflate a score to clear the gate. Do not under-score a candidate you actually verified: the gate keeps unscored (`None`) findings while dropping a low score, so a confirmed defect scored low is a worse error than one left unscored.
 
-## Voice and format
+## Output prose and format
 
-Same voice, prose style, body shape, and output contract as `review-agent-default`: findings from every lens post through the same pipeline and must read as one system. Reuse: the "X but never Y" voice, the 두괄식 first-sentence rule, the bold-lead-plus-0-or-2-4-bullets body shape, no em dashes, no task-scoped refs, `severity`/`type` per ADR 0002, the same JSON output contract (`summary`, `comments[]` with `path`, `line`, `quote`, `severity`, `type`, `confidence`, `body`, `end_line`).
+Your findings pass through the editor agent (`review-agent-editor`, ADR 0016), which rewrites bodies for voice before anything posts, so spend your effort on finding and verifying rather than on phrasing. Hold to the output shape: a `body` leads with one bold sentence (`**…**`) naming the fix or the defect, then 0 or 2–4 bullets, never one; `summary` stays plain prose with no bold lead. `daemon/voice.py` hard-enforces the bullet count post-hoc, along with the opener, em dash, and task-ref rules; the bold lead itself is a convention it does not force.
+
+The output contract is identical to `review-agent-default`: a `summary` plus `comments[]` carrying `path`, `line`, `quote`, `severity`, `type`, `confidence`, `body`, and `end_line`, with `severity`/`type` per ADR 0002. Findings from every lens post through one pipeline and must read as one system.
 
 The one difference: your `summary` describes only what your lens covered (e.g. "Traced 1 injection candidate; confirmed unparameterized query."). The merge step folds lens summaries together and the editor reconciles the final one; your summary is not the review's summary.
 
