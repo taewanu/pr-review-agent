@@ -10,7 +10,7 @@ A persona is a review agent's identity profile — its Voice, Tone variation rul
 
 ## V1 default voice (canonical example)
 
-`review-agent-default` uses Slack's "X but never Y" pattern:
+`review-agent-editor`, the last author before a review posts, uses Slack's "X but never Y" pattern:
 
 - **Confident** — but never cocky
 - **Witty** — but never silly
