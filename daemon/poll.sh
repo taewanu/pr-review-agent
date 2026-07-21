@@ -10,6 +10,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 REPO_ROOT="$SCRIPT_DIR/.."
 
+# Session-limit backoff (#231), checked before any network call: while the
+# subscription quota is exhausted every lens fails instantly, so a cycle can only
+# re-flip each open PR's status comment to the same failure. Exit 0, not 1: a
+# quota pause is a deliberate skip, and run.sh logs a non-zero cycle as an error.
+if PAUSE_UNTIL="$(session_pause_active)"; then
+  log_info "session limit pause active, polling resumes at $(format_clock_time "$PAUSE_UNTIL")"
+  exit 0
+fi
+
 for cmd in gh jq python3; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log_err "missing '$cmd' on PATH"

@@ -77,3 +77,20 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 > posts with a `voice-warning` forwarded to the daemon log instead (CodeRabbit
 > treats tone as customizable, never a gate that drops findings). This adds a
 > third action, "warn and post", to the system/per-finding pair above.
+
+> **Amended 2026-07-21 (#231).** A subscription quota exhausted mid-review gets
+> its own `session-limit` category and a fourth action, **pause and resume**. The
+> quota case is a system failure by every existing rule (no review posts, exit
+> non-zero, status flips), but the existing actions all assume the next cycle can
+> do better. It cannot: every lens hits the same wall until the quota resets, so
+> retrying every cycle for hours re-flips each open PR's status comment and
+> teaches the author to ignore it. The daemon now records the reset as a deadline
+> and skips polling until it passes, and the status head-line names that time
+> instead of promising a retry next cycle.
+>
+> The category is decided **only** by the quota sentinel appearing on every lens
+> output, never by the count of failed lenses. That direction is the whole safety
+> property: inferring a quota hit from "all five failed" would let a genuine
+> pipeline defect suppress polling for hours and hide itself, which is the failure
+> this ADR's loud-by-default rule exists to prevent. A sentinel-free all-lenses
+> failure keeps `all-lenses-failed` and its loud, retry-next-cycle behaviour.

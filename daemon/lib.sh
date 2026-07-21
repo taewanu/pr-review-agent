@@ -776,6 +776,65 @@ write_heartbeat() {
   fi
 }
 
+# Session-limit backoff (#231). When every lens hits the subscription quota, the
+# next cycle cannot pass either, so review-pr.sh records a deadline here and
+# poll.sh honours it before doing any work. A file, because the pause must
+# outlive both the failing review process and a daemon restart, and because both
+# run shapes (foreground run.sh, launchd KeepAlive) then honour it with no extra
+# wiring.
+_session_pause_path() {
+  printf '%s/session-pause.epoch' "$(_state_dir)"
+}
+
+# Fallback pause when merge_findings.py could not resolve a reset time from the
+# sentinel. One hour bounds both errors: it collapses a retry storm that
+# otherwise runs every cycle for hours, while a pause that overshoots an
+# already-passed reset costs at most one hour of review latency. Overridable
+# like every other tunable in this file.
+SESSION_PAUSE_FALLBACK_SECONDS="${SESSION_PAUSE_FALLBACK_SECONDS:-3600}"
+
+# session_pause_write [deadline-epoch]
+# Records the pause and prints the deadline it stored. merge_findings.py resolves
+# the sentinel's reset time, so an empty or non-numeric argument means it could
+# not, and the fixed fallback applies.
+session_pause_write() {
+  local deadline="${1:-}"
+  if ! [[ "$deadline" =~ ^[0-9]+$ ]]; then
+    deadline="$(($(date +%s) + SESSION_PAUSE_FALLBACK_SECONDS))"
+  fi
+  mkdir -p "$(_state_dir)"
+  printf '%s\n' "$deadline" >"$(_session_pause_path)"
+  printf '%s\n' "$deadline"
+}
+
+# session_pause_active
+# Returns 0 and prints the deadline epoch while a recorded pause is still in the
+# future; returns 1 otherwise, clearing a passed or unreadable file so a stale
+# deadline can never wedge polling.
+session_pause_active() {
+  local path deadline now
+  path="$(_session_pause_path)"
+  [[ -r "$path" ]] || return 1
+  read -r deadline <"$path" 2>/dev/null || deadline=""
+  now="$(date +%s)"
+  if [[ "$deadline" =~ ^[0-9]+$ && "$deadline" -gt "$now" ]]; then
+    printf '%s\n' "$deadline"
+    return 0
+  fi
+  rm -f "$path"
+  return 1
+}
+
+# format_clock_time <epoch>
+# Renders an epoch as a local HH:MM for a log line. Tries the BSD flag then the
+# GNU one, and prints the raw epoch if neither works, so a log line is never lost
+# to a date-flag difference.
+format_clock_time() {
+  date -r "$1" '+%H:%M' 2>/dev/null ||
+    date -d "@$1" '+%H:%M' 2>/dev/null ||
+    printf '%s' "$1"
+}
+
 # bundle_operator_agents <scratch-dir>
 # Copies operator's agent + slash-command files from this repo's .claude/ into
 # the scratch clone's .claude/ so claude -p (which loads from cwd) finds them
@@ -1006,6 +1065,11 @@ status_failure_reason() {
       ;;
     pending-conflict)
       printf 'An earlier review is still pending on this PR.'
+      ;;
+    session-limit)
+      # The one failure whose cause the author can place: an external quota, not
+      # a defect in this PR or in the pipeline, with the retry already scheduled.
+      printf 'The review agent ran out of its usage quota, and a retry is scheduled for after the quota resets.'
       ;;
     diff-fetch-timeout)
       printf 'Fetching the PR diff timed out.'

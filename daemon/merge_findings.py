@@ -13,7 +13,9 @@ on the merged set, reusing extract_json so the filter semantics stay
 single-sourced."""
 
 import difflib
+import re
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # daemon/ is not a package and this runs by path, so add its own dir before
@@ -21,6 +23,96 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import extract_json  # noqa: E402
 from extract_json import ExtractError, Finding, ReviewPayload  # noqa: E402
+
+# Its own failure category, separate from all-lenses-failed (#231). The two look
+# identical from the outside (no lens produced a parseable payload) but mean
+# opposite things: all-lenses-failed says the agents ran and their output would
+# not parse, a pipeline defect to go debug; session-limit says the agents never
+# ran at all, an external quota with a known reset. Conflating them sends the
+# operator to the wrong place and, worse, leaves the daemon retrying every cycle
+# against a wall it cannot pass.
+SESSION_LIMIT_CATEGORY = "session-limit"
+
+# Matched from `hit your` onward: the sentinel opens with a contraction
+# (`You've`), and which apostrophe character it uses is not worth guessing.
+# `usage` is accepted alongside `session` because the two are used
+# interchangeably for the same quota in Claude's own wording.
+_SESSION_LIMIT_RE = re.compile(r"\bhit your (?:session|usage) limit\b", re.IGNORECASE)
+# Everything after `resets`, punctuation and spacing between them ignored.
+_SESSION_LIMIT_RESET_RE = re.compile(r"\bresets?\b[\s·:,-]*(?P<when>\S.*)\Z", re.IGNORECASE | re.S)
+# A limited lens does no work and prints one line. Anything longer is a real
+# payload, so this bound is what keeps the phrase quoted inside reviewed code
+# from being read as a quota hit.
+_SESSION_LIMIT_MAX_CHARS = 200
+
+
+def session_limit_reset(raw: str) -> str | None:
+    """Return the reset time carried by a session-limit sentinel in `raw`, or
+    None when `raw` is not one. An empty string when the sentinel is present but
+    the reset time cannot be read, which the caller treats as "limited, reset
+    unknown" and backs off a fixed interval instead of until a parsed time.
+
+    A lens that hit the subscription limit produces this instead of a payload:
+
+        You've hit your session limit · resets 5pm
+
+    Both halves of the answer are load-bearing. Returning None too readily leaves
+    the daemon in the retry storm this exists to end. Returning non-None too
+    readily is the worse error: a genuine pipeline defect would be relabelled as
+    a quota pause, and polling would stop for hours while the real defect hides.
+
+    Two things guard against that. The phrase match starts after the contraction,
+    so the apostrophe (`'` or `'`) never has to be guessed. And the whole output
+    must be short: a limited lens prints one line having done no work, while a
+    review payload that merely failed to parse runs to thousands of characters,
+    so the bound is what stops the phrase quoted inside reviewed code or a
+    finding body from reading as a quota hit.
+    """
+    text = raw.strip()
+    if not text or len(text) > _SESSION_LIMIT_MAX_CHARS:
+        return None
+    if not _SESSION_LIMIT_RE.search(text):
+        return None
+    reset = _SESSION_LIMIT_RESET_RE.search(text)
+    return reset.group("when").strip() if reset else ""
+
+
+# Local time throughout: the quota message is printed by the same machine the
+# daemon runs on. Matches `5pm`, `3:30 a.m.`, and 24-hour `23:15`.
+_CLOCK_12H_RE = re.compile(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?", re.IGNORECASE)
+_CLOCK_24H_RE = re.compile(r"(?<!\d)(\d{1,2}):(\d{2})(?!\d)")
+# So the first cycle back does not race the reset itself.
+_RESET_SLACK_SECONDS = 60
+
+
+def session_limit_deadline(reset_text: str, now: datetime) -> int | None:
+    """Resolve a sentinel's human reset time to an absolute epoch second, or None
+    when it carries no readable clock time and the caller should fall back to a
+    fixed backoff.
+
+    Resolving here rather than in the shell keeps the parsing beside the sentinel
+    matcher that produced the text, under the same tests. `date` differs between
+    BSD and GNU on exactly the flags this needs, which is the shell's problem to
+    avoid, not to work around."""
+    match = _CLOCK_12H_RE.search(reset_text)
+    if match:
+        # A 12-hour clock has no 13th hour; reading one as 13:00 would invent a
+        # deadline out of a string nobody wrote.
+        if not 1 <= int(match.group(1)) <= 12:
+            return None
+        hour = int(match.group(1)) % 12 + (12 if match.group(3).lower() == "p" else 0)
+        minute = int(match.group(2) or 0)
+    elif match := _CLOCK_24H_RE.search(reset_text):
+        hour, minute = int(match.group(1)), int(match.group(2))
+    else:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    reset = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    # A reset time that already reads as past belongs to tomorrow: the window rolls.
+    if reset <= now:
+        reset += timedelta(days=1)
+    return int(reset.timestamp()) + _RESET_SLACK_SECONDS
 
 
 def _merge_summaries(summaries: list[str]) -> str:
@@ -163,6 +255,17 @@ def merge(
         except ExtractError as exc:
             print(f"merge-skip: {label} payload failed ({exc.category}): {exc}", file=sys.stderr)
     if not payloads:
+        # Every lens limited is a quota pause, not a pipeline defect (#231). The
+        # test is the sentinel on every raw, never the count of failed lenses: a
+        # real defect that broke all five would otherwise be misread as a quota
+        # hit and stop polling for hours. A lens that timed out writes an empty
+        # raw, which is not a sentinel, so a mixed run stays all-lenses-failed.
+        resets = [session_limit_reset(raw) for raw in raws]
+        if all(reset is not None for reset in resets):
+            raise ExtractError(
+                SESSION_LIMIT_CATEGORY,
+                f"all {len(raws)} lenses hit the session limit, resets {resets[0] or 'unknown'}",
+            )
         raise ExtractError(
             "all-lenses-failed", f"every one of {len(raws)} lens payload(s) failed to parse"
         )
@@ -201,6 +304,15 @@ def main() -> int:
         merged = merge(raws, validate_style=validate_style, labels=labels)
     except ExtractError as exc:
         print(f"category={exc.category}", file=sys.stderr)
+        if exc.category == SESSION_LIMIT_CATEGORY:
+            # Second machine-readable line, so review-pr.sh pauses by comparing
+            # two integers. Empty value means the sentinel was there but its time
+            # was not readable; the caller falls back to a fixed interval.
+            deadline = session_limit_deadline(session_limit_reset(raws[0]) or "", datetime.now())
+            print(
+                f"session_limit_deadline={deadline if deadline is not None else ''}",
+                file=sys.stderr,
+            )
         print(f"merge_findings: {exc}", file=sys.stderr)
         return 1
     print(merged.model_dump_json())
