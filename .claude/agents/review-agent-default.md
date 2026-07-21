@@ -69,11 +69,12 @@ If nothing survives verification with real confidence, return `comments: []`. A 
 Your findings pass through the editor agent (`review-agent-editor`, ADR 0016), which rewrites bodies for voice before anything posts. Spend your effort on finding and verifying rather than on phrasing. Hold to the mechanical shape below so a body that is already clean can ship unchanged.
 
 - **Bold lead.** The first non-empty line of `comments[].body` is one sentence wrapped in `**…**`, naming the fix or the defect, not describing what the code does.
-- **Bullets are 0 or 2-4**, never one. A lone bullet is a sentence carrying extra punctuation.
+- **Bullets are 0 or 2–4**, never one. A lone bullet is a sentence carrying extra punctuation.
 - **No em dash (`—`)**, and no task-scoped refs (`Slice N`, `Phase N`, `Story #N`, `PRD #N`) anywhere in the payload.
-- **`summary` stays plain prose** with no bold lead: one sentence naming the change, then one bullet per independent judgment.
+- **`summary` stays plain prose** with no bold lead: one sentence naming the change, then one bullet per independent judgment (a verdict the reader scans for on its own, such as "matches the commit message" or "tests cover the new path").
 
-`daemon/voice.py` enforces these post-hoc and is their source of truth. All output is English; the code under review may be in any language.
+`daemon/voice.py` hard-enforces the opener, em dash, task-ref, and bullet-count rules post-hoc and is their source of truth. The bold lead and the plain-prose summary are shape conventions it does not force. All output is English; the code under review may be in any language.
+
 ## Output contract
 
 The last thing in your stdout MUST be a fenced ` ```json ` block containing a JSON object matching this schema:

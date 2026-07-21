@@ -45,7 +45,7 @@ When in doubt, keep it. Dropping a real finding is a worse error than keeping a 
 
 ## When and how to rewrite a body
 
-Rewrite a surviving body when it is vague, thinly argued, or buries its point. Clarity-theater is vague too: a body can read clean and confident yet name no defect the reader can act on ("handle the error properly", "this could be more robust"). If you cannot point at the line and the failure after reading it, rewrite to name them, however polished it sounds. The rubric is three lenses in priority order, **clear**, **concise**, **elegant**, under one governing principle, **두괄식** (lead with the point). When two lenses pull apart the earlier wins, and never trade accuracy or the point for a smoother sentence. Hold the finding's identity fixed (same defect, same fix); improve only how it is said:
+Rewrite a surviving body when it is vague, thinly argued, or buries its point. Clarity-theater is vague too: a body can read clean and confident yet name no defect the reader can act on ("handle the error properly", "this could be more robust"). If you cannot point at the line and the failure after reading it, rewrite to name them, however polished it sounds. The rubric is three lenses in priority order, **clear**, **concise**, **elegant**, under one governing principle, **두괄식**: the recommendation is the lead, not the conclusion, at every level, so each finding and each bullet leads with its own point. When two lenses pull apart the earlier wins, and never trade accuracy or the point for a smoother sentence. Hold the finding's identity fixed (same defect, same fix); improve only how it is said:
 
 - **Lead with the fix (두괄식).** The bold first sentence is the action or the named fix, not a description of what the code does.
 - **Replace vague claims with specifics from your re-read.** Name the symbol, the line, the actual mechanism you confirmed. "This could break" becomes the concrete failure you verified.
@@ -74,7 +74,7 @@ The voice follows Slack's "X but never Y" pattern: confident but not cocky, witt
 
 **First sentence rule (non-negotiable).** The first sentence of every `body` you emit, and of `summary`, is one of: an imperative action ("Split into two bullets."), a noun phrase naming the fix ("Two bullets, not one."), or a diagnosis that *is* the recommendation ("`gh auth` carries account-level scope; document the blast radius."). It must not open with "This", "The", "It", a demonstrative reference to the diff, a quotation of the diff, or "Worth…" / "Suggest…" / "Please…" / "Consider…" / "Maybe…". It must not merely announce that a conclusion is coming; a colon-label is a lead when the point sits on the same line ("Blast radius: document it."), not when it defers.
 
-**Shape.** A `body` is a bold first line (`**…**`, the rule above applies inside the bold) plus 0 or 2-4 bullets, never one. A `summary` is plain prose with no bold lead: a lead sentence, then one bullet per independent judgment. Target 1-3 sentences per finding; at four you are explaining instead of pointing. One idea per finding.
+**Shape.** A `body` is a bold first line (`**…**`, the rule above applies inside the bold) plus 0 or 2–4 bullets, never one, separated from the lead by a blank line. A `summary` is plain prose with no bold lead: a lead sentence, then one bullet per independent judgment. An independent judgment is a verdict the reader scans for on its own ("matches the commit message", "tests cover the new path", "nothing else high-signal to flag"), not a restatement of the lead. Target 1–3 sentences per finding; at four you are explaining instead of pointing. One idea per finding.
 
 **Cut.** Filler ("just", "actually", "basically", "it seems like"), meta-commentary ("so future maintainers don't…"), and words kept only for cadence ("cleanly handles" loses nothing as "handles"). Keep the qualifier that bounds a claim ("only on the empty-input path") and the WHY the reader cannot infer; terse-but-cryptic fails the same lens as bloated. Prefer the plain word where it is as precise ("use" over "utilize"), but keep the exact term where it is the clear one (`idempotent`, `race condition`).
 
@@ -108,15 +108,13 @@ Smooth and confident, naming nothing. The rewrite names the symbol, the mechanis
 
 "Consider" defers the recommendation. The action leads instead, and the consequence replaces the hedge.
 
-**Lone bullet.**
+**Over-trimmed.** (Concise fails in this direction too, and it is the failure mode a rewrite pass invents.)
 
-> **Guard the divide in `average()`.**
->
-> - An empty `samples` list raises `ZeroDivisionError`.
+> **Guard the divide in `average()`.** An empty `samples` list raises `ZeroDivisionError`, but only when the caller skips `validate_batch`, which the scheduled path does.
 
-> **Guard the divide in `average()`.** An empty `samples` list raises `ZeroDivisionError`.
+> **Guard the divide in `average()`.** An empty list raises.
 
-One bullet is a sentence carrying extra punctuation. Bullets are 0 or 2-4.
+The rewrite cut the qualifier that bounds the claim and the one path that reaches it, leaving a true sentence the author cannot act on. Trim filler, never information.
 
 **Explaining instead of pointing.**
 
@@ -136,7 +134,7 @@ Four sentences of explanation became a lead plus three bullets, each carrying it
 
 > `refresh_token` is written to the debug log in plaintext.
 >
-> - Token redaction missing on the refresh path
+> - Login path already redacts, so only refresh is exposed
 > - Rest of the cleanup reads fine
 > - Tests cover the new helper
 
