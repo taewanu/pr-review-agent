@@ -98,10 +98,16 @@ REVIEW_CONFIG_VARS = (
     "REVIEW_LENSES",
     "REVIEW_FANOUT",
     "REVIEW_MODEL",
-    "LEAN_REVIEW",
-    "LEAN_TOOLS",
-    "LEAN_KEEP_BASE",
     "SKIP_EDITOR",
+    # The confidence gate decides which findings survive to be scored at all, so
+    # two runs at different thresholds are not comparable. Recorded because a mode
+    # once set it silently, and the resulting recall gap read as a property of the
+    # mode until the two arms were re-run at one threshold.
+    "CONFIDENCE_THRESHOLD",
+    # Also decides which findings reach the results: over the cap, extract_json
+    # raises cap-violation and the whole lens is lost, so a run with the gate
+    # opened up needs this raised to match or it measures the cap instead.
+    "MAX_FINDINGS",
 )
 
 
@@ -116,6 +122,11 @@ def summarize_finding(finding: dict) -> dict:
     return {
         "path": finding.get("path"),
         "line": finding.get("line"),
+        # The score the confidence gate reads. Without it a run cannot say where
+        # to put the gate, only whether findings survived the one it happened to
+        # run under — which is how a threshold nobody calibrated ended up
+        # deciding a config comparison.
+        "confidence": finding.get("confidence"),
         "claim": body.splitlines()[0][:300] if body else "",
     }
 
@@ -625,8 +636,33 @@ def main(argv: list[str] | None = None) -> int:
                 if ungraded:
                     label += f" ({ungraded} ungraded, run excluded)"
             else:
-                verdicts.append(judge(fixture, review["findings"]))
-                label = f"caught={verdicts[-1]['caught']}"
+                verdict = judge(fixture, review["findings"])
+                # Recall alone says nothing about what else the review said. A
+                # config that catches the bug by flagging everything is not the
+                # same product as one that catches it and stays quiet, and the
+                # clean-PR corpus cannot tell them apart: it has no real defect
+                # for the noise to sit beside. Every finding except the one that
+                # matched the known bug is graded here, on the diff it was made
+                # on, by the same judge and the same bar the precision path uses.
+                matched = verdict.get("matched_index")
+                # The gate is chosen by comparing this against the scores of the
+                # findings around it: a threshold is only defensible if it sits
+                # below where real bugs land and above where noise does.
+                if isinstance(matched, int) and 0 <= matched < len(review["findings"]):
+                    verdict["matched_confidence"] = review["findings"][matched].get("confidence")
+                others = [(i, f) for i, f in enumerate(review["findings"]) if i != matched]
+                graded = [
+                    {**summarize_finding(f), **judge_finding_noise(review["diff"], f)}
+                    for _, f in others
+                ]
+                verdict["other_findings"] = graded
+                verdict["other_count"] = len(graded)
+                verdict["noise_count"] = sum(1 for g in graded if g["noise"])
+                verdicts.append(verdict)
+                label = (
+                    f"caught={verdict['caught']} "
+                    f"others={verdict['other_count']} noise={verdict['noise_count']}"
+                )
             if review["scratch"] and os.path.isdir(review["scratch"]):
                 shutil.rmtree(review["scratch"], ignore_errors=True)
             print(
@@ -663,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:
                         "id": fixture["id"],
                         "mode": "recall",
                         "recall": fixture_recall(verdicts),
+                        "noise_beside_bug": precision_fp(verdicts),
                         "avg_cost": avg_cost,
                         "avg_tokens": avg_tokens,
                         "verdicts": verdicts,
@@ -700,7 +737,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mean recall: {mean_recall} ({caught}/{len(scored)} scored fixtures at recall>=0.5)")
         for r in recall_results:
             rec = "ERR " if r["recall"] is None else f"{r['recall']:.2f}"
-            print(f"  recall    {rec}  {r['avg_tokens']:>8} tok  ${r['avg_cost']:<7} {r['id']}")
+            noise = "-" if r.get("noise_beside_bug") is None else f"{r['noise_beside_bug']:.2f}"
+            print(
+                f"  recall    {rec}  noise {noise:>5}  "
+                f"{r['avg_tokens']:>8} tok  ${r['avg_cost']:<7} {r['id']}"
+            )
     if precision_results:
         print(f"mean judged-noise findings/PR: {mean_fp} (lower is better; 0 ideal)")
         for r in precision_results:
