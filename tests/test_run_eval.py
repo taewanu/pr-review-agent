@@ -178,7 +178,15 @@ def test_run_review_kills_a_review_over_the_wall_clock_ceiling(tmp_path, monkeyp
     import time
 
     start = time.monotonic()
-    result = run_eval.run_review({"pr_url": "https://example/pull/1", "at_sha": "deadbeef"})
+    # A full 40-character sha, the only shape review-pr.sh admits. The stub
+    # replaces the script so the guard never runs here, which is exactly why the
+    # fixture has to carry a shape that would survive it.
+    result = run_eval.run_review(
+        {
+            "pr_url": "https://example/pull/1",
+            "at_sha": "8f1d0134327fed8c52b90b6f399aae6808b15aba",
+        }
+    )
     elapsed = time.monotonic() - start
 
     assert result["ok"] is False
