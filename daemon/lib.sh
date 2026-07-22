@@ -417,20 +417,11 @@ state_write() {
 # `Authorization: token`, which the App endpoints reject, so the JWT leg is
 # openssl plus curl.
 #
-# Every call site goes through run_with_app_token, never through a bare
-# assignment prefix. `GH_TOKEN="$(gh_token ...)" gh api ...` looks equivalent and
-# is not: a failed mint leaves GH_TOKEN empty and still runs the command at exit
-# 0, so gh falls back to the operator's stored login and posts under the human
-# identity the App replaces. The wrapper aborts instead (ADR 0036 decision 5).
+# run_with_app_token is the only public entry: everything else here is private to
+# it, because the ways to hold a token wrong all look right (see its comment).
 
-# Where the App private key lives. An operator setting, so it resolves like every
-# other dial; the .env key ships with the rest of the App config in #241.
-resolve_app_key_path() {
-  local path
-  path="$(resolve_tunable APP_KEY_PATH "$1")"
-  printf '%s' "${path:-$HOME/.pr-review-agent/app.pem}"
-}
-
+# Where the App private key lives. Environment-only for now; whether it also
+# earns a .env key is #241's call, alongside the rest of the App config.
 APP_KEY_PATH="${APP_KEY_PATH:-$HOME/.pr-review-agent/app.pem}"
 
 # _b64url
@@ -447,17 +438,22 @@ _b64url() {
 # `exp` stays inside GitHub's 10-minute ceiling: this JWT exists only to mint an
 # installation token, never as a credential the daemon holds.
 _app_jwt() {
-  local app_id="$1" now header payload signing_input signature
+  local app_id="$1" now header payload signing_input signature stderr_capture
   now="$(date +%s)"
 
   header="$(printf '{"alg":"RS256","typ":"JWT"}' | _b64url)"
   payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$app_id" | _b64url)"
   signing_input="${header}.${payload}"
 
-  if ! signature="$(printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$APP_KEY_PATH" 2>/dev/null | _b64url)"; then
-    log_err "could not sign the App JWT with ${APP_KEY_PATH}"
+  # openssl's own message separates a missing key from an unreadable or malformed
+  # one, which "could not sign" alone cannot.
+  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
+  if ! signature="$(printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$APP_KEY_PATH" 2>"$stderr_capture" | _b64url)"; then
+    log_err "could not sign the App JWT with ${APP_KEY_PATH}: $(<"$stderr_capture")"
+    rm -f "$stderr_capture"
     return 1
   fi
+  rm -f "$stderr_capture"
 
   printf '%s.%s' "$signing_input" "$signature"
 }
@@ -469,11 +465,11 @@ _app_jwt() {
 # which would otherwise print as an empty credential and fail far from here.
 _mint_installation_token() {
   local app_id="$1" installation_id="$2" jwt response fields token expires_at
-  local stderr_capture
+  local api_message stderr_capture
 
   jwt="$(_app_jwt "$app_id")" || return 1
 
-  stderr_capture="$(mktemp)"
+  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
   if ! response="$(curl -sS -X POST \
     --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${jwt}" \
@@ -493,11 +489,11 @@ _mint_installation_token() {
     return 1
   fi
 
-  IFS=$'\t' read -r token expires_at _message <<<"$fields"
+  IFS=$'\t' read -r token expires_at api_message <<<"$fields"
 
   if [[ -z "$token" ]]; then
     # The error message is safe to log; the token never is.
-    log_err "installation token rejected: ${_message:-no message in response}"
+    log_err "installation token rejected: ${api_message:-no message in response}"
     return 1
   fi
 
@@ -518,7 +514,7 @@ app_installation_id() {
 
   jwt="$(_app_jwt "$app_id")" || return 2
 
-  stderr_capture="$(mktemp)"
+  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
   if ! response="$(curl -sS -w '\n%{http_code}' \
     --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${jwt}" \
@@ -534,10 +530,17 @@ app_installation_id() {
   case "$http_code" in
     200) ;;
     404) return 1 ;;
-    *) return 2 ;;
+    *)
+      # Logged because rc=2 leaves the repo in the watch list: without a line
+      # here a 500 sweep is silent, and the operator sees only the per-PR
+      # failures that follow.
+      log_err "installation probe for ${owner}/${repo} answered ${http_code}"
+      return 2
+      ;;
   esac
 
   if ! id="$(sed '$d' <<<"$response" | jq -r '.id // empty' 2>/dev/null)"; then
+    log_err "installation probe for ${owner}/${repo} returned unparseable JSON"
     return 2
   fi
   [[ -n "$id" ]] || return 2
@@ -594,9 +597,10 @@ _rfc3339_to_epoch() {
 # operator dial, so it carries no .env key; tests override it by assignment.
 GH_TOKEN_REFRESH_MARGIN=300
 
-# gh_token <app-id> <installation-id>
-# Prints a live installation token. Prefer run_with_app_token; call this directly
-# only where the credential cannot ride on a command.
+# _gh_token <app-id> <installation-id>
+# Prints a live installation token. Private: run_with_app_token is the only
+# sanctioned caller, because a token in a variable is a token someone can pass
+# somewhere it must not go.
 #
 # Cached in a shell variable for the life of the process, keyed by installation
 # because a token minted for one is not valid for another. Disk would survive
@@ -604,7 +608,7 @@ GH_TOKEN_REFRESH_MARGIN=300
 # write access to every installed repository to the filesystem to save a handful
 # of mints. A shell variable is never exported, so the `claude -p` children that
 # inherit the environment do not inherit the credential.
-gh_token() {
+_gh_token() {
   local app_id="$1" installation_id="$2"
   local cache_key cached now token expires_at expiry minted
 
@@ -644,17 +648,15 @@ gh_token() {
 #
 # It exists because the obvious spelling is wrong in a way that is invisible:
 #
-#     GH_TOKEN="$(gh_token 1 2)" gh api ...     # do not
+#     GH_TOKEN="$(_gh_token 1 2)" gh api ...     # do not
 #
-# When the mint fails, that runs gh with GH_TOKEN empty at exit 0, so gh falls
-# back to the operator's stored login and posts under the human identity the App
-# replaces. An assignment prefix cannot fail a command. This function checks the
-# mint first and aborts, which is the loud failure ADR 0036 decision 5 asks for.
+# An assignment prefix cannot fail a command. When the mint fails that runs gh
+# with GH_TOKEN empty at exit 0, so gh falls back to the operator's stored login
+# and posts under the human identity the App replaces. This checks first and
+# aborts, which is the loud failure ADR 0036 decision 5 asks for.
 #
-# The token reaches the command's environment only, never this shell's, so a
-# later `claude -p` in the same script inherits nothing. Works for any command,
-# which matters because gh is invoked from Python too (`daemon/resolution.py`
-# and friends shell out without an `env=`).
+# Takes a command rather than printing a value because gh is invoked from Python
+# too (`daemon/resolution.py` and friends shell out without an `env=`).
 run_with_app_token() {
   local app_id="$1" installation_id="$2" token
   shift 2
@@ -664,7 +666,16 @@ run_with_app_token() {
     return 1
   fi
 
-  if ! token="$(gh_token "$app_id" "$installation_id")" || [[ -z "$token" ]]; then
+  # Enforced, not merely documented: ADR 0036 decision 5 rests on the review
+  # agents never holding the token, and every agent definition grants
+  # unrestricted Bash, so one wrapped claude call is write access to every
+  # installed repository. The agents are handed diff and intent files instead.
+  if [[ "$(basename -- "$1")" == "claude" ]]; then
+    log_err "refusing to run claude with an App token: review agents must not hold it (ADR 0036)"
+    return 1
+  fi
+
+  if ! token="$(_gh_token "$app_id" "$installation_id")" || [[ -z "$token" ]]; then
     log_err "no App installation token for installation ${installation_id}: refusing to run '$1' unauthenticated"
     return 1
   fi

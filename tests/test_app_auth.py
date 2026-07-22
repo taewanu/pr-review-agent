@@ -23,7 +23,7 @@ APP_ID = "123456"
 INSTALLATION_ID = "789012"
 
 # The call under test, spelled once so the snippets stay inside the line limit.
-TOKEN_CALL = f"gh_token {APP_ID} {INSTALLATION_ID}"
+TOKEN_CALL = f"_gh_token {APP_ID} {INSTALLATION_ID}"
 
 
 def _run(snippet: str, path_prefix: Path | None = None) -> subprocess.CompletedProcess:
@@ -209,7 +209,7 @@ def test_expiring_token_is_reminted(tmp_path):
 def test_cache_is_keyed_per_installation(tmp_path):
     """A token minted for one installation is not valid for another."""
     stub, counter = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
-    out = _run(f"{stub}; gh_token {APP_ID} 111 >/dev/null; gh_token {APP_ID} 222 >/dev/null")
+    out = _run(f"{stub}; _gh_token {APP_ID} 111 >/dev/null; _gh_token {APP_ID} 222 >/dev/null")
     assert out.returncode == 0, out.stderr
     assert counter.read_text() == "xx"
 
@@ -217,7 +217,7 @@ def test_cache_is_keyed_per_installation(tmp_path):
 def test_unparseable_expiry_still_yields_a_token(tmp_path):
     """The token is valid even when its expiry does not parse; the margin absorbs it."""
     stub, _ = _with_counting_mint(tmp_path, "not-a-timestamp")
-    out = _run(f"{stub}; gh_token {APP_ID} {INSTALLATION_ID}")
+    out = _run(f"{stub}; _gh_token {APP_ID} {INSTALLATION_ID}")
     assert out.returncode == 0, out.stderr
     assert out.stdout == "tok-abc"
 
@@ -236,7 +236,7 @@ def test_token_is_not_exported(tmp_path):
     """
     stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
     out = _run(
-        f"{stub}; gh_token {APP_ID} {INSTALLATION_ID} >/dev/null; "
+        f"{stub}; _gh_token {APP_ID} {INSTALLATION_ID} >/dev/null; "
         "env | grep -c 'tok-abc' || echo 'absent'"
     )
     assert "absent" in out.stdout, "the minted token leaked into the environment"
@@ -260,7 +260,7 @@ def test_wrapper_reaches_the_child_and_not_the_shell(tmp_path):
 def test_wrapper_refuses_to_run_when_the_mint_fails(tmp_path):
     """The reason the wrapper exists, pinned.
 
-    `GH_TOKEN="$(gh_token ...)" cmd` runs cmd with an empty token at exit 0 when
+    `GH_TOKEN="$(_gh_token ...)" cmd` runs cmd with an empty token at exit 0 when
     the mint fails, so gh silently falls back to the operator's stored login and
     posts under the human identity ADR 0036 replaces. The wrapper must abort.
     """
@@ -281,7 +281,7 @@ def test_bare_prefix_would_have_failed_open(tmp_path):
     """
     out = _run(
         "_mint_installation_token() { return 1; }; "
-        f'GH_TOKEN="$(gh_token {APP_ID} {INSTALLATION_ID})" '
+        f'GH_TOKEN="$(_gh_token {APP_ID} {INSTALLATION_ID})" '
         "bash -c 'echo RAN with [$GH_TOKEN]' || echo rc=$?"
     )
     assert "RAN with []" in out.stdout
@@ -293,6 +293,34 @@ def test_wrapper_needs_a_command(tmp_path):
     out = _run(f"{stub}; {WRAP} || echo rc=$?")
     assert "rc=1" in out.stdout
     assert "needs a command" in out.stderr
+
+
+def test_wrapper_refuses_to_hand_the_token_to_claude(tmp_path):
+    """ADR 0036 decision 5, enforced rather than documented.
+
+    Every agent definition grants unrestricted Bash, so one wrapped claude call
+    would be write access to every installed repository. The agents receive diff
+    and intent files instead, never a credential.
+    """
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    fake = bindir / "claude"
+    fake.write_text("#!/usr/bin/env bash\necho CLAUDE_RAN\n")
+    fake.chmod(0o755)
+
+    out = _run(f"{stub}; {WRAP} claude -p 'review' || echo rc=$?", path_prefix=bindir)
+    assert "CLAUDE_RAN" not in out.stdout
+    assert "rc=1" in out.stdout
+    assert "review agents must not hold it" in out.stderr
+
+
+def test_claude_refusal_survives_a_full_path(tmp_path):
+    """The guard matches the command name, not the spelling of its path."""
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    out = _run(f"{stub}; {WRAP} /usr/local/bin/claude -p x || echo rc=$?")
+    assert "rc=1" in out.stdout
+    assert "review agents must not hold it" in out.stderr
 
 
 # --- Malformed responses ----------------------------------------------------
