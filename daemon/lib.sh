@@ -160,24 +160,91 @@ log_pr() {
   } >&2
 }
 
-# Exit status the shell reports when a process is killed by SIGALRM (128 + 14).
-# run_with_timeout returns this on timeout; callers branch on it to route to the
+# Exit status run_with_timeout returns on timeout, and the status the shell
+# reports for a SIGALRM kill (128 + 14). Callers branch on it to route to the
 # ADR 0005 failure path instead of parsing the truncated output.
 # shellcheck disable=SC2034  # consumed by reply-pr.sh / review-pr.sh
 readonly TIMEOUT_EXIT=142
 
+# How often the watchdog re-reads the clock, and how long it lets a terminated
+# job flush before escalating to SIGKILL. Both bound only the overrun path, never
+# a command that finishes under its cap. Overridable for tests.
+readonly TIMEOUT_POLL_INTERVAL="${TIMEOUT_POLL_INTERVAL:-5}"
+readonly TIMEOUT_KILL_GRACE="${TIMEOUT_KILL_GRACE:-5}"
+
 # run_with_timeout <seconds> <command...>
-# Caps a command's wall-clock runtime. macOS has no coreutils `timeout`, so we
-# lean on perl's alarm: it arms a SIGALRM timer, then `exec`s the command into
-# the same process. The timer survives exec (it is kernel state, not perl's
-# memory) while exec resets SIGALRM to its default of terminate, so an
-# over-running command dies at the cap. Returns the command's own exit status,
-# or $TIMEOUT_EXIT on timeout. Orphaned grandchildren may briefly outlive the
-# kill, acceptable for a backstop: stdout closes and the tick fails over anyway.
+# Caps a command's wall-clock runtime. Returns the command's own exit status, or
+# $TIMEOUT_EXIT on timeout.
+#
+# The cap is a `date +%s` deadline, not perl's `alarm`. alarm arms ITIMER_REAL,
+# which counts kernel-timer time and so stops advancing while the machine is
+# suspended; epoch time does not, because it is re-read from the hardware clock
+# on wake. A review that spanned a laptop sleep outlived a 600s cap by well over
+# an hour without the alarm ever firing, the same suspend-shaped failure
+# arm_git_stall_timeout already guards git against.
+#
+# Only a watchdog child polls; the parent blocks in `wait`, so a command that
+# finishes early returns immediately. Polling in the parent instead would round
+# every call up to the interval, and most calls here are sub-second `gh api`.
+# That also lets the interval stay coarse: it bounds how late an overrun is
+# noticed, which for a backstop measured in minutes costs nothing.
+#
+# `set -m` puts the job in its own process group so termination reaches the whole
+# tree; `claude -p` spawns children that a single-process kill leaves orphaned.
 run_with_timeout() {
   local secs="$1"
   shift
-  perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
+  local deadline=$(($(date +%s) + secs))
+  # Empty means the command ended on its own; the watchdog writes to it before
+  # signalling. A flag file, not the exit status, because a command may die of
+  # its own signal and must not be misreported as having hit the cap.
+  local fired
+  fired="$(mktemp -t pra-timeout)"
+
+  set -m
+  "$@" &
+  local pid=$!
+  set +m
+
+  (
+    # Sleep the lesser of the interval and the time left, so the interval bounds
+    # how often the clock is re-read (what catches a suspend) without also
+    # coarsening when the cap fires.
+    local now remaining
+    while :; do
+      now="$(date +%s)"
+      [[ "$now" -ge "$deadline" ]] && break
+      kill -0 "$pid" 2>/dev/null || exit 0
+      remaining=$((deadline - now))
+      [[ "$remaining" -gt "$TIMEOUT_POLL_INTERVAL" ]] && remaining="$TIMEOUT_POLL_INTERVAL"
+      sleep "$remaining"
+    done
+    kill -0 "$pid" 2>/dev/null || exit 0
+    printf 1 >"$fired"
+    # TERM first so claude -p can flush its output and cost sidecar, then KILL,
+    # because the case this guard exists for is a process wedged past a suspend
+    # that may never act on a TERM. Every kill tolerates failure: the group can
+    # exit on its own between the liveness check and the signal.
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    local grace=$(($(date +%s) + TIMEOUT_KILL_GRACE))
+    while kill -0 "$pid" 2>/dev/null; do
+      [[ "$(date +%s)" -ge "$grace" ]] && {
+        kill -KILL -- "-$pid" 2>/dev/null || true
+        break
+      }
+      sleep 1
+    done
+  ) &
+  local watchdog=$!
+
+  local rc=0
+  wait "$pid" || rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+
+  [[ -s "$fired" ]] && rc="$TIMEOUT_EXIT"
+  rm -f "$fired"
+  return "$rc"
 }
 
 # resolve_tunable <KEY> <dotenv-path>
