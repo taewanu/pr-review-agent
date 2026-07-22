@@ -64,6 +64,10 @@ Two independent dials.
    list. Unset keeps all five. The merge and confidence gate are already
    lens-count-agnostic (ADR 0023 Decision 3).
 
+   > **Amended 2026-07-22 (#222).** Six, not five: ADR 0035 adds the `intent`
+   > lens, which this dial governs like any other. The lens-count-agnostic
+   > property is what let it join without touching either dial.
+
 They are orthogonal: `REVIEW_MODE=single-agent` with `REVIEW_LENSES` unset is
 five single-agent lenses, not one. Nothing else is coupled to either dial — in
 particular the mode does not touch `CONFIDENCE_THRESHOLD`. An earlier draft

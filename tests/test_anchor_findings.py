@@ -479,6 +479,19 @@ def test_drop_forbidden_combos_drops_important_polish():
     assert dropped == 1
 
 
+def test_drop_forbidden_combos_drops_pre_existing_intent():
+    # ADR 0035: a intent finding compares this PR's description against this
+    # PR's diff, so neither side of it can pre-date the change under review.
+    findings = [
+        {"severity": "pre_existing", "type": "intent", "body": "drop me"},
+        {"severity": "important", "type": "intent", "body": "keep me"},
+        {"severity": "nit", "type": "intent", "body": "keep me too"},
+    ]
+    kept, dropped = anchor_findings.drop_forbidden_combos(findings)
+    assert [f["body"] for f in kept] == ["keep me", "keep me too"]
+    assert dropped == 1
+
+
 def test_drop_forbidden_combos_counts_multiple():
     findings = [
         {"severity": "important", "type": "polish", "body": "drop 1"},

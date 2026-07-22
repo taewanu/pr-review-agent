@@ -45,6 +45,24 @@ Add a fresh **Editor agent** (`review-agent-editor`, see CONTEXT.md) as a daemon
 >
 > `voice.py` is untouched, consistent with the ADR 0010 §4 boundary that #144 reaffirmed for the seven prior semantic facets.
 
+> **Amended 2026-07-21 (#222).** The drop test branches on `type`. The Editor
+> drops a Finding whose claim the code at HEAD does not support, which for a
+> `intent` Finding (ADR 0002, ADR 0035) describes the expected state rather
+> than a defect: the code is correct, it just is not what the change said it
+> would be. Applied unchanged, the rule would delete every Finding the intent
+> lens produces before it posts.
+>
+> So an `intent` Finding is verified against the other side of its comparison.
+> The Editor re-reads the PR's own description, and the linked issue when the
+> Finding cites one, and drops the Finding when the claim actually holds. It is
+> still a verification against evidence, and the evidence is still re-gathered
+> first-hand; only which artifact is read changes. Every other Finding type keeps
+> the HEAD-code test unchanged.
+>
+> The Editor's fresh independent re-read (Decision point 1) is what makes this
+> safe to branch. It is not being asked to trust the author's reading of the PR
+> body, only to do its own.
+
 ## Boundary
 
 This ADR decides the editorial pass over content. It does not touch the severity/type taxonomy (ADR 0002), finding relocation (anchoring), the format layer (ADR 0010 §1 to §3), or the reply path. The voice gate's *scope* is unchanged by ADR 0010 §4; only its pipeline position moves.

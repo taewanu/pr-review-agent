@@ -374,7 +374,7 @@ resolution() {
   return 0
 }
 
-meta="$(gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,author)"
+meta="$(gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,author,title,body,closingIssuesReferences)"
 HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
 HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
@@ -496,8 +496,8 @@ RAW_FILE="$SCRATCH/.pr-review-raw.txt"
 # (daemon/merge_findings.py), so a bug one lens misses another can still catch.
 # Parallel arrays, not an associative array, so this stays bash-3.2-safe (ADR
 # 0013's runtime constraint: stock macOS bash has no bash-4 associative arrays).
-LENS_COMMANDS=(/review-pr /review-pr-correctness /review-pr-perf /review-pr-security /review-pr-tests)
-LENS_LABELS=(default correctness perf security tests)
+LENS_COMMANDS=(/review-pr /review-pr-correctness /review-pr-perf /review-pr-security /review-pr-tests /review-pr-intent)
+LENS_LABELS=(default correctness perf security tests intent)
 # Each path's own filename suffix names its lens; a named variable per lens
 # would only be read once, right here, so the array is written inline.
 LENS_RAW_FILES=(
@@ -506,12 +506,19 @@ LENS_RAW_FILES=(
   "$SCRATCH/.pr-review-raw-perf.txt"
   "$SCRATCH/.pr-review-raw-security.txt"
   "$SCRATCH/.pr-review-raw-tests.txt"
+  "$SCRATCH/.pr-review-raw-intent.txt"
 )
+# ADR 0035: the intent lens reads the change's stated intent alongside the diff,
+# so unlike the code lenses it needs an input file. Bare name like the diff,
+# since the lens reads it from the scratch cwd.
+INTENT_BASENAME=".pr-review-intent.md"
+INTENT_FILE="$SCRATCH/$INTENT_BASENAME"
 # ADR 0034: restrict the active lens set via REVIEW_LENSES, a space-separated list
 # of labels (e.g. "default" or "default correctness"). Collapsing to fewer lenses
 # is the one lever that cuts review cost proportionally, trading the recall that
 # independent reads buy (ADR 0022/0023): measured, one lens misses the hard
-# co-varying-state class the five catch. Unset keeps all five (ADR 0023 default).
+# co-varying-state class the full set catches. Unset keeps all six: the five code
+# lenses of ADR 0023 plus the intent lens of ADR 0035.
 # Filtering the three parallel arrays together preserves their index alignment;
 # the merge and gate are already lens-count-agnostic (ADR 0023 Decision 3).
 REVIEW_LENSES="$(resolve_tunable REVIEW_LENSES "$SCRIPT_DIR/../.env")"
@@ -530,13 +537,100 @@ if [[ -n "${REVIEW_LENSES:-}" ]]; then
     done
   done
   if [[ ${#_sel_labels[@]} -eq 0 ]]; then
-    log_err "REVIEW_LENSES='$REVIEW_LENSES' matched no known lens (default correctness perf security tests)"
+    log_err "REVIEW_LENSES='$REVIEW_LENSES' matched no known lens (default correctness perf security tests intent)"
     exit 1
   fi
   LENS_COMMANDS=("${_sel_cmds[@]}")
   LENS_LABELS=("${_sel_labels[@]}")
   LENS_RAW_FILES=("${_sel_raws[@]}")
   log_info "REVIEW_LENSES active: ${LENS_LABELS[*]}"
+fi
+
+# ADR 0035: assemble what the change says it does, for the intent lens to read
+# against the diff. Two rungs. The PR's own title and body come free with the
+# metadata fetch above; the body behind each closing reference costs a call per
+# issue and is only there when the author wrote one. A rung that fails is named
+# in the file rather than left blank, so the lens reads a gap as less evidence
+# instead of as license to guess.
+build_intent_file() {
+  local n owner repo issue_rc
+  {
+    printf '# What this change says it does\n\n'
+    printf '## PR title\n\n%s\n\n' "$(jq -r '.title // ""' <<<"$meta")"
+    printf '## PR description\n\n'
+    jq -r 'if (.body // "") == "" then "(empty)" else .body end' <<<"$meta"
+    printf '\n'
+  } >"$INTENT_FILE"
+
+  while read -r n owner repo; do
+    [[ -z "$n" ]] && continue
+    issue_rc=0
+    # Each closing reference carries its own repo, so a cross-repo `Closes` is
+    # fetched from where the issue actually lives, not from the PR's base.
+    run_with_timeout "${GH_API_CALL_TIMEOUT:-90}" \
+      gh issue view "$n" --repo "$owner/$repo" --json title,body \
+      >"$SCRATCH/.pr-review-issue-$n.json" 2>/dev/null || issue_rc=$?
+    if [[ "$issue_rc" -ne 0 ]]; then
+      printf '\n## Linked issue %s/%s#%s\n\n(unreadable: private, deleted, or the fetch failed)\n' \
+        "$owner" "$repo" "$n" >>"$INTENT_FILE"
+      log_info "intent: ${owner}/${repo}#${n} unreadable, continuing without it"
+      continue
+    fi
+    {
+      printf '\n## Linked issue %s/%s#%s: ' "$owner" "$repo" "$n"
+      jq -r '.title // ""' "$SCRATCH/.pr-review-issue-$n.json"
+      printf '\n'
+      jq -r 'if (.body // "") == "" then "(empty)" else .body end' \
+        "$SCRATCH/.pr-review-issue-$n.json"
+      printf '\n'
+    } >>"$INTENT_FILE"
+  done < <(jq -r '.closingIssuesReferences[]? |
+    "\(.number) \(.repository.owner.login) \(.repository.name)"' <<<"$meta")
+}
+
+# The lens is skipped when the change states nothing to contradict. Title alone
+# does not count: it is too short to contradict a diff, and counting it would run
+# the lens on every PR, which is the cost this branch exists to avoid. HTML
+# comments are stripped first so a PR template's boilerplate does not read as a
+# description the author wrote.
+intent_active=0
+for _label in "${LENS_LABELS[@]}"; do
+  if [[ "$_label" == "intent" ]]; then
+    intent_active=1
+  fi
+done
+intent_body_len="$(jq -r '.body // ""' <<<"$meta" |
+  python3 -c 'import re,sys; print(len(re.sub(r"<!--.*?-->", "", sys.stdin.read(), flags=re.S).strip()))')"
+intent_issue_count="$(jq '.closingIssuesReferences | length' <<<"$meta")"
+# The skip needs another lens to fall back to. Under REVIEW_LENSES=intent it
+# would otherwise empty the lens set, leaving the merge with no payload at all,
+# so an intent-only config runs the lens and lets it return no findings.
+intent_only=0
+if [[ "${#LENS_LABELS[@]}" -eq 1 && "$intent_active" -eq 1 ]]; then
+  intent_only=1
+fi
+if [[ "$intent_active" -eq 0 ]]; then
+  # REVIEW_LENSES excludes the lens, so nothing will read the file. Building it
+  # anyway costs a `gh issue view` per closing reference every polling cycle, and
+  # a per-PR network call is hang surface whether or not its result is used.
+  :
+elif [[ "$intent_body_len" -gt 0 || "$intent_issue_count" -gt 0 || "$intent_only" -eq 1 ]]; then
+  build_intent_file
+else
+  _kept_cmds=()
+  _kept_labels=()
+  _kept_raws=()
+  for _i in "${!LENS_LABELS[@]}"; do
+    if [[ "${LENS_LABELS[$_i]}" != "intent" ]]; then
+      _kept_cmds+=("${LENS_COMMANDS[$_i]}")
+      _kept_labels+=("${LENS_LABELS[$_i]}")
+      _kept_raws+=("${LENS_RAW_FILES[$_i]}")
+    fi
+  done
+  LENS_COMMANDS=("${_kept_cmds[@]}")
+  LENS_LABELS=("${_kept_labels[@]}")
+  LENS_RAW_FILES=("${_kept_raws[@]}")
+  log_info "intent lens skipped: no description and no linked issue"
 fi
 
 # The editor agent reads the draft from cwd by basename (like the diff), so the
@@ -696,8 +790,9 @@ REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
 # defect survived weeks of dogfood. The dial is only trustworthy if it says so.
 log_info "model: ${REVIEW_MODEL}"
 
-# ADR 0023 (revised): five independent lenses read the same diff, each
-# unaware of the others' output, so a bug one misses another can still catch.
+# ADR 0023 (revised): independent lenses read the same diff, each unaware of the
+# others' output, so a bug one misses another can still catch. The intent lens
+# (ADR 0035) is the one that reads more than the diff.
 # Dispatched in parallel, each bounded by the global claude_slot pool
 # (daemon/lib.sh's acquire_claude_slot/release_claude_slot), not by ADR 0013's
 # MAX_PARALLEL: that dial now only bounds concurrent review-pr.sh *processes*,
@@ -712,7 +807,7 @@ log_info "model: ${REVIEW_MODEL}"
 # orchestrator-worker shape); `single-agent` runs the lens in the process that
 # already isolates it, dropping the subagent layer that only forwarded its
 # stdout. The two dials are independent: `single-agent` with REVIEW_LENSES unset
-# is five single-agent lenses, not one.
+# is six single-agent lenses, not one.
 #
 # The mode deliberately touches nothing else. An earlier draft also lowered
 # CONFIDENCE_THRESHOLD here, which silently overrode the operator's own .env
@@ -772,6 +867,11 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
       {
         printf 'Review this PR per your instructions and emit the JSON payload.\n'
         printf 'The line-numbered diff is at: %s\n' "$NUMBERED_BASENAME"
+        # ADR 0035: the intent lens gets the second side of its comparison. Every
+        # other lens has only the diff, which is the whole reason it exists.
+        if [[ "$lens_label" == "intent" ]]; then
+          printf 'What the change says it does is at: %s\n' "$INTENT_BASENAME"
+        fi
         printf 'Read it, then investigate the surrounding code with your tools '
         printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
       } >"$single_prompt"
@@ -787,8 +887,13 @@ while [[ "$lens_i" -lt "$lens_count" ]]; do
           --cost-out "$lens_raw.cost" ||
         rc=$?
     else
+      lens_args="$lens_cmd $PR_URL --diff $NUMBERED_BASENAME"
+      # ADR 0035, as above: only the intent lens takes a second input.
+      if [[ "$lens_label" == "intent" ]]; then
+        lens_args="$lens_args --intent $INTENT_BASENAME"
+      fi
       run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-        claude -p "$lens_cmd $PR_URL --diff $NUMBERED_BASENAME" \
+        claude -p "$lens_args" \
         --model "$REVIEW_MODEL" \
         --output-format stream-json --verbose \
         2>"$lens_raw.stderr" |
@@ -903,6 +1008,14 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
         cat "$AUTHOR_BASENAME"
         printf '\n\n=== DIFF (line-numbered) ===\n'
         cat "$NUMBERED_BASENAME"
+        # ADR 0035: an intent finding is verified against the change's stated
+        # intent, not against the code, so the editor needs that side too. The
+        # file exists only when the lens ran, and only that lens emits a finding
+        # needing it, so an empty test covers both.
+        if [[ -s "$INTENT_FILE" ]]; then
+          printf '\n\n=== WHAT THE CHANGE SAYS IT DOES (for intent findings) ===\n'
+          cat "$INTENT_BASENAME"
+        fi
       } >"$editor_prompt"
       run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
         claude -p --append-system-prompt-file "$editor_sys" \
@@ -916,8 +1029,13 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
           --cost-out "$EDIT_RAW_FILE.cost" ||
         rc=$?
     else
+      # ADR 0035, as in the single-agent branch above.
+      editor_args="/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME"
+      if [[ -s "$INTENT_FILE" ]]; then
+        editor_args="$editor_args --intent $INTENT_BASENAME"
+      fi
       run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
-        claude -p "/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME" \
+        claude -p "$editor_args" \
         --model "$REVIEW_MODEL" \
         --output-format stream-json --verbose \
         2>"$EDIT_RAW_FILE.stderr" |

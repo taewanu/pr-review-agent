@@ -569,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
         + (
             " ".join(f"{k}={v}" for k, v in config.items())
             if config
-            else "none set (review-pr.sh defaults: subagent, all five lenses)"
+            else "none set (review-pr.sh defaults: subagent, all six lenses)"
         ),
         file=sys.stderr,
     )

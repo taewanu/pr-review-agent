@@ -162,7 +162,7 @@ fi
 # Severity and type emoji maps per ADR 0002. Single-sourced here so the
 # outside-the-diff render and the inline-comments render stay in lockstep.
 SEV_EMOJI='{"important":"🔴","nit":"🟡","pre_existing":"🟣"}'
-TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨"}'
+TYPE_EMOJI='{"bug":"🐛","refactor":"🔧","polish":"✨","intent":"🔀"}'
 
 # Render unanchored findings into a Markdown section appended to the review body.
 # `## Findings outside the diff` is the canonical relocation surface per ADR 0005.

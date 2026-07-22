@@ -13,7 +13,7 @@ The top-level summary text of a Pending review. 2–3 sentences, English. When s
 _Avoid_: summary (use Review body for the formal term; "summary" is fine in casual prose)
 
 **Finding**:
-One logical review item the Review agent emits. Has a `path`, `line`, `severity` (`important` / `nit` / `pre_existing`), `type` (`bug` / `refactor` / `polish`), and `body`. Distinct from the Pending review's top-level Review body. Severity values render at posting time as 🔴 Important / 🟡 Nit / 🟣 Pre-existing per ADR 0002.
+One logical review item the Review agent emits. Has a `path`, `line`, `severity` (`important` / `nit` / `pre_existing`), `type` (`bug` / `refactor` / `polish` / `intent`), and `body`. Distinct from the Pending review's top-level Review body. Severity values render at posting time as 🔴 Important / 🟡 Nit / 🟣 Pre-existing per ADR 0002.
 _Avoid_: comment (use Inline comment for the rendered API form), issue, remark
 
 **Inline comment**:
@@ -33,7 +33,7 @@ The person whose `gh` CLI token the daemon uses. Reviews are authored under this
 _Avoid_: user (ambiguous with PR author), reviewer (GitHub's human-assigned PR reviewers; the Operator may or may not also be one)
 
 **Review agent**:
-A Claude Code subagent that reads a PR's diff and emits structured findings. Defined as a file at `.claude/agents/review-agent-*.md`. V1 ships one (`review-agent-default`); `security`, `perf`, and `tests` are vendored but inactive. Review agents are stateless and do not post; the daemon's posting step handles the GitHub side. Use the hyphenated form "review-agent" when the compound serves as a single token (identifiers, file names).
+A Claude Code subagent that reads a PR's diff and emits structured findings. Defined as a file at `.claude/agents/review-agent-*.md`. Six run in parallel as independent lenses (ADR 0023, ADR 0035): `default`, `correctness`, `security`, `perf`, `tests`, and `intent`, narrowed per operator by `REVIEW_LENSES` (ADR 0034). Five read only the diff; `intent` also reads what the change said it would do. Review agents are stateless and do not post; the daemon's posting step handles the GitHub side. Use the hyphenated form "review-agent" when the compound serves as a single token (identifiers, file names).
 _Avoid_: agent alone (Claude Code's broader term for parallelization; use the qualified compound), reviewer (ambiguous with GitHub's human-assigned PR reviewers)
 
 **Editor agent**:

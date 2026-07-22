@@ -1,9 +1,9 @@
 ---
 description: Run the editorial pass over a draft review and emit the edited decisions.
-argument-hint: <pr-url> --diff <path> --payload <path>
+argument-hint: <pr-url> --diff <path> --payload <path> [--intent <path>]
 ---
 
-Dispatch the `review-agent-editor` subagent on the PR. Pass through the arguments verbatim: the first positional is the PR URL, `--diff <path>` points to the diff the review agent saw, and `--payload <path>` points to the draft review payload (the JSON the review agent emitted) to edit.
+Dispatch the `review-agent-editor` subagent on the PR. Pass through the arguments verbatim: the first positional is the PR URL, `--diff <path>` points to the diff the review agent saw, and `--payload <path>` points to the draft review payload (the JSON the review agent emitted) to edit. `--intent <path>`, present only when the intent lens ran, points to what the change says it does, which is the side an `intent` finding is verified against (ADR 0035).
 
 Emit the subagent's stdout unchanged. Do not summarize, reformat, or add a wrapping fence: the daemon's `apply_edits.py` reads the last ` ```json ` block from the raw output.
 
