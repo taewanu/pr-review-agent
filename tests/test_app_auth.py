@@ -147,11 +147,11 @@ def test_probe_failure_is_exit_2(tmp_path):
     assert "rc=2" in out.stdout
 
 
-def test_warning_names_only_uninstalled_repos(tmp_path):
+def test_discovery_names_only_uninstalled_repos(tmp_path):
     key = _app_key(tmp_path)
     bindir = _stub_curl(tmp_path, '{"message": "Not Found"}', http_code="404")
     out = _run(
-        f"APP_KEY_PATH={key}; warn_missing_installations {APP_ID} example/one example/two",
+        f"APP_KEY_PATH={key}; discover_missing_installations {APP_ID} example/one example/two",
         path_prefix=bindir,
     )
     assert out.returncode == 0, out.stderr
@@ -164,7 +164,7 @@ def test_unreachable_repo_stays_in_the_watch_list(tmp_path):
     key = _app_key(tmp_path)
     bindir = _stub_curl(tmp_path, '{"message": "Server Error"}', http_code="503")
     out = _run(
-        f"APP_KEY_PATH={key}; warn_missing_installations {APP_ID} example/one",
+        f"APP_KEY_PATH={key}; discover_missing_installations {APP_ID} example/one",
         path_prefix=bindir,
     )
     assert out.stdout == ""
@@ -242,13 +242,82 @@ def test_token_is_not_exported(tmp_path):
     assert "absent" in out.stdout, "the minted token leaked into the environment"
 
 
-def test_per_command_injection_reaches_the_child(tmp_path):
-    """The documented call shape must actually deliver the token."""
+# --- run_with_app_token -----------------------------------------------------
+
+WRAP = f"run_with_app_token {APP_ID} {INSTALLATION_ID}"
+
+
+def test_wrapper_reaches_the_child_and_not_the_shell(tmp_path):
     stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
     out = _run(
-        f'{stub}; GH_TOKEN="$(gh_token {APP_ID} {INSTALLATION_ID})" '
-        "bash -c 'printf %s \"$GH_TOKEN\"'; printf '|%s' \"${GH_TOKEN:-unset}\""
+        f"{stub}; {WRAP} bash -c 'printf %s \"$GH_TOKEN\"'; printf '|%s' \"${{GH_TOKEN:-unset}}\""
     )
     assert out.returncode == 0, out.stderr
-    # The child sees it; the invoking shell does not retain it afterwards.
+    # The command sees it; the invoking shell never holds it.
     assert out.stdout == "tok-abc|unset"
+
+
+def test_wrapper_refuses_to_run_when_the_mint_fails(tmp_path):
+    """The reason the wrapper exists, pinned.
+
+    `GH_TOKEN="$(gh_token ...)" cmd` runs cmd with an empty token at exit 0 when
+    the mint fails, so gh silently falls back to the operator's stored login and
+    posts under the human identity ADR 0036 replaces. The wrapper must abort.
+    """
+    out = _run(
+        "_mint_installation_token() { return 1; }; "
+        f"{WRAP} bash -c 'echo COMMAND_RAN' || echo rc=$?"
+    )
+    assert "COMMAND_RAN" not in out.stdout, "the command ran without a token"
+    assert "rc=1" in out.stdout
+    assert "refusing to run" in out.stderr
+
+
+def test_bare_prefix_would_have_failed_open(tmp_path):
+    """Documents the trap the wrapper exists to close, so it stays visible.
+
+    If this ever stops holding, bash changed and the wrapper's rationale needs
+    revisiting; until then it is why a convention in a comment was not enough.
+    """
+    out = _run(
+        "_mint_installation_token() { return 1; }; "
+        f'GH_TOKEN="$(gh_token {APP_ID} {INSTALLATION_ID})" '
+        "bash -c 'echo RAN with [$GH_TOKEN]' || echo rc=$?"
+    )
+    assert "RAN with []" in out.stdout
+    assert "rc=" not in out.stdout, "the bare prefix does not propagate failure"
+
+
+def test_wrapper_needs_a_command(tmp_path):
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    out = _run(f"{stub}; {WRAP} || echo rc=$?")
+    assert "rc=1" in out.stdout
+    assert "needs a command" in out.stderr
+
+
+# --- Malformed responses ----------------------------------------------------
+
+
+def test_non_json_mint_response_does_not_abort_the_daemon(tmp_path):
+    """An unguarded jq assignment would take the calling script down with set -e."""
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, "<html>502 Bad Gateway</html>")
+    out = _run(
+        f"APP_KEY_PATH={key}; _mint_installation_token {APP_ID} {INSTALLATION_ID} "
+        "|| echo rc=$?; echo STILL_ALIVE",
+        path_prefix=bindir,
+    )
+    assert "STILL_ALIVE" in out.stdout, "set -e killed the script instead of returning"
+    assert "rc=1" in out.stdout
+
+
+def test_non_json_probe_response_is_exit_2(tmp_path):
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, "<html>oops</html>", http_code="200")
+    out = _run(
+        f"APP_KEY_PATH={key}; app_installation_id example example {APP_ID} "
+        "|| echo rc=$?; echo STILL_ALIVE",
+        path_prefix=bindir,
+    )
+    assert "STILL_ALIVE" in out.stdout
+    assert "rc=2" in out.stdout

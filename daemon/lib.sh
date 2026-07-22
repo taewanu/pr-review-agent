@@ -412,21 +412,24 @@ state_write() {
 
 # --- GitHub App authentication (ADR 0036) ------------------------------------
 #
-# The daemon posts as `<app>[bot]`, authenticating with an installation token
-# minted from the App private key. Two legs, and only the second can use gh:
-# `gh api` sends `Authorization: token <value>`, which the App-level endpoints
-# reject, so the JWT leg is openssl plus curl. The installation token the second
-# leg returns works with gh normally.
+# The daemon posts as `<app>[bot]` using an installation token minted from the
+# App private key. Only the second leg can use gh: `gh api` sends
+# `Authorization: token`, which the App endpoints reject, so the JWT leg is
+# openssl plus curl.
 #
-# Callers inject the token per command, never export it:
-#
-#     GH_TOKEN="$(gh_token "$owner" "$repo")" gh api ...
-#     GH_TOKEN="$(gh_token "$owner" "$repo")" python3 daemon/resolution.py ...
-#
-# A command prefix leaves the invoking shell's own environment clean, so a later
-# `claude -p` in the same script inherits nothing. That is the point of the seam:
-# every agent definition grants unrestricted Bash, so an inherited token would be
-# write access to every installed repository.
+# Every call site goes through run_with_app_token, never through a bare
+# assignment prefix. `GH_TOKEN="$(gh_token ...)" gh api ...` looks equivalent and
+# is not: a failed mint leaves GH_TOKEN empty and still runs the command at exit
+# 0, so gh falls back to the operator's stored login and posts under the human
+# identity the App replaces. The wrapper aborts instead (ADR 0036 decision 5).
+
+# Where the App private key lives. An operator setting, so it resolves like every
+# other dial; the .env key ships with the rest of the App config in #241.
+resolve_app_key_path() {
+  local path
+  path="$(resolve_tunable APP_KEY_PATH "$1")"
+  printf '%s' "${path:-$HOME/.pr-review-agent/app.pem}"
+}
 
 APP_KEY_PATH="${APP_KEY_PATH:-$HOME/.pr-review-agent/app.pem}"
 
@@ -465,25 +468,36 @@ _app_jwt() {
 # parsed rather than trusted: a 4xx returns an error body with no `token` key,
 # which would otherwise print as an empty credential and fail far from here.
 _mint_installation_token() {
-  local app_id="$1" installation_id="$2" jwt response token expires_at
+  local app_id="$1" installation_id="$2" jwt response fields token expires_at
+  local stderr_capture
 
   jwt="$(_app_jwt "$app_id")" || return 1
 
+  stderr_capture="$(mktemp)"
   if ! response="$(curl -sS -X POST \
     --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${jwt}" \
     -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/app/installations/${installation_id}/access_tokens" 2>/dev/null)"; then
-    log_err "installation token request failed for installation ${installation_id}"
+    "https://api.github.com/app/installations/${installation_id}/access_tokens" 2>"$stderr_capture")"; then
+    log_err "installation token request failed for installation ${installation_id}: $(<"$stderr_capture")"
+    rm -f "$stderr_capture"
+    return 1
+  fi
+  rm -f "$stderr_capture"
+
+  # Guarded because an unparseable body (proxy HTML, an empty 502) exits jq
+  # non-zero, and a bare assignment would take the daemon down with `set -e`
+  # instead of reaching the return below.
+  if ! fields="$(jq -r '[.token // "", .expires_at // "", .message // ""] | @tsv' <<<"$response" 2>/dev/null)"; then
+    log_err "installation token response was not JSON for installation ${installation_id}"
     return 1
   fi
 
-  token="$(jq -r '.token // empty' <<<"$response")"
-  expires_at="$(jq -r '.expires_at // empty' <<<"$response")"
+  IFS=$'\t' read -r token expires_at _message <<<"$fields"
 
   if [[ -z "$token" ]]; then
     # The error message is safe to log; the token never is.
-    log_err "installation token rejected: $(jq -r '.message // "unparseable response"' <<<"$response")"
+    log_err "installation token rejected: ${_message:-no message in response}"
     return 1
   fi
 
@@ -493,23 +507,28 @@ _mint_installation_token() {
 # app_installation_id <owner> <repo> <app-id>
 # Prints the installation id for one repository. Exit codes separate the two
 # outcomes a caller must treat differently:
-#   0 — installed (stdout has the id)
-#   1 — not installed (GitHub answers 404), the skip-with-a-warning case
-#   2 — the call itself failed (network, 5xx), which is evidence of neither
+#   0: installed (stdout has the id)
+#   1: not installed (GitHub answers 404), the skip-with-a-warning case
+#   2: the call itself failed (network, 5xx), which is evidence of neither
 # The 404 is exactly the missing-installation signal, so the check falls out of a
 # call the daemon already needs to make (ADR 0036 decision 4).
 app_installation_id() {
   local owner="$1" repo="$2" app_id="$3" jwt response id http_code
+  local stderr_capture
 
   jwt="$(_app_jwt "$app_id")" || return 2
 
+  stderr_capture="$(mktemp)"
   if ! response="$(curl -sS -w '\n%{http_code}' \
     --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${jwt}" \
     -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${owner}/${repo}/installation" 2>/dev/null)"; then
+    "https://api.github.com/repos/${owner}/${repo}/installation" 2>"$stderr_capture")"; then
+    log_err "installation probe failed for ${owner}/${repo}: $(<"$stderr_capture")"
+    rm -f "$stderr_capture"
     return 2
   fi
+  rm -f "$stderr_capture"
 
   http_code="$(tail -1 <<<"$response")"
   case "$http_code" in
@@ -518,19 +537,28 @@ app_installation_id() {
     *) return 2 ;;
   esac
 
-  id="$(sed '$d' <<<"$response" | jq -r '.id // empty')"
+  if ! id="$(sed '$d' <<<"$response" | jq -r '.id // empty' 2>/dev/null)"; then
+    return 2
+  fi
   [[ -n "$id" ]] || return 2
   printf '%s' "$id"
 }
 
-# warn_missing_installations <app-id> <repo>...
+# discover_missing_installations <app-id> <repo>...
 # Prints every watched repo the App is not installed on, one per line, and logs
-# one boot-time line naming them. The daemon starts and skips those rather than
-# failing whole: a missing installation is a permanent per-repo state, not a
-# transient error, so it belongs in the boot surface instead of accumulating as
-# per-PR failures (ADR 0036 decision 4). A probe that fails outright leaves the
-# repo in the watch list, since "could not check" is not "not installed".
-warn_missing_installations() {
+# one line naming them. Both, because the caller needs the list to filter its
+# watch list and probing twice would double the network calls; the name says
+# discover for the same reason `discover_sentinel_sha` does.
+#
+# Call it once at daemon start, alongside `warn_env_drift` in run.sh, not per
+# cycle: a missing installation is a permanent per-repo state (ADR 0036
+# decision 4), and run.sh already documents the rule ("Boot-time, not per-tick").
+# Installing the App on a watched repo mid-run therefore needs a restart, which
+# is the trade for not probing every repo every cycle.
+#
+# A probe that fails outright leaves the repo in the watch list, since "could not
+# check" is not "not installed".
+discover_missing_installations() {
   local app_id="$1" repo owner name rc missing=()
   shift
 
@@ -560,26 +588,22 @@ _rfc3339_to_epoch() {
     true
 }
 
-# Treat a token as expired this many seconds early. GitHub issues them an hour
-# out, so the margin costs one extra mint per hour at most, and it covers the
-# gap the naive check leaves: a token that passes validation and then dies
-# mid-request, failing a write that may not be safe to retry.
-GH_TOKEN_REFRESH_MARGIN="${GH_TOKEN_REFRESH_MARGIN:-300}"
+# Treat a token as expired this many seconds early, covering the gap the naive
+# check leaves: one that passes validation and then dies mid-request, failing a
+# write that may not be safe to retry. An internal safety margin rather than an
+# operator dial, so it carries no .env key; tests override it by assignment.
+GH_TOKEN_REFRESH_MARGIN=300
 
 # gh_token <app-id> <installation-id>
-# Prints a live installation token. Every gh and Python call site takes its
-# credential from here.
+# Prints a live installation token. Prefer run_with_app_token; call this directly
+# only where the credential cannot ride on a command.
 #
 # Cached in a shell variable for the life of the process, keyed by installation
-# because a token minted for one installation is not valid for another. That
-# choice is the middle of three. Minting per call is two extra round trips on
-# every one of the dozens a review tick makes, against a daemon with a
-# documented hang-on-stalled-network failure mode (#121). Caching to disk would
-# survive across the scripts one tick invokes, but it writes a bearer credential
-# with write access to every installed repository to the filesystem, and the
-# thing it buys is a handful of mints. A process-lifetime variable costs one
-# mint per script, never touches disk, and is not exported, so the `claude -p`
-# children that inherit the environment do not inherit the credential.
+# because a token minted for one is not valid for another. Disk would survive
+# across the scripts one cycle invokes, but it writes a bearer credential with
+# write access to every installed repository to the filesystem to save a handful
+# of mints. A shell variable is never exported, so the `claude -p` children that
+# inherit the environment do not inherit the credential.
 gh_token() {
   local app_id="$1" installation_id="$2"
   local cache_key cached now token expires_at expiry minted
@@ -612,6 +636,40 @@ gh_token() {
   # Assigns a global that outlives this function but is never exported.
   printf -v "$cache_key" '%s %s' "$token" "$expiry"
   printf '%s' "$token"
+}
+
+# run_with_app_token <app-id> <installation-id> <command> [args...]
+# Runs one command with the installation token in its environment and nowhere
+# else. The daemon's only sanctioned way to authenticate as the App.
+#
+# It exists because the obvious spelling is wrong in a way that is invisible:
+#
+#     GH_TOKEN="$(gh_token 1 2)" gh api ...     # do not
+#
+# When the mint fails, that runs gh with GH_TOKEN empty at exit 0, so gh falls
+# back to the operator's stored login and posts under the human identity the App
+# replaces. An assignment prefix cannot fail a command. This function checks the
+# mint first and aborts, which is the loud failure ADR 0036 decision 5 asks for.
+#
+# The token reaches the command's environment only, never this shell's, so a
+# later `claude -p` in the same script inherits nothing. Works for any command,
+# which matters because gh is invoked from Python too (`daemon/resolution.py`
+# and friends shell out without an `env=`).
+run_with_app_token() {
+  local app_id="$1" installation_id="$2" token
+  shift 2
+
+  if [[ $# -eq 0 ]]; then
+    log_err "run_with_app_token needs a command to run"
+    return 1
+  fi
+
+  if ! token="$(gh_token "$app_id" "$installation_id")" || [[ -z "$token" ]]; then
+    log_err "no App installation token for installation ${installation_id}: refusing to run '$1' unauthenticated"
+    return 1
+  fi
+
+  GH_TOKEN="$token" "$@"
 }
 
 # flatten_pages
