@@ -417,8 +417,11 @@ state_write() {
 # `Authorization: token`, which the App endpoints reject, so the JWT leg is
 # openssl plus curl.
 #
-# run_with_app_token is the only public entry: everything else here is private to
-# it, because the ways to hold a token wrong all look right (see its comment).
+# run_with_app_token is the only sanctioned way to hold a token; the minting and
+# caching behind it are private, because the ways to hold a token wrong all look
+# right (see its comment). Installation discovery is public and credential-free:
+# `app_installation_id` and `discover_missing_installations` answer "is the App
+# installed here" from a JWT alone, and #241 calls both.
 
 # Where the App private key lives. Environment-only for now; whether it also
 # earns a .env key is #241's call, alongside the rest of the App config.
@@ -464,7 +467,7 @@ _app_jwt() {
 # parsed rather than trusted: a 4xx returns an error body with no `token` key,
 # which would otherwise print as an empty credential and fail far from here.
 _mint_installation_token() {
-  local app_id="$1" installation_id="$2" jwt response fields token expires_at
+  local app_id="$1" installation_id="$2" jwt response token expires_at
   local api_message stderr_capture
 
   jwt="$(_app_jwt "$app_id")" || return 1
@@ -481,18 +484,24 @@ _mint_installation_token() {
   fi
   rm -f "$stderr_capture"
 
-  # Guarded because an unparseable body (proxy HTML, an empty 502) exits jq
-  # non-zero, and a bare assignment would take the daemon down with `set -e`
-  # instead of reaching the return below.
-  if ! fields="$(jq -r '[.token // "", .expires_at // "", .message // ""] | @tsv' <<<"$response" 2>/dev/null)"; then
+  # Validate the body parses before reading any field. Guarded because an
+  # unparseable body (proxy HTML, an empty 502) exits jq non-zero, and a bare
+  # assignment would take the daemon down with `set -e` instead of returning.
+  if ! jq -e . >/dev/null 2>&1 <<<"$response"; then
     log_err "installation token response was not JSON for installation ${installation_id}"
     return 1
   fi
 
-  IFS=$'\t' read -r token expires_at api_message <<<"$fields"
+  # One field per call rather than a packed line. A `@tsv` row read back with
+  # `IFS=$'\t'` silently mis-assigns: tab is whitespace, so `read` collapses a
+  # leading run of it, and an error body with no `token` shifted `.message` into
+  # the token slot. That printed GitHub's error text as a credential at exit 0.
+  token="$(jq -r '.token // empty' <<<"$response")"
+  expires_at="$(jq -r '.expires_at // empty' <<<"$response")"
 
   if [[ -z "$token" ]]; then
     # The error message is safe to log; the token never is.
+    api_message="$(jq -r '.message // empty' <<<"$response")"
     log_err "installation token rejected: ${api_message:-no message in response}"
     return 1
   fi
@@ -598,9 +607,15 @@ _rfc3339_to_epoch() {
 GH_TOKEN_REFRESH_MARGIN=300
 
 # _gh_token <app-id> <installation-id>
-# Prints a live installation token. Private: run_with_app_token is the only
-# sanctioned caller, because a token in a variable is a token someone can pass
-# somewhere it must not go.
+# Sets _GH_TOKEN_VALUE to a live installation token. Private: run_with_app_token
+# is the only sanctioned caller, because a token in a variable is a token someone
+# can pass somewhere it must not go.
+#
+# It assigns rather than prints so the cache survives. A caller reading it as
+# `$(_gh_token ...)` runs it in a subshell, and command substitution forks: the
+# cache assignment dies with the subshell while only stdout comes back, so every
+# call re-mints. The function looked correct in isolation and was, which is why
+# a direct-call test passed while no wrapped call ever warmed the cache.
 #
 # Cached in a shell variable for the life of the process, keyed by installation
 # because a token minted for one is not valid for another. Disk would survive
@@ -612,6 +627,10 @@ _gh_token() {
   local app_id="$1" installation_id="$2"
   local cache_key cached now token expires_at expiry minted
 
+  # Cleared first so a failed mint cannot leave the previous call's token behind
+  # for a caller that forgets to check the exit code.
+  _GH_TOKEN_VALUE=""
+
   # Indirect expansion needs a name, so sanitize the id into one.
   cache_key="_GH_TOKEN_CACHE_${installation_id//[^0-9A-Za-z]/_}"
   now="$(date +%s)"
@@ -622,7 +641,7 @@ _gh_token() {
     token="${cached%% *}"
     expiry="${cached##* }"
     if ((now + GH_TOKEN_REFRESH_MARGIN < expiry)); then
-      printf '%s' "$token"
+      _GH_TOKEN_VALUE="$token"
       return 0
     fi
   fi
@@ -637,9 +656,9 @@ _gh_token() {
   expiry="$(_rfc3339_to_epoch "$expires_at")"
   [[ -n "$expiry" ]] || expiry=$((now + 3600))
 
-  # Assigns a global that outlives this function but is never exported.
+  # Assigns globals that outlive this function but are never exported.
   printf -v "$cache_key" '%s %s' "$token" "$expiry"
-  printf '%s' "$token"
+  _GH_TOKEN_VALUE="$token"
 }
 
 # run_with_app_token <app-id> <installation-id> <command> [args...]
@@ -658,23 +677,24 @@ _gh_token() {
 # Takes a command rather than printing a value because gh is invoked from Python
 # too (`daemon/resolution.py` and friends shell out without an `env=`).
 #
-# The command must be on APP_TOKEN_COMMANDS. That list is an allowlist rather
-# than a ban on `claude`, because a ban fails open: `run_with_timeout 5 claude`
-# and `bash review-pr.sh` both slip past a name check on the first word, and the
-# second hands the token to every agent the script starts. A list of two entries
-# refuses interpreters outright, so nothing can carry the token indirectly.
+# The command is allowlisted rather than `claude` being banned, because a ban
+# fails open: `run_with_timeout 5 claude` and `bash review-pr.sh` both slip past
+# a name check on the first word, and the second hands the token to every agent
+# the script starts.
+#
+# `python3` is on the list and is itself an interpreter, so it is admitted only
+# as a runner for this repo's own helpers: a `.py` path, never `-c`, which would
+# take arbitrary code and could spawn an agent as readily as bash.
 #
 # The limit worth knowing: an allowed command is trusted not to spawn an agent
-# itself. `gh` cannot; the Python helpers here do not. Widening the list means
-# extending that trust, which is why test_app_auth.py pins its membership.
+# itself. `gh` cannot, and the daemon's Python helpers do not. Widening this
+# extends that trust, which is why test_app_auth.py pins the accepted shapes.
 #
 # A timeout wraps this, not the other way round, since `run_with_timeout` is not
-# on the list: `run_with_timeout 30 run_with_app_token ...`. That ordering also
+# allowed: `run_with_timeout 30 run_with_app_token ...`. That ordering also
 # bounds the mint, which the inner spelling would leave unbounded.
-APP_TOKEN_COMMANDS=(gh python3)
-
 run_with_app_token() {
-  local app_id="$1" installation_id="$2" token command allowed_command allowed=0
+  local app_id="$1" installation_id="$2" token command
   shift 2
 
   if [[ $# -eq 0 ]]; then
@@ -683,19 +703,25 @@ run_with_app_token() {
   fi
 
   command="$(basename -- "$1")"
-  for allowed_command in "${APP_TOKEN_COMMANDS[@]}"; do
-    [[ "$command" == "$allowed_command" ]] && allowed=1 && break
-  done
+  case "$command" in
+    gh) ;;
+    python3)
+      if [[ "${2:-}" != *.py ]]; then
+        log_err "run_with_app_token refuses 'python3 ${2:-}': the interpreter may hold an App token only to run a .py helper, never inline code (ADR 0036 decision 5)"
+        return 1
+      fi
+      ;;
+    *)
+      log_err "run_with_app_token refuses '${command}': only gh and the daemon's .py helpers may hold an App token (ADR 0036 decision 5). Wrap a timeout outside this call, not inside."
+      return 1
+      ;;
+  esac
 
-  if [[ "$allowed" -ne 1 ]]; then
-    log_err "run_with_app_token refuses '${command}': only ${APP_TOKEN_COMMANDS[*]} may hold an App token (ADR 0036 decision 5). Wrap a timeout outside this call, not inside."
-    return 1
-  fi
-
-  if ! token="$(_gh_token "$app_id" "$installation_id")" || [[ -z "$token" ]]; then
+  if ! _gh_token "$app_id" "$installation_id" || [[ -z "$_GH_TOKEN_VALUE" ]]; then
     log_err "no App installation token for installation ${installation_id}: refusing to run '$1' unauthenticated"
     return 1
   fi
+  token="$_GH_TOKEN_VALUE"
 
   GH_TOKEN="$token" "$@"
 }

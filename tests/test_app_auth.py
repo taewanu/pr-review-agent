@@ -25,7 +25,9 @@ APP_ID = "123456"
 INSTALLATION_ID = "789012"
 
 # The call under test, spelled once so the snippets stay inside the line limit.
-TOKEN_CALL = f"_gh_token {APP_ID} {INSTALLATION_ID}"
+# _gh_token assigns rather than prints, so a caller must not wrap it in $( ):
+# command substitution forks and the cache assignment would die with it.
+TOKEN_CALL = f'_gh_token {APP_ID} {INSTALLATION_ID}; printf "%s" "$_GH_TOKEN_VALUE"'
 
 
 def _run(snippet: str, path_prefix: Path | None = None) -> subprocess.CompletedProcess:
@@ -149,16 +151,39 @@ def test_probe_failure_is_exit_2(tmp_path):
     assert "rc=2" in out.stdout
 
 
+def _stub_curl_per_repo(tmp_path: Path, installed: str) -> Path:
+    """A curl that answers 200 for one repo and 404 for every other."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / "curl"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        f'if [[ "$*" == *"/repos/{installed}/installation"* ]]; then\n'
+        "  printf '%s\\n%s' '{\"id\": 1}' '200'\n"
+        "else\n"
+        "  printf '%s\\n%s' '{\"message\": \"Not Found\"}' '404'\n"
+        "fi\n"
+    )
+    stub.chmod(0o755)
+    return bindir
+
+
 def test_discovery_names_only_uninstalled_repos(tmp_path):
+    """The mixed case the function exists for.
+
+    With every repo answering 404 the expected output is the whole input list,
+    so appending every probed repo regardless of exit code would also pass.
+    """
     key = _app_key(tmp_path)
-    bindir = _stub_curl(tmp_path, '{"message": "Not Found"}', http_code="404")
+    bindir = _stub_curl_per_repo(tmp_path, installed="example/one")
     out = _run(
         f"APP_KEY_PATH={key}; discover_missing_installations {APP_ID} example/one example/two",
         path_prefix=bindir,
     )
     assert out.returncode == 0, out.stderr
-    assert out.stdout.split() == ["example/one", "example/two"]
-    assert "App not installed on" in out.stderr
+    assert out.stdout.split() == ["example/two"], "the installed repo must not be listed"
+    assert "example/two" in out.stderr
+    assert "example/one" not in out.stderr
 
 
 def test_unreachable_repo_stays_in_the_watch_list(tmp_path):
@@ -211,22 +236,44 @@ def test_expiring_token_is_reminted(tmp_path):
 def test_cache_is_keyed_per_installation(tmp_path):
     """A token minted for one installation is not valid for another."""
     stub, counter = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
-    out = _run(f"{stub}; _gh_token {APP_ID} 111 >/dev/null; _gh_token {APP_ID} 222 >/dev/null")
+    out = _run(f"{stub}; _gh_token {APP_ID} 111; _gh_token {APP_ID} 222")
     assert out.returncode == 0, out.stderr
     assert counter.read_text() == "xx"
 
 
-def test_unparseable_expiry_still_yields_a_token(tmp_path):
-    """The token is valid even when its expiry does not parse; the margin absorbs it."""
-    stub, _ = _with_counting_mint(tmp_path, "not-a-timestamp")
-    out = _run(f"{stub}; _gh_token {APP_ID} {INSTALLATION_ID}")
+def test_unparseable_expiry_still_caches(tmp_path):
+    """The one-hour fallback keeps the entry usable, not merely the call working.
+
+    Asserting a single call only proves the token was minted and returned, which
+    holds with the fallback deleted. What breaks without it is the second call:
+    the entry caches with an empty expiry, which evaluates to 0 in the
+    `((now + margin < expiry))` comparison, so every call re-mints.
+    """
+    stub, counter = _with_counting_mint(tmp_path, "not-a-timestamp")
+    out = _run(f"{stub}; {TOKEN_CALL} >/dev/null; {TOKEN_CALL}")
     assert out.returncode == 0, out.stderr
     assert out.stdout == "tok-abc"
+    assert counter.read_text() == "x", "the fallback expiry did not survive into the cache"
 
 
 def test_mint_failure_propagates(tmp_path):
-    out = _run(f"_mint_installation_token() {{ return 1; }}; {TOKEN_CALL} || echo rc=$?")
+    # Not TOKEN_CALL: its trailing printf would absorb the `||`.
+    out = _run(
+        "_mint_installation_token() { return 1; }; "
+        f"_gh_token {APP_ID} {INSTALLATION_ID} || echo rc=$?"
+    )
     assert "rc=1" in out.stdout
+
+
+def test_failed_mint_leaves_no_stale_token_behind(tmp_path):
+    """A caller that forgets the exit code must not read the previous token."""
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    out = _run(
+        f"{stub}; {TOKEN_CALL} >/dev/null; "
+        "_mint_installation_token() { return 1; }; "
+        f"_gh_token {APP_ID} 999 || true; printf '[%s]' \"$_GH_TOKEN_VALUE\""
+    )
+    assert out.stdout == "[]", "a failed mint left the prior call's token readable"
 
 
 def test_token_is_not_exported(tmp_path):
@@ -238,8 +285,7 @@ def test_token_is_not_exported(tmp_path):
     """
     stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
     out = _run(
-        f"{stub}; _gh_token {APP_ID} {INSTALLATION_ID} >/dev/null; "
-        "env | grep -c 'tok-abc' || echo 'absent'"
+        f"{stub}; _gh_token {APP_ID} {INSTALLATION_ID}; env | grep -c 'tok-abc' || echo 'absent'"
     )
     assert "absent" in out.stdout, "the minted token leaked into the environment"
 
@@ -344,15 +390,55 @@ def test_only_allowlisted_commands_may_hold_the_token(tmp_path, command):
     assert "may hold an App token" in out.stderr
 
 
-def test_allowlist_membership_is_pinned(tmp_path):
-    """Widening the list extends trust, so it must be a deliberate edit.
+def test_cache_warms_through_the_wrapper(tmp_path):
+    """The path that actually runs in production, which no other test covered.
 
-    An allowed command is trusted not to spawn an agent itself. `gh` cannot, and
-    the daemon's Python helpers do not. Adding an interpreter here would undo
-    the guarantee above without touching run_with_app_token at all.
+    An earlier revision read `_gh_token` as `$(...)`. Command substitution forks,
+    so the cache assignment died in the subshell while only stdout came back, and
+    every wrapped call re-minted. `test_token_is_minted_once_and_reused` missed it
+    by calling `_gh_token` in-shell.
     """
-    out = _run('printf "%s" "${APP_TOKEN_COMMANDS[*]}"')
-    assert out.stdout == "gh python3"
+    stub, counter = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    bindir = _stub_allowed(tmp_path)
+    out = _run(
+        f"{stub}; {WRAP} gh api x >/dev/null; {WRAP} gh api x >/dev/null; {WRAP} gh api x",
+        path_prefix=bindir,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "tok-abc"
+    assert counter.read_text() == "x", "three wrapped calls minted more than once"
+
+
+def test_python3_may_run_a_helper_but_not_inline_code(tmp_path):
+    """python3 is itself an interpreter, so it is admitted only as a .py runner.
+
+    `python3 -c` takes arbitrary code and could spawn an agent as readily as
+    bash, which would undo what refusing bash buys.
+    """
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    bindir = _stub_allowed(tmp_path, name="python3")
+
+    allowed = _run(f"{stub}; {WRAP} python3 daemon/resolution.py --thread 1", path_prefix=bindir)
+    assert allowed.returncode == 0, allowed.stderr
+    assert allowed.stdout == "tok-abc"
+
+    refused = _run(f"{stub}; {WRAP} python3 -c 'import os' || echo rc=$?", path_prefix=bindir)
+    assert "rc=1" in refused.stdout
+    assert "never inline code" in refused.stderr
+
+
+@pytest.mark.parametrize("command", ["git status", "curl https://x", "jq ."])
+def test_nothing_else_is_admitted(tmp_path, command):
+    """Pins the accepted shapes to gh and .py helpers alone.
+
+    An allowed command is trusted not to spawn an agent itself. Widening that
+    trust should fail a test rather than pass quietly, and these are plausible
+    things a future caller might reach for.
+    """
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    out = _run(f"{stub}; {WRAP} {command} || echo rc=$?")
+    assert "rc=1" in out.stdout
+    assert "may hold an App token" in out.stderr
 
 
 # --- Malformed responses ----------------------------------------------------
@@ -369,6 +455,40 @@ def test_non_json_mint_response_does_not_abort_the_daemon(tmp_path):
     )
     assert "STILL_ALIVE" in out.stdout, "set -e killed the script instead of returning"
     assert "rc=1" in out.stdout
+
+
+def test_well_formed_error_body_without_a_token_is_rejected(tmp_path):
+    """A 4xx that parses cleanly but carries no `token` must not yield a credential.
+
+    The non-JSON case dies at the jq step and returns through the unparseable
+    path, so it never reaches the empty-token guard. Without this, deleting that
+    guard leaves the suite green while an empty credential prints.
+    """
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, '{"message": "Bad credentials"}')
+    out = _run(
+        f"APP_KEY_PATH={key}; _mint_installation_token {APP_ID} {INSTALLATION_ID} || echo rc=$?",
+        path_prefix=bindir,
+    )
+    assert "rc=1" in out.stdout
+    assert "installation token rejected: Bad credentials" in out.stderr
+
+
+def test_successful_response_fields_land_in_the_right_order(tmp_path):
+    """The real parse, which every caching test stubs past.
+
+    `jq … | @tsv` then `IFS=$'\\t' read -r token expires_at api_message` is only
+    exercised here; reordering either side would hand callers the expiry as the
+    credential and nothing else would notice.
+    """
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, '{"token": "ghs_real", "expires_at": "2026-07-22T07:08:52Z"}')
+    out = _run(
+        f"APP_KEY_PATH={key}; _mint_installation_token {APP_ID} {INSTALLATION_ID}",
+        path_prefix=bindir,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "ghs_real 2026-07-22T07:08:52Z"
 
 
 def test_non_json_probe_response_is_exit_2(tmp_path):
