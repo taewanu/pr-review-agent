@@ -115,6 +115,103 @@ def test_timeout_escalates_to_sigkill_when_term_is_ignored():
     assert 2.5 < elapsed < 12, f"took {elapsed:.1f}s; escalation did not bound it"
 
 
+def test_escalation_reaches_a_child_whose_parent_took_the_term(tmp_path):
+    """A child that outlives its parent must still be killed.
+
+    It re-parents to init the instant the parent dies, so it is no longer a
+    descendant of the capped pid and a post-TERM walk cannot see it. Termination
+    snapshots the tree before signalling for exactly this case. The parent also
+    has to let the escalation finish: `wait` on the command returns as soon as
+    the parent takes its TERM, which is long before the grace window that exists
+    for what it left behind.
+    """
+    pidfile = tmp_path / "orphan.pid"
+    stubborn = tmp_path / "stubborn.sh"
+    stubborn.write_text("trap '' TERM\nsleep 60\n")
+    parent = tmp_path / "parent.sh"
+    # The parent dies on its TERM; the child ignores it and re-parents to init.
+    parent.write_text(f"bash {stubborn} &\necho $! >{pidfile}\nwait\n")
+
+    result = _run(
+        f"run_with_timeout 1 bash {parent}",
+        env={"TIMEOUT_KILL_GRACE": "2"},
+    )
+    assert result.returncode == TIMEOUT_EXIT, result.stderr
+
+    orphan = int(pidfile.read_text().strip())
+    try:
+        os.kill(orphan, 0)
+    except ProcessLookupError:
+        return
+    os.kill(orphan, signal.SIGKILL)  # don't leak it out of the test run
+    raise AssertionError(f"pid {orphan} survived: it re-parented out of the walk")
+
+
+def test_a_nested_cap_does_not_orphan_the_inner_tree(tmp_path):
+    """An outer cap must kill an inner one's work.
+
+    The daemon nests this helper: run_with_pr_timeout wraps review-pr.sh, which
+    calls it again per lens. Putting each job in its own process group would give
+    the inner job a group the outer kill cannot reach, leaving a `claude -p` tree
+    running with nothing supervising it.
+    """
+    pidfile = tmp_path / "deep.pid"
+    inner_script = tmp_path / "inner.sh"
+    inner_script.write_text(
+        f"source {LIB}\nrun_with_timeout 300 sh -c 'sleep 120 & echo $! >{pidfile}; wait'\n"
+    )
+    _run(f"run_with_timeout 1 bash {inner_script}")
+
+    deep = int(pidfile.read_text().strip())
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(deep, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    os.kill(deep, signal.SIGKILL)  # don't leak it out of the test run
+    raise AssertionError(f"pid {deep} outlived the outer cap")
+
+
+def test_an_early_finishing_command_does_not_hold_a_pipe_open():
+    """Every call site pipes into stream_format, so a held pipe is real latency.
+
+    The watchdog outlives a command that finished early and inherits its stdout,
+    so without redirecting it the reader blocks for the rest of the poll interval
+    even though the command returned at once. #251's acceptance says the
+    enforcement must not add latency.
+    """
+    start = time.monotonic()
+    result = subprocess.run(
+        ["bash", "-c", f"source {LIB}; run_with_timeout 30 sh -c 'echo hello' | cat"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "TIMEOUT_POLL_INTERVAL": "5"},
+        timeout=60,
+    )
+    elapsed = time.monotonic() - start
+    assert result.stdout.strip() == "hello"
+    # Well under the 5s interval: the reader must not wait on the watchdog.
+    assert elapsed < 2, f"pipe stayed open {elapsed:.1f}s; watchdog held the write end"
+
+
+def test_the_job_stays_in_the_shells_process_group(tmp_path):
+    """Ctrl-C must still stop a running review.
+
+    A terminal sends SIGINT only to its foreground process group, and
+    daemon/run.sh traps INT to exit without signalling descendants. Splitting the
+    job into its own group (`set -m`) silently breaks the documented stop flow.
+    """
+    # The capped command reports its own group, so this exercises the real path;
+    # backgrounding a sleep in the snippet would only measure bash's default.
+    reporter = tmp_path / "pgid.sh"
+    reporter.write_text("ps -o pgid= -p $$\n")
+    result = _run(f'printf "%s " "$(ps -o pgid= -p $$)"; run_with_timeout 5 bash {reporter}')
+    shell_pgid, job_pgid = result.stdout.split()
+    assert shell_pgid == job_pgid, "job left the shell's group; Ctrl-C would miss it"
+
+
 def test_grace_and_poll_dials_are_overridable():
     """Both dials are `readonly` at source time, so only a pre-source export wins.
 
