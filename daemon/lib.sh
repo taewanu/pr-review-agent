@@ -238,7 +238,13 @@ run_with_timeout() {
   local fired
   fired="$(mktemp -t pr-review-timeout.XXXXXX)"
 
-  "$@" &
+  # `0<&0` keeps the caller's stdin. Bash points an async command at /dev/null
+  # unless it is given an explicit redirect, and callers redirect into the
+  # function rather than the command: `run_with_timeout N claude … <prompt` binds
+  # the file to this function, and every lens then read an empty prompt and
+  # produced nothing. The perl-exec helper this replaced inherited stdin, so the
+  # redirect worked by accident and no call site spells it out.
+  "$@" 0<&0 &
   local pid=$!
 
   (

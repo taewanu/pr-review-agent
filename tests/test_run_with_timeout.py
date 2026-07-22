@@ -212,6 +212,22 @@ def test_the_job_stays_in_the_shells_process_group(tmp_path):
     assert shell_pgid == job_pgid, "job left the shell's group; Ctrl-C would miss it"
 
 
+def test_stdin_redirected_into_the_helper_reaches_the_command(tmp_path):
+    """Every lens feeds its prompt this way, and an empty one produces nothing.
+
+    Callers redirect into the function, not the command: `run_with_timeout N
+    claude ... <prompt` binds the file to run_with_timeout. Bash points an async
+    command at /dev/null unless it is given an explicit redirect, so dropping the
+    `0<&0` silently starves every `claude -p` of its prompt. The perl-exec helper
+    inherited stdin, which is why no call site spells the redirect out.
+    """
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("PROMPT-CONTENT\n")
+    result = _run(f"run_with_timeout 5 cat <{prompt}")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PROMPT-CONTENT", "the command read an empty stdin"
+
+
 def test_grace_and_poll_dials_are_overridable():
     """Both dials are `readonly` at source time, so only a pre-source export wins.
 
