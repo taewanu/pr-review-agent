@@ -27,7 +27,7 @@ AGENTS = REPO_ROOT / ".claude" / "agents"
 # is that the prompt and the schema agree, so reading both from one source would
 # defeat the test.
 SEVERITIES = ("important", "nit", "pre_existing")
-TYPES = ("bug", "refactor", "polish")
+TYPES = ("bug", "refactor", "polish", "intent")
 
 
 def _lens_labels() -> list[str]:

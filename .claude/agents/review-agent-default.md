@@ -115,7 +115,7 @@ Field rules:
 - `comments[].quote`: the exact source text of the flagged `line` (for a block, the first line, the one `line` points to), leading line number and `+`/`-`/space marker stripped (the code only). The daemon matches it against the diff to anchor the comment on the right line even if the number is slightly off. Always include it for a single-line or block finding. Omit it only for a genuinely line-less finding (a file-level or "missing X" finding with no single line to quote); its absence tells the daemon the finding is region-level.
 - `comments[].end_line`: optional. When set and greater than `line`, the comment renders as a multi-line range from `line` to `end_line` (both inclusive). Use this when the finding is about a contiguous block: a function body, a conditional, a helper. Both `line` and `end_line` must fall in the same diff hunk or the comment relocates into the Review body's `## Findings outside the diff` section (per ADR 0005). Omit `end_line` for single-line findings; `end_line == line` is treated as single-line.
 - `comments[].severity`: one of `important`, `nit`, `pre_existing`. See ADR 0002.
-- `comments[].type`: one of `bug`, `refactor`, `polish`. See ADR 0002.
+- `comments[].type`: one of `bug`, `refactor`, `polish`. See ADR 0002. The taxonomy carries a fourth value, `intent`, which only the intent lens emits (ADR 0035); you are not given what the change claimed, so you are not in a position to judge it against the code.
 - `comments[].body`: bold lead sentence plus 0 or 2–4 optional bullets. See "Output prose" above. Keep short findings to 1–3 sentences; reach for bullets when the mechanism is non-obvious.
 
 ## Severity × type matrix (ADR 0002)

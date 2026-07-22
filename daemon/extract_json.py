@@ -40,7 +40,7 @@ class Finding(BaseModel):
     line: int
     end_line: int | None = None
     severity: Literal["important", "nit", "pre_existing"]
-    type: Literal["bug", "refactor", "polish"]
+    type: Literal["bug", "refactor", "polish", "intent"]
     body: str
     # Exact source text of the flagged line, used to content-anchor the finding
     # to its true line (ADR 0018). Optional with graceful fallback: a missing

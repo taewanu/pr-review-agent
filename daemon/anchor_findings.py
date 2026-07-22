@@ -23,9 +23,13 @@ from pathlib import Path
 DIFF_GIT_RE = re.compile(r"^diff --git a/(?P<old>.+) b/(?P<new>.+)$")
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
-# Combos reserved for surfacing system issues out-of-band — never posted as
-# review comments. Per ADR 0002 + ADR 0005.
-FORBIDDEN_COMBOS: frozenset[tuple[str, str]] = frozenset({("important", "polish")})
+# Combos reserved for surfacing system issues out-of-band, never posted as
+# review comments. Per ADR 0002 + ADR 0005. `pre_existing` + `intent` joins
+# them because an intent finding compares this PR's description against this
+# PR's diff, so neither side of it can pre-date the change under review.
+FORBIDDEN_COMBOS: frozenset[tuple[str, str]] = frozenset(
+    {("important", "polish"), ("pre_existing", "intent")}
+)
 
 
 @dataclass

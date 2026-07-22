@@ -68,6 +68,13 @@ A second dogfood round (same workload, after Decisions 9-11 landed) surfaced thr
 
 19. **Every `review-agent-*.md` and `review-agent-fix-check.md`/`review-agent-reply.md`/`review-agent-editor.md` gains an explicit final-message rule.** Confirmed live at least three times across a single dogfood day: a lens or `review-agent-fix-check` produces its correct fenced output in one turn, then a later turn (often triggered by flagging the lazyweb MCP prompt injection, ADR 0023's own security note) ends with only "already emitted above" or "nothing further to relay", no fence. `stream_format.py` reconstructs the terminal `result` event's text verbatim (its own documented, correct contract, matching plain-text-mode `claude -p`'s own behavior), so this is not a reconstruction bug: the model's actual final message genuinely carries no fence, and the correctly-produced earlier output is unrecoverable downstream. Confirmed concretely on sounds-abroad#193: `review-agent-fix-check` reached a real verdict, but the daemon logged `left open ... no json fence in fix-check output` and the thread stayed open under fix-check's own safe-bias, not because the code wasn't actually fixed. Each agent definition's Hard Constraints now states explicitly: re-emit the complete fence in the final message every time, even if it was already produced earlier, since only the final message is read.
 
+> **Superseded in part, 2026-07-21 (#222).** The lens set is no longer five, and
+> no longer all code-only. ADR 0034 made it configurable through `REVIEW_LENSES`,
+> and ADR 0035 adds a sixth, `intent`, which reads the change's stated intent
+> alongside the diff. Everything else here holds: the merge and the gate were
+> written lens-count-agnostic (Decision 3), so the sixth lens needed no change to
+> either.
+
 ## Boundary
 
 This ADR ships exactly five lenses (default plus four domain lenses). It does not add a dedicated adversarial verify pass, and does not make the lens set configurable via `.env`, the five lenses are fixed in `review-pr.sh` for this cut. It does not change the confidence rubric, the severity/type taxonomy (ADR 0002), the format layer (ADR 0010), or the editor's subtract-only contract (ADR 0016): the editor still sees one merged draft and cannot add findings.

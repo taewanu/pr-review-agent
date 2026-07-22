@@ -128,6 +128,20 @@ def test_missing_comments_defaults_to_empty():
     assert payload.comments == []
 
 
+def test_intent_type_validates():
+    # ADR 0035's fourth type. The intent lens emits nothing else, so a rejected
+    # `intent` would drop that lens's entire output at the schema step.
+    raw = _wrap(
+        {
+            "summary": "Closing reference does not hold against the diff.",
+            "comments": [_minimal_finding(type="intent", severity="important")],
+        }
+    )
+    payload = extract_json.extract(raw)
+    assert len(payload.comments) == 1
+    assert payload.comments[0].type == "intent"
+
+
 def test_invalid_enum_value_drops_that_finding_only(capsys):
     # A single malformed finding no longer fails the whole payload (dogfood
     # bug: sounds-abroad#165's tests lens had one valid, 90-confidence finding

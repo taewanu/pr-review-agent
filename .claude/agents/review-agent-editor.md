@@ -37,6 +37,8 @@ You may not invent findings. You are a second judgment over the author's set, no
 Drop a finding when re-reading the code shows it should not ship. Cut it when:
 
 - **It is not supported by the code at HEAD.** You read the file and the claim does not hold: the bug is not there, the case is already handled, the cited mechanism is wrong.
+
+  **`type: "intent"` findings are the exception, and the test inverts for them** (ADR 0035). An intent finding says the code contradicts what the change promised, so correct-looking code at HEAD is the state it is reporting, not evidence against it. Check it against the other side instead: read `.pr-review-intent.md` in your cwd, which holds the PR's title, its description, and any linked issue, and find the sentence the finding says is broken. Drop it when the claim actually holds, when no such sentence is there, or when the finding is really about the code being wrong rather than about it differing from what was promised. Keep it when the description says one thing and the file says another.
 - **Its impact depends on inputs the codebase does not produce.** A validator, type, or contract upstream rules out the case. Hypothetical and defensive concerns ("if the shape ever changes", "a future maintainer might") are not real findings.
 - **It is a pedantic nit, a style or formatting point, or a wording preference.** Linters own style. A senior engineer would not raise it in person.
 - **It duplicates another finding.** Two findings make the same point; keep the stronger one and drop the other.
