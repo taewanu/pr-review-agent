@@ -410,6 +410,210 @@ state_write() {
   mv "$tmp" "$path"
 }
 
+# --- GitHub App authentication (ADR 0036) ------------------------------------
+#
+# The daemon posts as `<app>[bot]`, authenticating with an installation token
+# minted from the App private key. Two legs, and only the second can use gh:
+# `gh api` sends `Authorization: token <value>`, which the App-level endpoints
+# reject, so the JWT leg is openssl plus curl. The installation token the second
+# leg returns works with gh normally.
+#
+# Callers inject the token per command, never export it:
+#
+#     GH_TOKEN="$(gh_token "$owner" "$repo")" gh api ...
+#     GH_TOKEN="$(gh_token "$owner" "$repo")" python3 daemon/resolution.py ...
+#
+# A command prefix leaves the invoking shell's own environment clean, so a later
+# `claude -p` in the same script inherits nothing. That is the point of the seam:
+# every agent definition grants unrestricted Bash, so an inherited token would be
+# write access to every installed repository.
+
+APP_KEY_PATH="${APP_KEY_PATH:-$HOME/.pr-review-agent/app.pem}"
+
+# _b64url
+# base64url per the JWS spec: standard base64, then the two alphabet
+# substitutions and the padding strip.
+_b64url() {
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+# _app_jwt <app-id>
+# Prints a JWT signed with the App private key, accepted by the App-level
+# endpoints. `iat` is backdated 60s because GitHub rejects a token issued ahead
+# of its own clock, and a laptop drifting a few seconds forward is ordinary.
+# `exp` stays inside GitHub's 10-minute ceiling: this JWT exists only to mint an
+# installation token, never as a credential the daemon holds.
+_app_jwt() {
+  local app_id="$1" now header payload signing_input signature
+  now="$(date +%s)"
+
+  header="$(printf '{"alg":"RS256","typ":"JWT"}' | _b64url)"
+  payload="$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$app_id" | _b64url)"
+  signing_input="${header}.${payload}"
+
+  if ! signature="$(printf '%s' "$signing_input" | openssl dgst -sha256 -sign "$APP_KEY_PATH" 2>/dev/null | _b64url)"; then
+    log_err "could not sign the App JWT with ${APP_KEY_PATH}"
+    return 1
+  fi
+
+  printf '%s.%s' "$signing_input" "$signature"
+}
+
+# _mint_installation_token <app-id> <installation-id>
+# Exchanges a JWT for an installation token, printing "<token> <expires_at>".
+# curl rather than gh because of the Bearer requirement above. The response is
+# parsed rather than trusted: a 4xx returns an error body with no `token` key,
+# which would otherwise print as an empty credential and fail far from here.
+_mint_installation_token() {
+  local app_id="$1" installation_id="$2" jwt response token expires_at
+
+  jwt="$(_app_jwt "$app_id")" || return 1
+
+  if ! response="$(curl -sS -X POST \
+    --connect-timeout 10 --max-time 30 \
+    -H "Authorization: Bearer ${jwt}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/app/installations/${installation_id}/access_tokens" 2>/dev/null)"; then
+    log_err "installation token request failed for installation ${installation_id}"
+    return 1
+  fi
+
+  token="$(jq -r '.token // empty' <<<"$response")"
+  expires_at="$(jq -r '.expires_at // empty' <<<"$response")"
+
+  if [[ -z "$token" ]]; then
+    # The error message is safe to log; the token never is.
+    log_err "installation token rejected: $(jq -r '.message // "unparseable response"' <<<"$response")"
+    return 1
+  fi
+
+  printf '%s %s' "$token" "$expires_at"
+}
+
+# app_installation_id <owner> <repo> <app-id>
+# Prints the installation id for one repository. Exit codes separate the two
+# outcomes a caller must treat differently:
+#   0 — installed (stdout has the id)
+#   1 — not installed (GitHub answers 404), the skip-with-a-warning case
+#   2 — the call itself failed (network, 5xx), which is evidence of neither
+# The 404 is exactly the missing-installation signal, so the check falls out of a
+# call the daemon already needs to make (ADR 0036 decision 4).
+app_installation_id() {
+  local owner="$1" repo="$2" app_id="$3" jwt response id http_code
+
+  jwt="$(_app_jwt "$app_id")" || return 2
+
+  if ! response="$(curl -sS -w '\n%{http_code}' \
+    --connect-timeout 10 --max-time 30 \
+    -H "Authorization: Bearer ${jwt}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${owner}/${repo}/installation" 2>/dev/null)"; then
+    return 2
+  fi
+
+  http_code="$(tail -1 <<<"$response")"
+  case "$http_code" in
+    200) ;;
+    404) return 1 ;;
+    *) return 2 ;;
+  esac
+
+  id="$(sed '$d' <<<"$response" | jq -r '.id // empty')"
+  [[ -n "$id" ]] || return 2
+  printf '%s' "$id"
+}
+
+# warn_missing_installations <app-id> <repo>...
+# Prints every watched repo the App is not installed on, one per line, and logs
+# one boot-time line naming them. The daemon starts and skips those rather than
+# failing whole: a missing installation is a permanent per-repo state, not a
+# transient error, so it belongs in the boot surface instead of accumulating as
+# per-PR failures (ADR 0036 decision 4). A probe that fails outright leaves the
+# repo in the watch list, since "could not check" is not "not installed".
+warn_missing_installations() {
+  local app_id="$1" repo owner name rc missing=()
+  shift
+
+  for repo in "$@"; do
+    owner="${repo%%/*}"
+    name="${repo##*/}"
+    app_installation_id "$owner" "$name" "$app_id" >/dev/null && continue
+    rc=$?
+    if [[ "$rc" -eq 1 ]]; then
+      missing+=("$repo")
+      printf '%s\n' "$repo"
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_err "App not installed on: ${missing[*]} (skipped until you install it)"
+  fi
+}
+
+# _rfc3339_to_epoch <timestamp>
+# Prints a GitHub RFC3339 timestamp as Unix seconds. BSD `date` first (the
+# documented macOS target), GNU second so the test suite runs on Linux CI.
+# Prints nothing on a shape neither parses, leaving the caller to decide.
+_rfc3339_to_epoch() {
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null ||
+    date -u -d "$1" +%s 2>/dev/null ||
+    true
+}
+
+# Treat a token as expired this many seconds early. GitHub issues them an hour
+# out, so the margin costs one extra mint per hour at most, and it covers the
+# gap the naive check leaves: a token that passes validation and then dies
+# mid-request, failing a write that may not be safe to retry.
+GH_TOKEN_REFRESH_MARGIN="${GH_TOKEN_REFRESH_MARGIN:-300}"
+
+# gh_token <app-id> <installation-id>
+# Prints a live installation token. Every gh and Python call site takes its
+# credential from here.
+#
+# Cached in a shell variable for the life of the process, keyed by installation
+# because a token minted for one installation is not valid for another. That
+# choice is the middle of three. Minting per call is two extra round trips on
+# every one of the dozens a review tick makes, against a daemon with a
+# documented hang-on-stalled-network failure mode (#121). Caching to disk would
+# survive across the scripts one tick invokes, but it writes a bearer credential
+# with write access to every installed repository to the filesystem, and the
+# thing it buys is a handful of mints. A process-lifetime variable costs one
+# mint per script, never touches disk, and is not exported, so the `claude -p`
+# children that inherit the environment do not inherit the credential.
+gh_token() {
+  local app_id="$1" installation_id="$2"
+  local cache_key cached now token expires_at expiry minted
+
+  # Indirect expansion needs a name, so sanitize the id into one.
+  cache_key="_GH_TOKEN_CACHE_${installation_id//[^0-9A-Za-z]/_}"
+  now="$(date +%s)"
+  cached="${!cache_key:-}"
+
+  # Cache entry is "<token> <unix-expiry>".
+  if [[ -n "$cached" ]]; then
+    token="${cached%% *}"
+    expiry="${cached##* }"
+    if ((now + GH_TOKEN_REFRESH_MARGIN < expiry)); then
+      printf '%s' "$token"
+      return 0
+    fi
+  fi
+
+  minted="$(_mint_installation_token "$app_id" "$installation_id")" || return 1
+  token="${minted%% *}"
+  expires_at="${minted##* }"
+
+  # An unparseable expiry falls back to GitHub's documented hour rather than
+  # failing the call: the token itself is valid, and the margin above absorbs
+  # the imprecision.
+  expiry="$(_rfc3339_to_epoch "$expires_at")"
+  [[ -n "$expiry" ]] || expiry=$((now + 3600))
+
+  # Assigns a global that outlives this function but is never exported.
+  printf -v "$cache_key" '%s %s' "$token" "$expiry"
+  printf '%s' "$token"
+}
+
 # flatten_pages
 # Merges `gh api --paginate` stdout into one flat JSON array. `--paginate`
 # emits one array per 100-item page, concatenated (`[...][...]`), which is not
