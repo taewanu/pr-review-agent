@@ -199,7 +199,7 @@ run_with_timeout() {
   # signalling. A flag file, not the exit status, because a command may die of
   # its own signal and must not be misreported as having hit the cap.
   local fired
-  fired="$(mktemp -t pra-timeout)"
+  fired="$(mktemp -t pr-review-timeout.XXXXXX)"
 
   set -m
   "$@" &
