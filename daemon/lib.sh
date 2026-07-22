@@ -552,7 +552,13 @@ app_installation_id() {
     log_err "installation probe for ${owner}/${repo} returned unparseable JSON"
     return 2
   fi
-  [[ -n "$id" ]] || return 2
+  # A 200 body that parses but carries no `id` skips the guard above, and rc=2
+  # keeps the repo in the watch list, so without a line here the operator has
+  # nothing to correlate the per-PR failures against.
+  if [[ -z "$id" ]]; then
+    log_err "installation probe for ${owner}/${repo} answered 200 with no installation id"
+    return 2
+  fi
   printf '%s' "$id"
 }
 
@@ -690,12 +696,27 @@ _gh_token() {
 # itself. `gh` cannot, and the daemon's Python helpers do not. Widening this
 # extends that trust, which is why test_app_auth.py pins the accepted shapes.
 #
-# A timeout wraps this, not the other way round, since `run_with_timeout` is not
-# allowed: `run_with_timeout 30 run_with_app_token ...`. That ordering also
-# bounds the mint, which the inner spelling would leave unbounded.
+# A per-call cap goes in `--timeout <secs>` here, not around the call. Wrapping
+# from outside cannot work: `run_with_timeout` is `perl -e '... exec @ARGV'`, and
+# exec resolves a program on PATH, so it exits 127 on a shell function. Wrapping
+# from inside is refused by the allowlist above. Applied here the cap bounds the
+# command while the mint stays bounded by curl's own --max-time, and the cache
+# assignment stays in this shell rather than dying in a timeout subprocess.
 run_with_app_token() {
-  local app_id="$1" installation_id="$2" token command
-  shift 2
+  local app_id installation_id token command timeout_secs=""
+
+  if [[ "${1:-}" == "--timeout" ]]; then
+    timeout_secs="${2:-}"
+    if [[ ! "$timeout_secs" =~ ^[0-9]+$ ]]; then
+      log_err "run_with_app_token --timeout needs a whole number of seconds, got '${timeout_secs}'"
+      return 1
+    fi
+    shift 2
+  fi
+
+  app_id="${1:-}"
+  installation_id="${2:-}"
+  shift 2 2>/dev/null || true
 
   if [[ $# -eq 0 ]]; then
     log_err "run_with_app_token needs a command to run"
@@ -712,7 +733,7 @@ run_with_app_token() {
       fi
       ;;
     *)
-      log_err "run_with_app_token refuses '${command}': only gh and the daemon's .py helpers may hold an App token (ADR 0036 decision 5). Wrap a timeout outside this call, not inside."
+      log_err "run_with_app_token refuses '${command}': only gh and the daemon's .py helpers may hold an App token (ADR 0036 decision 5). For a per-call cap use --timeout, not an outer wrapper."
       return 1
       ;;
   esac
@@ -723,7 +744,11 @@ run_with_app_token() {
   fi
   token="$_GH_TOKEN_VALUE"
 
-  GH_TOKEN="$token" "$@"
+  if [[ -n "$timeout_secs" ]]; then
+    GH_TOKEN="$token" run_with_timeout "$timeout_secs" "$@"
+  else
+    GH_TOKEN="$token" "$@"
+  fi
 }
 
 # flatten_pages

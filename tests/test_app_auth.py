@@ -103,8 +103,10 @@ def test_jwt_backdates_iat_and_names_the_app(tmp_path):
 
     now = int(time.time())
     assert payload["iss"] == APP_ID
-    # Backdated so a clock running slightly fast is not rejected.
-    assert payload["iat"] < now
+    # Pins the 60s backdate itself. Asserting only `iat < now` passes with the
+    # `- 60` deleted whenever a second boundary happens to tick during the
+    # subprocess, so the regression would fail at random instead of always.
+    assert now - payload["iat"] >= 60
     # Well inside GitHub's 10-minute ceiling for an App JWT.
     assert payload["exp"] - payload["iat"] <= 600
 
@@ -149,6 +151,22 @@ def test_probe_failure_is_exit_2(tmp_path):
         path_prefix=bindir,
     )
     assert "rc=2" in out.stdout
+
+
+def test_200_without_an_id_is_exit_2_and_logs(tmp_path):
+    """A body that parses but carries no `id` skips the unparseable guard.
+
+    rc=2 keeps the repo in the watch list, so the operator needs a line to
+    correlate the per-PR failures that follow against.
+    """
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, "{}", http_code="200")
+    out = _run(
+        f"APP_KEY_PATH={key}; app_installation_id example example {APP_ID} || echo rc=$?",
+        path_prefix=bindir,
+    )
+    assert "rc=2" in out.stdout
+    assert "no installation id" in out.stderr
 
 
 def _stub_curl_per_repo(tmp_path: Path, installed: str) -> Path:
@@ -425,6 +443,47 @@ def test_python3_may_run_a_helper_but_not_inline_code(tmp_path):
     refused = _run(f"{stub}; {WRAP} python3 -c 'import os' || echo rc=$?", path_prefix=bindir)
     assert "rc=1" in refused.stdout
     assert "never inline code" in refused.stderr
+
+
+def test_timeout_flag_caps_the_command(tmp_path):
+    """The cap has to live inside the wrapper, because outside cannot work.
+
+    `run_with_timeout` is `perl -e '... exec @ARGV'`, and exec resolves a program
+    on PATH, so `run_with_timeout 30 run_with_app_token ...` exits 127 on a shell
+    function. Wrapping from inside is refused by the allowlist.
+    """
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    slow = bindir / "gh"
+    slow.write_text("#!/usr/bin/env bash\nsleep 5\n")
+    slow.chmod(0o755)
+
+    out = _run(
+        f"{stub}; {WRAP.replace('run_with_app_token', 'run_with_app_token --timeout 1')} "
+        "gh api x || echo rc=$?",
+        path_prefix=bindir,
+    )
+    # perl's alarm kills it well inside the 5s sleep.
+    assert "rc=0" not in out.stdout
+    assert "rc=" in out.stdout
+
+
+def test_outer_timeout_wrapping_is_impossible(tmp_path):
+    """Pins why --timeout exists, so the documented spelling cannot regress."""
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    out = _run(f"{stub}; run_with_timeout 5 {WRAP} gh api x || echo rc=$?")
+    assert "rc=127" in out.stdout, "exec resolved a shell function, which it cannot"
+
+
+def test_timeout_flag_rejects_a_non_number(tmp_path):
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    out = _run(
+        f"{stub}; run_with_app_token --timeout soon {APP_ID} {INSTALLATION_ID} gh api x "
+        "|| echo rc=$?"
+    )
+    assert "rc=1" in out.stdout
+    assert "whole number of seconds" in out.stderr
 
 
 @pytest.mark.parametrize("command", ["git status", "curl https://x", "jq ."])
