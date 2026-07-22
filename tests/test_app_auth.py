@@ -445,45 +445,15 @@ def test_python3_may_run_a_helper_but_not_inline_code(tmp_path):
     assert "never inline code" in refused.stderr
 
 
-def test_timeout_flag_caps_the_command(tmp_path):
-    """The cap has to live inside the wrapper, because outside cannot work.
-
-    `run_with_timeout` is `perl -e '... exec @ARGV'`, and exec resolves a program
-    on PATH, so `run_with_timeout 30 run_with_app_token ...` exits 127 on a shell
-    function. Wrapping from inside is refused by the allowlist.
-    """
-    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
-    bindir = tmp_path / "bin"
-    bindir.mkdir(exist_ok=True)
-    slow = bindir / "gh"
-    slow.write_text("#!/usr/bin/env bash\nsleep 5\n")
-    slow.chmod(0o755)
-
-    out = _run(
-        f"{stub}; {WRAP.replace('run_with_app_token', 'run_with_app_token --timeout 1')} "
-        "gh api x || echo rc=$?",
-        path_prefix=bindir,
-    )
-    # perl's alarm kills it well inside the 5s sleep.
-    assert "rc=0" not in out.stdout
-    assert "rc=" in out.stdout
-
-
 def test_outer_timeout_wrapping_is_impossible(tmp_path):
-    """Pins why --timeout exists, so the documented spelling cannot regress."""
+    """Pins why no per-call wrapper is offered, so the comment cannot regress.
+
+    exec resolves a program on PATH, not a shell function, so this spelling can
+    never work. A hung call is bounded by poll.sh's run_with_pr_timeout instead.
+    """
     stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
     out = _run(f"{stub}; run_with_timeout 5 {WRAP} gh api x || echo rc=$?")
     assert "rc=127" in out.stdout, "exec resolved a shell function, which it cannot"
-
-
-def test_timeout_flag_rejects_a_non_number(tmp_path):
-    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
-    out = _run(
-        f"{stub}; run_with_app_token --timeout soon {APP_ID} {INSTALLATION_ID} gh api x "
-        "|| echo rc=$?"
-    )
-    assert "rc=1" in out.stdout
-    assert "whole number of seconds" in out.stderr
 
 
 @pytest.mark.parametrize("command", ["git status", "curl https://x", "jq ."])
