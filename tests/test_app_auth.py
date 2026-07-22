@@ -445,15 +445,21 @@ def test_python3_may_run_a_helper_but_not_inline_code(tmp_path):
     assert "never inline code" in refused.stderr
 
 
-def test_outer_timeout_wrapping_is_impossible(tmp_path):
+def test_outer_timeout_wrapping_works_but_is_not_needed(tmp_path):
     """Pins why no per-call wrapper is offered, so the comment cannot regress.
 
-    exec resolves a program on PATH, not a shell function, so this spelling can
-    never work. A hung call is bounded by poll.sh's run_with_pr_timeout instead.
+    This spelling used to exit 127: run_with_timeout was `perl -e '... exec
+    @ARGV'`, and exec resolves a program on PATH rather than a shell function.
+    #251 dropped the exec, so the wrapper now resolves like any other name. The
+    reason none is offered is therefore that it is unnecessary, not impossible:
+    a hung call is bounded by poll.sh's run_with_pr_timeout around the dispatch.
     """
     stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
-    out = _run(f"{stub}; run_with_timeout 5 {WRAP} gh api x || echo rc=$?")
-    assert "rc=127" in out.stdout, "exec resolved a shell function, which it cannot"
+    bindir = _stub_allowed(tmp_path)
+    out = _run(f"{stub}; run_with_timeout 5 {WRAP} gh api x", path_prefix=bindir)
+    assert out.returncode == 0, out.stderr
+    # The token still reaches the child, so the cap composes with the wrapper.
+    assert out.stdout == "tok-abc"
 
 
 @pytest.mark.parametrize("command", ["git status", "curl https://x", "jq ."])
