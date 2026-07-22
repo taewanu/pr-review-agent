@@ -445,15 +445,26 @@ def test_python3_may_run_a_helper_but_not_inline_code(tmp_path):
     assert "never inline code" in refused.stderr
 
 
-def test_outer_timeout_wrapping_is_impossible(tmp_path):
+def test_outer_timeout_wrapping_defeats_the_cache(tmp_path):
     """Pins why no per-call wrapper is offered, so the comment cannot regress.
 
-    exec resolves a program on PATH, not a shell function, so this spelling can
-    never work. A hung call is bounded by poll.sh's run_with_pr_timeout instead.
+    run_with_timeout runs the command as a background job (#253), and a
+    background job is a subshell, so _gh_token's cache assignment dies with it
+    and every wrapped call re-mints. An earlier revision asserted exit 127
+    instead, which held only while run_with_timeout was `perl … exec @ARGV`.
     """
-    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
-    out = _run(f"{stub}; run_with_timeout 5 {WRAP} gh api x || echo rc=$?")
-    assert "rc=127" in out.stdout, "exec resolved a shell function, which it cannot"
+    stub, counter = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    bindir = _stub_allowed(tmp_path)
+    out = _run(
+        f"{stub}; run_with_timeout 10 {WRAP} gh api x >/dev/null; "
+        f"run_with_timeout 10 {WRAP} gh api x >/dev/null",
+        path_prefix=bindir,
+    )
+    assert out.returncode == 0, out.stderr
+    assert counter.read_text() == "xx", (
+        "the cache survived a background job, so the comment above "
+        "run_with_app_token needs revisiting"
+    )
 
 
 @pytest.mark.parametrize("command", ["git status", "curl https://x", "jq ."])
