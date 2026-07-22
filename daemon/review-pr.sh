@@ -409,7 +409,14 @@ OPERATOR="$(gh api user --jq '.login' 2>/dev/null || true)"
 OWN_PR=0
 if [[ -n "$PR_AUTHOR" && "$PR_AUTHOR" == "$OPERATOR" ]]; then
   OWN_PR=1
-  log_info "own PR (author == operator '$OPERATOR'): auto-submitting a COMMENT review"
+  # The submit half of this line is a claim about what happens later, so it has
+  # to respect --dry-run. Stated unconditionally, a run that posts nothing read
+  # as one that had just submitted a review to the operator's own PR.
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log_info "own PR (author == operator '$OPERATOR'): dry-run, submitting nothing"
+  else
+    log_info "own PR (author == operator '$OPERATOR'): auto-submitting a COMMENT review"
+  fi
 fi
 
 # A pause written by whichever PR tripped the quota this cycle (#231). poll.sh
