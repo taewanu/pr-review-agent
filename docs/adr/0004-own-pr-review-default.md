@@ -1,7 +1,7 @@
 # ADR 0004: Own-PR review default behavior
 
 Date: 2026-05-19
-Status: Accepted (own-PR pending-gate consequence amended by [ADR 0008](./0008-own-pr-auto-submit.md))
+Status: Superseded by [ADR 0036](./0036-github-app-identity.md). App identity removes the own-PR category this decision rests on, and deletes `review_own_prs` with it. (The own-PR pending-gate consequence had already been amended by [ADR 0008](./0008-own-pr-auto-submit.md).)
 
 ## Context
 
