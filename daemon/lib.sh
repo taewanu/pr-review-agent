@@ -826,13 +826,14 @@ _gh_token() {
 # itself. `gh` cannot, and the daemon's Python helpers do not. Widening this
 # extends that trust, which is why test_app_auth.py pins the accepted shapes.
 #
-# No per-call timeout wrapper works here, and none is needed today. Wrapping from
-# outside exits 127: `run_with_timeout` is `perl -e '... exec @ARGV'`, and exec
-# resolves a program on PATH, not a shell function. Wrapping from inside is
-# refused by the allowlist above. What bounds a hung call is poll.sh's
-# `run_with_pr_timeout` around the whole dispatch, which is how the daemon's
-# other gh calls are bounded; the mint is bounded by curl's own --max-time. If
-# the wiring PR finds it needs a tighter per-call cap, add the flag then.
+# Do not wrap this in `run_with_timeout`. Since #253 it runs the command as a
+# background job, and a background job is a subshell, so `_gh_token`'s cache
+# assignment dies with it and every wrapped call re-mints: the bug #252 fixed,
+# reached through a different door. Wrapping from inside is refused by the
+# allowlist above. What bounds a hung call is poll.sh's `run_with_pr_timeout`
+# around the whole dispatch, which is how the daemon's other gh calls are
+# bounded; the mint is bounded by curl's own --max-time. A tighter per-call cap
+# would have to be applied inside this function, after the mint.
 run_with_app_token() {
   local app_id="$1" installation_id="$2" token command
   shift 2
