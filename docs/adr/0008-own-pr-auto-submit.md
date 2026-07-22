@@ -1,7 +1,7 @@
 # ADR 0008: Own-PR auto-submit; pending retained for others' PRs
 
 Date: 2026-06-02
-Status: Accepted
+Status: Superseded by [ADR 0036](./0036-github-app-identity.md). Reviews submit immediately on every PR, so the own-versus-others fork this decision draws no longer exists.
 
 ## Context
 

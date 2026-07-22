@@ -1,7 +1,7 @@
 # ADR 0003: Identity model for review comments
 
 Date: 2026-05-19
-Status: Accepted
+Status: Superseded by [ADR 0036](./0036-github-app-identity.md). Option C replaces Option A outright; the AI-drafted marker and the project-link footer are re-decided there, the marker's purpose reassigned from disclosure to brand now that the `[bot]` suffix carries the signal.
 
 ## Context
 
