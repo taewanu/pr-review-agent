@@ -43,8 +43,20 @@ while [[ $# -gt 0 ]]; do
       # HEAD_OID so the checkout, diff, and anchoring all target that commit, and
       # diffs base...<sha> via the compare API. Implies --dry-run: findings
       # anchored to the old commit would mis-anchor if posted to the live PR.
+      #
+      # Pins the code only. The PR title and body are fetched live, so a
+      # description rewritten since <sha> still reaches the intent lens and the
+      # editor, the two that read it. A description naming the bugs under
+      # measurement is an answer key, and recall from those two is then not a
+      # measurement. Warned about at run time below.
       if [[ $# -lt 2 ]]; then
         log_err "--at-sha requires a value"
+        exit 1
+      fi
+      # A short sha reaches `git fetch` as an unknown ref and fails with a raw
+      # "couldn't find remote ref"; operators paste short shas from `git log`.
+      if [[ ! "$2" =~ ^[0-9a-f]{40}$ ]]; then
+        log_err "--at-sha needs a full 40-character sha, got '$2'"
         exit 1
       fi
       AT_SHA="$2"
@@ -399,6 +411,9 @@ log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 if [[ -n "$AT_SHA" ]]; then
   HEAD_OID="$AT_SHA"
   log_info "pinned to ${AT_SHA:0:12} (--at-sha, dry-run)"
+  # Stated every run, not gated on whether the body actually changed: proving it
+  # did would need the description as of <sha>, which the API does not keep.
+  log_info "pin covers the code only: the PR description is read live, not as of ${AT_SHA:0:12}; if it was rewritten since, the intent lens and the editor read the newer text"
 fi
 
 # Own-vs-others gates the submit path (ADR 0008): own PRs auto-submit a COMMENT
