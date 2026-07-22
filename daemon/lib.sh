@@ -160,24 +160,154 @@ log_pr() {
   } >&2
 }
 
-# Exit status the shell reports when a process is killed by SIGALRM (128 + 14).
-# run_with_timeout returns this on timeout; callers branch on it to route to the
+# Exit status run_with_timeout returns on timeout, and the status the shell
+# reports for a SIGALRM kill (128 + 14). Callers branch on it to route to the
 # ADR 0005 failure path instead of parsing the truncated output.
 # shellcheck disable=SC2034  # consumed by reply-pr.sh / review-pr.sh
 readonly TIMEOUT_EXIT=142
 
+# How often the watchdog re-reads the clock, and how long it lets a terminated
+# job flush before escalating to SIGKILL. Both bound only the overrun path, never
+# a command that finishes under its cap. Overridable for tests.
+readonly TIMEOUT_POLL_INTERVAL="${TIMEOUT_POLL_INTERVAL:-5}"
+readonly TIMEOUT_KILL_GRACE="${TIMEOUT_KILL_GRACE:-5}"
+
+# process_tree <pid>
+# Prints every live process in <pid>'s tree, deepest first, one per line, and
+# nothing at all once the tree is gone. Deepest first so a parent cannot spawn a
+# replacement in the gap between its child dying and its own signal arriving.
+# (Shallowest first is the right order only against a supervisor that restarts
+# dead children, which nothing the daemon runs is.) Emptiness is load-bearing:
+# the escalation loop reads it as "the tree is gone" and stops.
+process_tree() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null); do
+    process_tree "$child"
+  done
+  kill -0 "$pid" 2>/dev/null && printf '%s\n' "$pid"
+  # An empty tree is the normal terminal case, not a failure: the callers run
+  # under `set -e` and assign this in a command substitution.
+  return 0
+}
+
+# live_pids <pid...>
+# Prints the arguments that are still running, deduplicated. Same empty-is-not-
+# failure contract as process_tree.
+live_pids() {
+  local pid
+  for pid in "$@"; do
+    kill -0 "$pid" 2>/dev/null && printf '%s\n' "$pid"
+  done | sort -u
+  return 0
+}
+
 # run_with_timeout <seconds> <command...>
-# Caps a command's wall-clock runtime. macOS has no coreutils `timeout`, so we
-# lean on perl's alarm: it arms a SIGALRM timer, then `exec`s the command into
-# the same process. The timer survives exec (it is kernel state, not perl's
-# memory) while exec resets SIGALRM to its default of terminate, so an
-# over-running command dies at the cap. Returns the command's own exit status,
-# or $TIMEOUT_EXIT on timeout. Orphaned grandchildren may briefly outlive the
-# kill, acceptable for a backstop: stdout closes and the tick fails over anyway.
+# Caps a command's wall-clock runtime. Returns the command's own exit status, or
+# $TIMEOUT_EXIT on timeout.
+#
+# The cap is a `date +%s` deadline, not perl's `alarm`. alarm arms ITIMER_REAL,
+# which counts kernel-timer time and so stops advancing while the machine is
+# suspended; epoch time does not, because it is re-read from the hardware clock
+# on wake. A review that spanned a laptop sleep outlived a 600s cap by well over
+# an hour without the alarm ever firing, the same suspend-shaped failure
+# arm_git_stall_timeout already guards git against.
+#
+# Only a watchdog child polls; the parent blocks in `wait`, so a command that
+# finishes early returns immediately. Polling in the parent instead would round
+# every call up to the interval, and most calls here are sub-second `gh api`.
+# That also lets the interval stay coarse: it bounds how late an overrun is
+# noticed, which for a backstop measured in minutes costs nothing. The watchdog's
+# own output goes to /dev/null: it outlives a command that finished early, and
+# would otherwise hold the write end of the caller's pipe open for the rest of
+# the interval, which is the latency the parent's `wait` exists to avoid.
+#
+# Termination walks descendants rather than putting the job in its own process
+# group. A group is the tidier kill, but `set -m` also moves the job out of the
+# terminal's foreground group, which stops Ctrl-C reaching a running review, and
+# gives a nested call its own group that the outer call's group kill cannot
+# reach. This function nests: run_with_pr_timeout wraps review-pr.sh, which calls
+# it again per lens. The walk is not atomic, so a process forking mid-walk can
+# escape; for a backstop that is the better trade than a kill that composes badly.
 run_with_timeout() {
   local secs="$1"
   shift
-  perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
+  local deadline=$(($(date +%s) + secs))
+  # Empty means the command ended on its own; the watchdog writes to it before
+  # signalling. A flag file, not the exit status, because a command may die of
+  # its own signal and must not be misreported as having hit the cap.
+  local fired
+  fired="$(mktemp -t pr-review-timeout.XXXXXX)"
+
+  "$@" &
+  local pid=$!
+
+  (
+    # Sleep the lesser of the interval and the time left, so the interval bounds
+    # how often the clock is re-read (what catches a suspend) without also
+    # coarsening when the cap fires.
+    local now remaining
+    while :; do
+      now="$(date +%s)"
+      [[ "$now" -ge "$deadline" ]] && break
+      kill -0 "$pid" 2>/dev/null || exit 0
+      remaining=$((deadline - now))
+      [[ "$remaining" -gt "$TIMEOUT_POLL_INTERVAL" ]] && remaining="$TIMEOUT_POLL_INTERVAL"
+      sleep "$remaining"
+    done
+    kill -0 "$pid" 2>/dev/null || exit 0
+    printf 1 >"$fired"
+    # TERM first so claude -p can flush its output and cost sidecar, then KILL,
+    # because the case this guard exists for is a process wedged past a suspend
+    # that may never act on a TERM. Every kill tolerates failure: a process can
+    # exit on its own between the walk and the signal.
+    # Snapshot the tree before signalling. A child re-parents to init the instant
+    # its parent dies, so a walk from "$pid" after the TERM cannot see the very
+    # processes the escalation is for: the ones that outlived a parent that took
+    # the TERM. This is what a process group gets for free and the walk does not.
+    local victims survivors
+    victims="$(process_tree "$pid")"
+    # shellcheck disable=SC2086  # word splitting is the point: one pid per arg
+    kill -TERM $victims 2>/dev/null || true
+    local grace=$(($(date +%s) + TIMEOUT_KILL_GRACE))
+    while :; do
+      # The snapshot catches the re-parented; a fresh walk catches anything
+      # spawned since. Neither alone is enough.
+      # shellcheck disable=SC2046,SC2086
+      survivors="$(live_pids $victims $(process_tree "$pid"))"
+      [[ -z "$survivors" ]] && break
+      if [[ "$(date +%s)" -ge "$grace" ]]; then
+        # shellcheck disable=SC2086
+        kill -KILL $survivors 2>/dev/null || true
+        break
+      fi
+      sleep 1
+      victims="$survivors"
+    done
+  ) >/dev/null 2>&1 &
+  local watchdog=$!
+
+  local rc=0
+  # stderr silenced because bash announces a signal-killed job ("Terminated: 15")
+  # here, which on every cap would land in the daemon log next to the structured
+  # failure line that already says the same thing.
+  wait "$pid" 2>/dev/null || rc=$?
+  if [[ -s "$fired" ]]; then
+    # The cap fired, so let the escalation finish rather than cutting it short.
+    # `wait "$pid"` returns as soon as the command itself dies, which under a
+    # TERM it honours is long before the grace window that exists for the
+    # children it left behind. Returning here would hand the caller a timeout
+    # while the tree it names is still running. The watchdog writes the flag
+    # before it signals, so seeing it set means the escalation is already under
+    # way and bounded by TIMEOUT_KILL_GRACE.
+    wait "$watchdog" 2>/dev/null || true
+  else
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
+  fi
+
+  [[ -s "$fired" ]] && rc="$TIMEOUT_EXIT"
+  rm -f "$fired"
+  return "$rc"
 }
 
 # resolve_tunable <KEY> <dotenv-path>
