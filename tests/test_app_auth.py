@@ -16,6 +16,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
 
@@ -247,10 +249,22 @@ def test_token_is_not_exported(tmp_path):
 WRAP = f"run_with_app_token {APP_ID} {INSTALLATION_ID}"
 
 
+def _stub_allowed(tmp_path: Path, name: str = "gh") -> Path:
+    """An allowlisted command that reports the token it was handed."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    stub = bindir / name
+    stub.write_text('#!/usr/bin/env bash\nprintf %s "${GH_TOKEN:-none}"\n')
+    stub.chmod(0o755)
+    return bindir
+
+
 def test_wrapper_reaches_the_child_and_not_the_shell(tmp_path):
     stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    bindir = _stub_allowed(tmp_path)
     out = _run(
-        f"{stub}; {WRAP} bash -c 'printf %s \"$GH_TOKEN\"'; printf '|%s' \"${{GH_TOKEN:-unset}}\""
+        f"{stub}; {WRAP} gh api x; printf '|%s' \"${{GH_TOKEN:-unset}}\"",
+        path_prefix=bindir,
     )
     assert out.returncode == 0, out.stderr
     # The command sees it; the invoking shell never holds it.
@@ -264,11 +278,12 @@ def test_wrapper_refuses_to_run_when_the_mint_fails(tmp_path):
     the mint fails, so gh silently falls back to the operator's stored login and
     posts under the human identity ADR 0036 replaces. The wrapper must abort.
     """
+    bindir = _stub_allowed(tmp_path)
     out = _run(
-        "_mint_installation_token() { return 1; }; "
-        f"{WRAP} bash -c 'echo COMMAND_RAN' || echo rc=$?"
+        f"_mint_installation_token() {{ return 1; }}; {WRAP} gh api x || echo rc=$?",
+        path_prefix=bindir,
     )
-    assert "COMMAND_RAN" not in out.stdout, "the command ran without a token"
+    assert "none" not in out.stdout, "the command ran without a token"
     assert "rc=1" in out.stdout
     assert "refusing to run" in out.stderr
 
@@ -295,32 +310,49 @@ def test_wrapper_needs_a_command(tmp_path):
     assert "needs a command" in out.stderr
 
 
-def test_wrapper_refuses_to_hand_the_token_to_claude(tmp_path):
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The direct mistake.
+        "claude -p review",
+        # A full path: the check reads the command name, not its spelling.
+        "/usr/local/bin/claude -p x",
+        # The repo's own idiom, which a ban on `claude` alone lets through
+        # because the first word is the timeout wrapper.
+        "run_with_timeout 5 claude -p x",
+        # An interpreter reaches claude one level down, and the whole subtree
+        # would inherit the token.
+        "bash -c 'claude -p x'",
+        # A script that starts agents 200 lines later. Nothing can read that
+        # from the command line, which is why interpreters are refused outright.
+        "bash daemon/review-pr.sh",
+        # env launders the name past any first-word check.
+        "env claude -p x",
+    ],
+)
+def test_only_allowlisted_commands_may_hold_the_token(tmp_path, command):
     """ADR 0036 decision 5, enforced rather than documented.
 
-    Every agent definition grants unrestricted Bash, so one wrapped claude call
-    would be write access to every installed repository. The agents receive diff
-    and intent files instead, never a credential.
+    Every agent definition grants unrestricted Bash, so a claude call holding
+    this token is write access to every installed repository. A ban on the name
+    `claude` fails open on every case below except the first two; an allowlist
+    refuses all of them, because none of these is `gh` or `python3`.
     """
     stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
-    bindir = tmp_path / "bin"
-    bindir.mkdir(exist_ok=True)
-    fake = bindir / "claude"
-    fake.write_text("#!/usr/bin/env bash\necho CLAUDE_RAN\n")
-    fake.chmod(0o755)
-
-    out = _run(f"{stub}; {WRAP} claude -p 'review' || echo rc=$?", path_prefix=bindir)
-    assert "CLAUDE_RAN" not in out.stdout
+    out = _run(f"{stub}; {WRAP} {command} || echo rc=$?")
     assert "rc=1" in out.stdout
-    assert "review agents must not hold it" in out.stderr
+    assert "may hold an App token" in out.stderr
 
 
-def test_claude_refusal_survives_a_full_path(tmp_path):
-    """The guard matches the command name, not the spelling of its path."""
-    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
-    out = _run(f"{stub}; {WRAP} /usr/local/bin/claude -p x || echo rc=$?")
-    assert "rc=1" in out.stdout
-    assert "review agents must not hold it" in out.stderr
+def test_allowlist_membership_is_pinned(tmp_path):
+    """Widening the list extends trust, so it must be a deliberate edit.
+
+    An allowed command is trusted not to spawn an agent itself. `gh` cannot, and
+    the daemon's Python helpers do not. Adding an interpreter here would undo
+    the guarantee above without touching run_with_app_token at all.
+    """
+    out = _run('printf "%s" "${APP_TOKEN_COMMANDS[*]}"')
+    assert out.stdout == "gh python3"
 
 
 # --- Malformed responses ----------------------------------------------------

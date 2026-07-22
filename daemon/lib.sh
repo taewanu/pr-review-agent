@@ -657,8 +657,24 @@ _gh_token() {
 #
 # Takes a command rather than printing a value because gh is invoked from Python
 # too (`daemon/resolution.py` and friends shell out without an `env=`).
+#
+# The command must be on APP_TOKEN_COMMANDS. That list is an allowlist rather
+# than a ban on `claude`, because a ban fails open: `run_with_timeout 5 claude`
+# and `bash review-pr.sh` both slip past a name check on the first word, and the
+# second hands the token to every agent the script starts. A list of two entries
+# refuses interpreters outright, so nothing can carry the token indirectly.
+#
+# The limit worth knowing: an allowed command is trusted not to spawn an agent
+# itself. `gh` cannot; the Python helpers here do not. Widening the list means
+# extending that trust, which is why test_app_auth.py pins its membership.
+#
+# A timeout wraps this, not the other way round, since `run_with_timeout` is not
+# on the list: `run_with_timeout 30 run_with_app_token ...`. That ordering also
+# bounds the mint, which the inner spelling would leave unbounded.
+APP_TOKEN_COMMANDS=(gh python3)
+
 run_with_app_token() {
-  local app_id="$1" installation_id="$2" token
+  local app_id="$1" installation_id="$2" token command allowed_command allowed=0
   shift 2
 
   if [[ $# -eq 0 ]]; then
@@ -666,12 +682,13 @@ run_with_app_token() {
     return 1
   fi
 
-  # Enforced, not merely documented: ADR 0036 decision 5 rests on the review
-  # agents never holding the token, and every agent definition grants
-  # unrestricted Bash, so one wrapped claude call is write access to every
-  # installed repository. The agents are handed diff and intent files instead.
-  if [[ "$(basename -- "$1")" == "claude" ]]; then
-    log_err "refusing to run claude with an App token: review agents must not hold it (ADR 0036)"
+  command="$(basename -- "$1")"
+  for allowed_command in "${APP_TOKEN_COMMANDS[@]}"; do
+    [[ "$command" == "$allowed_command" ]] && allowed=1 && break
+  done
+
+  if [[ "$allowed" -ne 1 ]]; then
+    log_err "run_with_app_token refuses '${command}': only ${APP_TOKEN_COMMANDS[*]} may hold an App token (ADR 0036 decision 5). Wrap a timeout outside this call, not inside."
     return 1
   fi
 
