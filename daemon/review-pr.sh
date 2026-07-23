@@ -533,11 +533,16 @@ INTENT_FILE="$SCRATCH/$INTENT_BASENAME"
 # of labels (e.g. "default" or "default correctness"). Collapsing to fewer lenses
 # is the one lever that cuts review cost proportionally, trading the recall that
 # independent reads buy (ADR 0022/0023): measured, one lens misses the hard
-# co-varying-state class the full set catches. Unset keeps all six: the five code
-# lenses of ADR 0023 plus the intent lens of ADR 0035.
+# co-varying-state class the full set catches.
 # Filtering the three parallel arrays together preserves their index alignment;
 # the merge and gate are already lens-count-agnostic (ADR 0023 Decision 3).
 REVIEW_LENSES="$(resolve_tunable REVIEW_LENSES "$SCRIPT_DIR/../.env")"
+# Default set when unset (#249): default, correctness, intent. The three domain
+# lenses (perf, security, tests) are off by default; ADR 0035 records why (no
+# domain defect in the eval corpus, so the burden of proof is on keeping a lens,
+# and a fork where that domain is the point opts in). The full six stay
+# selectable; this only changes the unset default.
+REVIEW_LENSES="${REVIEW_LENSES:-default correctness intent}"
 if [[ -n "${REVIEW_LENSES:-}" ]]; then
   _sel_cmds=()
   _sel_labels=()

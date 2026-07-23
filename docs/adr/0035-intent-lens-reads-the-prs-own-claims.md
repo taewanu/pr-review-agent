@@ -103,6 +103,17 @@ posts. The rule now branches on type (ADR 0016, amended).
   security review is the point. An operator who shares the doubt narrows
   `REVIEW_LENSES` in their own `.env` at no cost to anyone else (ADR 0034). That
   is the reversible half of the decision, and the half this repo took.
+
+  > **Amended 2026-07-23 (#249).** Shipped: the unset default drops to `default
+  > correctness intent`, with `perf`, `security`, and `tests` off. The half above
+  > is inverted on the same basis the bullet states, the eval corpus still holding
+  > no perf, security, or test-quality defect (the full review-history census the
+  > issue names remains unrun; this is the judgment recorded, not a measured
+  > result). The burden of proof sits on keeping a default-on lens, not on removing
+  > it, so the lean default ships and a fork where a domain is the point re-enables
+  > it in `.env` at no cost to anyone else. The six stay selectable; only the unset
+  > default changed, set in the daemon and `templates/.env.example` together
+  > against the config-drift trap.
 - **Renaming the lens set's axes**, also asked for in #222: `default` is a sweep
   and `correctness` is a second deeper read of the same ground, so presenting the
   six as peers hides that dropping the sweep drops whole defect classes. Left
