@@ -31,8 +31,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CREATE_REPLY = REPO_ROOT / "daemon" / "create_reply.py"
 
-# Import create_reply as a module so its constants (MARKER, the resolution
-# sentinel) are reachable directly, alongside the subprocess _run tests below.
+# Import create_reply as a module so its constants (the resolution sentinel) are
+# reachable directly, alongside the subprocess _run tests below.
 import importlib.util as _ilu  # noqa: E402
 
 _spec = _ilu.spec_from_file_location("create_reply", CREATE_REPLY)
@@ -50,9 +50,9 @@ NASTY_BODY = (
 )
 
 # Default _run() passes no --head-sha and no verified_* fields, so a fix_claim
-# body carries no blob link: just the prose, the provenance marker, and the
-# sentinel. Link assembly is exercised separately below.
-EXPECTED_BODY = NASTY_BODY + "\n\n🤖 _pr-review-agent_\n\n<!-- pr-review-agent:reply:222 -->"
+# body carries no blob link: just the prose and the sentinel. Link assembly is
+# exercised separately below.
+EXPECTED_BODY = NASTY_BODY + "\n\n<!-- pr-review-agent:reply:222 -->"
 
 
 def _raw(replies: list[dict]) -> str:
@@ -225,7 +225,7 @@ def test_fix_claim_builds_blob_link_for_a_range():
     body = _reply_body(calls)
     expected = f"[`a1b2c3d:L88-L95`](https://github.com/example/example/blob/{HEAD_SHA}/daemon/lib.sh#L88-L95)"
     assert expected in body, body
-    assert "🤖 _pr-review-agent_" in body
+    assert "🤖 _pr-review-agent_" not in body  # marker retired (ADR 0036)
     # Location lives in the link only — the prose body carried no coordinates.
     assert body.startswith(NASTY_BODY)
 
@@ -245,7 +245,7 @@ def test_pushback_builds_blob_link_too():
     _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
     body = _reply_body(calls)
     assert f"/blob/{HEAD_SHA}/daemon/poll.sh#L115" in body, body
-    assert "🤖 _pr-review-agent_" in body
+    assert "🤖 _pr-review-agent_" not in body  # marker retired (ADR 0036)
 
 
 def test_blob_link_targets_head_repo_not_base():
@@ -269,7 +269,7 @@ def test_italic_confirmed_lead_renders_with_link_on_one_line():
     body = _reply_body(calls)
     link = f"[`a1b2c3d:L88`](https://github.com/example/example/blob/{HEAD_SHA}/daemon/lib.sh#L88)"
     assert body.startswith(f"_Confirmed:_ {link}"), body
-    assert "🤖 _pr-review-agent_" in body
+    assert "🤖 _pr-review-agent_" not in body  # marker retired (ADR 0036)
 
 
 def test_fix_claim_without_verified_fields_has_marker_but_no_link():
@@ -277,7 +277,7 @@ def test_fix_claim_without_verified_fields_has_marker_but_no_link():
     # confirmed by deletion): marker still appended, no blob link.
     _, calls = _run(_raw([_reply()]), head_sha=HEAD_SHA)
     body = _reply_body(calls)
-    assert "🤖 _pr-review-agent_" in body
+    assert "🤖 _pr-review-agent_" not in body  # marker retired (ADR 0036)
     assert "/blob/" not in body, body
 
 
@@ -288,7 +288,7 @@ def test_fix_claim_without_head_sha_has_no_link():
     _, calls = _run(_raw([reply]))
     body = _reply_body(calls)
     assert "/blob/" not in body, body
-    assert "🤖 _pr-review-agent_" in body
+    assert "🤖 _pr-review-agent_" not in body  # marker retired (ADR 0036)
 
 
 # A voice-compliant reply body: a bold verdict lead, then explanation prose. The
@@ -320,11 +320,11 @@ def test_reply_without_link_keeps_lead_then_prose():
 
 def test_reply_lead_only_no_prose_degrades_to_lead_plus_footer():
     # Confirmed-by-deletion style: a bold lead with nothing after it and no link
-    # degrades to just the lead and the footer.
+    # degrades to just the lead and the sentinel footer.
     reply = _reply(body="**Confirmed by deletion.**")
     _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
     body = _reply_body(calls)
-    assert body.startswith("**Confirmed by deletion.**\n\n🤖 _pr-review-agent_"), body
+    assert body.startswith("**Confirmed by deletion.**\n\n<!-- pr-review-agent:reply:"), body
 
 
 def test_acknowledgment_posts_plus_one_reaction_only():
@@ -381,7 +381,7 @@ def test_question_builds_blob_link_like_a_fix_claim():
     _, calls = _run(_raw([reply]), head_sha=HEAD_SHA)
     body = _reply_body(calls)
     assert f"/blob/{HEAD_SHA}/daemon/lib.sh#L88" in body, body
-    assert "🤖 _pr-review-agent_" in body
+    assert "🤖 _pr-review-agent_" not in body  # marker retired (ADR 0036)
 
 
 def test_question_mode_defaults_to_stands():
@@ -548,7 +548,7 @@ def test_confirmed_stamps_the_finding_via_graphql_node_id():
         _raw([_reply()]),
         threads=_threads(
             "111",
-            f"Unbounded loop.\n\n{create_reply.MARKER}",
+            "Unbounded loop.",
             thread_id="PRRT_c",
             comment_node_id=FINDING_NODE_ID,
         ),
@@ -653,14 +653,15 @@ def test_each_reply_posts_detached_no_review_wrapper():
         assert _find(calls, op) is None, f"no review-wrapper machinery ({op})"
 
 
-def test_detached_reply_carries_sentinel_and_marker_byte_for_byte():
-    # Dedup + provenance ride in the detached body; the nasty payload round-trips
-    # over REST stdin intact.
+def test_detached_reply_carries_sentinel_byte_for_byte():
+    # The dedup sentinel rides in the detached body and the nasty payload
+    # round-trips over REST stdin intact. No provenance marker: the bot's own
+    # login carries who-wrote-this now (ADR 0036).
     _, calls = _run(_raw([_reply()]), threads=_threads("111", "F", thread_id="PRRT_x"))
     body = _reply_body(calls)
     assert body == EXPECTED_BODY
     assert "<!-- pr-review-agent:reply:222 -->" in body, "reply sentinel rides in the body"
-    assert "🤖 _pr-review-agent_" in body, "provenance marker rides in the body"
+    assert "🤖 _pr-review-agent_" not in body, "the provenance marker is retired"
 
 
 def test_dry_run_confirmed_includes_resolve_thread_id_and_stamp():

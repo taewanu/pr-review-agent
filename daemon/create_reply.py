@@ -100,15 +100,6 @@ BUCKET_REACTION = {
 # Finding's comment body (#79).
 SENTINEL = "<!-- pr-review-agent:reply:{id} -->"
 
-# Provenance marker appended to every daemon text reply. Answers "who wrote
-# this" under the shared solo identity (ADR 0003); never draft-status, since a
-# posted reply is no draft (ADR 0010 §1). Hard-coded per ADR 0010 §3 (a runtime
-# shared constant across the bash/Python boundary was rejected there); mirrors
-# lib.sh's PROVENANCE_TAG, with test_provenance_tag.py pinning the two identical.
-# The trailing `_` closes the markdown italic; it carries no colon, so the
-# sentinel scan in reply-pr.sh never false-matches it.
-MARKER = "🤖 _pr-review-agent_"
-
 
 class PayloadError(Exception):
     """Carries a log_failure category so reply-pr.sh can classify the exit."""
@@ -199,10 +190,12 @@ def link_for(args: argparse.Namespace, reply: dict) -> str | None:
 def build_body(body: str, addressed_id: str, link: str | None = None) -> str:
     """Verdict-leading reply body: the italic lead sentence, the optional
     blob-at-HEAD link on the same line, the explanation prose below it, then the
-    provenance marker and Reply sentinel footer. Location lives in the link, not
-    the prose, so the agent body never repeats the file and line (#96). When the
-    body has no italic lead (degenerate — replies are validated to lead with one),
-    it stays whole with the link as a trailing paragraph, the pre-#96 layout."""
+    Reply sentinel footer. Location lives in the link, not the prose, so the agent
+    body never repeats the file and line (#96). The bot's own login carries the
+    disclosure the provenance marker used to (ADR 0036), so no marker is appended.
+    When the body has no italic lead (degenerate: replies are validated to lead
+    with one), it stays whole with the link as a trailing paragraph, the pre-#96
+    layout."""
     lead, rest = voice.split_lead(body)
     if lead:
         parts = [f"{lead} {link}" if link else lead]
@@ -212,7 +205,6 @@ def build_body(body: str, addressed_id: str, link: str | None = None) -> str:
         parts = [body]
         if link:
             parts.append(link)
-    parts.append(MARKER)
     parts.append(SENTINEL.format(id=addressed_id))
     return "\n\n".join(parts)
 

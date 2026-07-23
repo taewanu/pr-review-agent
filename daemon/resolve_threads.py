@@ -70,13 +70,6 @@ from resolution import (  # noqa: E402
 # when omitted; a count of 0 is a pure insertion with no old-side lines.
 HUNK_OLD_RE = re.compile(r"^@@ -(?P<start>\d+)(?:,(?P<count>\d+))? \+\d+(?:,\d+)? @@")
 
-# Provenance marker on every daemon-authored comment (ADR 0010 §3). Mirrors
-# lib.sh's PROVENANCE_TAG and create_reply.py's MARKER; test_provenance_tag.py
-# pins all three identical. Used here to tell a daemon Finding thread from the
-# Operator's own manual review comment, so only the daemon's own threads can
-# become resolution candidates.
-PROVENANCE_MARKER = "🤖 _pr-review-agent_"
-
 
 @dataclass
 class IncrementDiff:
@@ -150,10 +143,10 @@ def select_candidates(
 ) -> list[dict]:
     """Open, daemon-owned threads of prior Findings the new HEAD might have fixed.
 
-    Every candidate is open (not resolved on GitHub), daemon-owned (root comment
-    authored by the operator AND carrying the Provenance marker, so an Operator's
-    own manual comment never qualifies), and not yet stamped (a thread judged fixed
-    on an earlier tick goes to select_retry_threads, never re-judged here).
+    Every candidate is open (not resolved on GitHub), bot-owned (root comment
+    authored by the bot's own login, so a human's manual comment never qualifies,
+    ADR 0036), and not yet stamped (a thread judged fixed on an earlier tick goes
+    to select_retry_threads, never re-judged here).
 
     Among those, a Finding is `touched` when its `original_line` (creation-side
     coordinate) falls inside an old-side hunk of this increment's diff. Touched
@@ -180,11 +173,9 @@ def select_candidates(
             continue
         if t.get("root_author") != operator:
             continue
-        body = t.get("root_body") or ""
-        if PROVENANCE_MARKER not in body:
-            continue
         if t.get("has_resolution_stamp"):
             continue
+        body = t.get("root_body") or ""
         path = t.get("path") or ""
         line = t.get("original_line")
         if not isinstance(line, int):
@@ -249,8 +240,6 @@ def select_retry_threads(threads: list[dict], operator: str) -> list[dict]:
         if t.get("is_resolved"):
             continue
         if t.get("root_author") != operator:
-            continue
-        if PROVENANCE_MARKER not in (t.get("root_body") or ""):
             continue
         if not t.get("has_resolution_stamp"):
             continue

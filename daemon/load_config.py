@@ -63,6 +63,7 @@ class DaemonConfig(BaseModel):
 
     repos: list[str]
     github_user: str
+    github_app_id: str
     poll_interval_seconds: int = 300
     max_parallel: int = 1
     review_own_prs: bool = True
@@ -84,6 +85,15 @@ class DaemonConfig(BaseModel):
         if not v.strip():
             raise ValueError("GITHUB_USER is empty")
         return v
+
+    @field_validator("github_app_id")
+    @classmethod
+    def _check_app_id(cls, v: str) -> str:
+        # Numeric because GitHub App ids are integers; a non-digit value is a
+        # typo the boot check catches instead of a failed JWT mint later.
+        if not v.strip().isdigit():
+            raise ValueError(f"GITHUB_APP_ID must be a numeric App id (got {v!r})")
+        return v.strip()
 
     @field_validator("poll_interval_seconds")
     @classmethod
@@ -148,6 +158,7 @@ def load(checkout_root: Path) -> DaemonConfig:
     data = {
         "repos": repos_raw.split() if repos_raw else [],
         "github_user": env.get("GITHUB_USER", "").strip(),
+        "github_app_id": env.get("GITHUB_APP_ID", "").strip(),
         "poll_interval_seconds": _parse_int(
             env.get("POLL_INTERVAL_SECONDS", ""), key="POLL_INTERVAL_SECONDS", default=300
         ),

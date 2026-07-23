@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
+APP_STUB = REPO_ROOT / "tests" / "lib_app_stub.sh"
 
 
 def _run(
@@ -44,7 +45,7 @@ def _run(
         if env_extra:
             env.update(env_extra)
         result = subprocess.run(
-            ["bash", "-c", f"source {LIB}; {call}"],
+            ["bash", "-c", f"source {LIB}; source {APP_STUB}; {call}"],
             capture_output=True,
             text=True,
             env=env,
@@ -69,7 +70,7 @@ def _run_with_stub_script(
         if env_extra:
             env.update(env_extra)
         result = subprocess.run(
-            ["bash", "-c", f"source {LIB}; {call}"],
+            ["bash", "-c", f"source {LIB}; source {APP_STUB}; {call}"],
             capture_output=True,
             text=True,
             env=env,
@@ -96,12 +97,12 @@ def test_render_carries_header_scope_and_marker():
     assert "<!-- pr-review-agent:status -->" in out
 
 
-def test_render_carries_provenance_tag():
-    # The Status comment is agent-authored, so it carries the Provenance tag like
-    # every posted artifact that is not a Review body (ADR 0010).
+def test_render_carries_no_provenance_tag():
+    # The Status comment posts under the bot's own login, which carries
+    # who-wrote-this, so the body-text provenance tag is retired (ADR 0036).
     out, rc, _ = _run("render_status_comment 'h' 'full PR' 1 'only.sh'")
     assert rc == 0
-    assert "🤖 _pr-review-agent_" in out
+    assert "🤖 _pr-review-agent_" not in out
 
 
 def test_render_is_scope_only_never_findings():
@@ -136,12 +137,11 @@ def test_render_embeds_sentinel_when_given():
     assert f"<!-- pr-review-agent:sha:{SHA_40} -->" in out
 
 
-def test_render_sentinel_sits_after_provenance_before_status_marker():
+def test_render_sentinel_sits_before_status_marker():
     out, rc, _ = _run(f"render_status_comment 'h' 'full PR' 1 'only.sh' '' '' '{SHA_40}'")
-    provenance_pos = out.index("🤖 _pr-review-agent_")
     sentinel_pos = out.index(f"pr-review-agent:sha:{SHA_40}")
     marker_pos = out.index("<!-- pr-review-agent:status -->")
-    assert provenance_pos < sentinel_pos < marker_pos
+    assert sentinel_pos < marker_pos
 
 
 # --- status_sha_link / status_scope_link (head-line + scope builders) -----
@@ -158,14 +158,14 @@ def test_status_sha_link_is_commit_markdown_link():
     out, rc, _ = _run(f"status_sha_link '{_REPO}' '{_HEAD}'")
     assert rc == 0
     # Display = 12-char short SHA, backtick-wrapped; href = full SHA on /commit/.
-    assert out.strip() == f"[`{_HEAD[:12]}`]({_REPO}/commit/{_HEAD})"
+    assert out.strip() == f"[`{_HEAD[:7]}`]({_REPO}/commit/{_HEAD})"
 
 
 def test_status_scope_link_real_range_is_compare_link():
     out, rc, _ = _run(f"status_scope_link '{_REPO}' '{_LAST}' '{_HEAD}'")
     assert rc == 0
     # Display = short..short; href = /compare/<full>...<full> (THREE dots).
-    assert out.strip() == f"[`{_LAST[:12]}..{_HEAD[:12]}`]({_REPO}/compare/{_LAST}...{_HEAD})"
+    assert out.strip() == f"[`{_LAST[:7]}..{_HEAD[:7]}`]({_REPO}/compare/{_LAST}...{_HEAD})"
     assert "..." in out  # three-dot compare ref, not the two-dot display range
 
 
@@ -185,7 +185,7 @@ def test_reviewed_head_line_uses_colon_not_em_dash():
     assert rc == 0
     assert "—" not in out
     assert ": 3 findings" in out
-    assert f"[`{_HEAD[:12]}`]({_REPO}/commit/{_HEAD})" in out
+    assert f"[`{_HEAD[:7]}`]({_REPO}/commit/{_HEAD})" in out
 
 
 def test_render_singular_file_noun():
@@ -268,12 +268,6 @@ def test_status_failure_reason_matches_a_hypothetical_future_lens_by_glob():
     assert out == "The review agent timed out."
 
 
-def test_status_failure_reason_pending_conflict_is_surfaced():
-    out, rc, _ = _run("status_failure_reason pending-conflict")
-    assert rc == 0
-    assert out == "An earlier review is still pending on this PR."
-
-
 def test_status_failure_reason_diff_fetch_timeout_is_surfaced():
     out, rc, _ = _run("status_failure_reason diff-fetch-timeout")
     assert rc == 0
@@ -303,7 +297,7 @@ def test_status_failure_reason_internal_hiccups_are_silent():
 def test_status_failure_reason_phrases_are_em_dash_free():
     # The failed head-line is fixed chrome that skips the voice.py gate, so the
     # no-em-dash rule is enforced on these phrases directly.
-    for category in ("review-timeout", "pending-conflict", "diff-fetch-timeout"):
+    for category in ("review-timeout", "session-limit", "diff-fetch-timeout"):
         out, _, _ = _run(f"status_failure_reason {category}")
         assert "—" not in out
 
@@ -424,3 +418,108 @@ def test_edit_status_comment_logs_when_retries_exhausted():
     assert result.returncode == 0
     assert "status comment edit failed after 3 attempts" in result.stderr
     assert "999" in result.stderr
+
+
+# --- render_review_footer (ADR 0036 decisions 3, 4a) ----------------------
+# The review body's sign-off: one line linking the App name to its profile. The
+# canonical youshallnotmerge slug draws a themed pool line rotated by the head
+# SHA; any other slug gets a single plain line. No gh, so _run's stub is unused.
+
+SHA_A = "0123456789abcdef0123456789abcdef01234567"
+SHA_B = "fedcba9876543210fedcba9876543210fedcba98"
+
+
+def _footer(slug: str, sha: str) -> str:
+    out, rc, _ = _run(f"render_review_footer {slug} {sha}")
+    assert rc == 0, out
+    return out
+
+
+def test_canonical_slug_draws_a_themed_pool_line():
+    out = _footer("youshallnotmerge", SHA_A)
+    assert out.startswith("\n\n---\n\n🧙 _")
+    assert out.endswith("· [youshallnotmerge](https://github.com/apps/youshallnotmerge)")
+
+
+def test_other_slug_gets_one_plain_line():
+    out = _footer("my-fork-app", SHA_A)
+    assert "🧙" not in out
+    assert out == (
+        "\n\n---\n\n🤖 _Automated review by [my-fork-app](https://github.com/apps/my-fork-app)._"
+    )
+
+
+def test_rotation_is_stable_per_sha_and_varies_across_shas():
+    # A given SHA always renders the same line (a review body is posted once per
+    # SHA); two different SHAs land on different pool lines here.
+    assert _footer("youshallnotmerge", SHA_A) == _footer("youshallnotmerge", SHA_A)
+    assert _footer("youshallnotmerge", SHA_A) != _footer("youshallnotmerge", SHA_B)
+
+
+def test_short_or_absent_sha_falls_to_the_first_line():
+    # dry-run without a head sha: index 0 rather than an arithmetic error.
+    first = _footer("youshallnotmerge", "''")
+    assert "You shall not merge until every thread is resolved." in first
+
+
+# --- render_status_headline (ADR 0036 4a, themed gate verdict) --------------
+# The canonical slug themes the head-line: a SHA-keyed wizard emoji + the
+# "you shall pass" / "not pass" verdict (binary, count stays in the rollup).
+# Any other slug gets the plain functional head-line. No gh.
+
+_SHA0 = "04b8c1e0000000000000000000000000000000ab"  # 16#04b8c1e % 2 == 0
+_SHA1 = "a1b2c3d0000000000000000000000000000000cd"  # 16#a1b2c3d % 2 == 1
+_LINK = "[`04b8c1e`](https://x/y/commit/x)"
+
+
+def _headline(slug: str, state: str, sha: str) -> str:
+    # Single-quote the link: it carries backticks, which bash would otherwise read
+    # as command substitution.
+    out, rc, _ = _run(f"render_status_headline {slug} {state} '{_LINK}' {sha}")
+    assert rc == 0, out
+    return out
+
+
+def test_canonical_reviewing_is_a_wizard_verb():
+    out = _headline("youshallnotmerge", "reviewing", _SHA0)
+    assert out.startswith("🔮") or out.startswith("🧙")
+    assert "Reviewing" in out and out.endswith("…")
+
+
+def test_canonical_pass_grants_passage():
+    out = _headline("youshallnotmerge", "pass", _SHA0)
+    assert out.startswith("🪄") or out.startswith("✨")
+    assert out.endswith(": you shall pass")
+
+
+def test_canonical_block_holds_the_gate():
+    out = _headline("youshallnotmerge", "block", _SHA0)
+    assert out.startswith("🛑") or out.startswith("🔥")
+    assert out.endswith(": you shall not pass")
+    # Binary verdict, never a count in the head-line (ADR 0020: tally lives in the
+    # rollup, so the head-line duplicates nothing).
+    assert not any(c.isdigit() for c in out.split("]")[-1])
+
+
+def test_other_slug_gets_the_plain_headline():
+    assert _headline("my-fork", "reviewing", _SHA0) == f"👀 Reviewing {_LINK}…"
+    # Plain path is finding-agnostic: pass and block both read "Reviewed".
+    assert _headline("my-fork", "pass", _SHA0) == f"✅ Reviewed {_LINK}"
+    assert _headline("my-fork", "block", _SHA0) == f"✅ Reviewed {_LINK}"
+
+
+def test_emoji_is_sha_keyed_and_stable():
+    # Same SHA always renders the same emoji (the status comment is edited in
+    # place many times per review); two SHAs on opposite sides of the pool differ.
+    assert _headline("youshallnotmerge", "block", _SHA0) == _headline(
+        "youshallnotmerge", "block", _SHA0
+    )
+    assert _headline("youshallnotmerge", "block", _SHA0) != _headline(
+        "youshallnotmerge", "block", _SHA1
+    )
+
+
+def test_short_sha_falls_to_the_first_emoji():
+    # A short or absent sha (dry-run) picks index 0 rather than erroring.
+    out = _headline("youshallnotmerge", "block", "''")
+    assert out.startswith("🛑")

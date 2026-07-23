@@ -1,10 +1,11 @@
 # Select the Operator-reply threads reply-pr.sh still needs to act on (#39).
 #
 # Input: the PR's inline review comments (gh `pulls/{n}/comments`, --paginate).
-# Args: --arg login       the daemon/operator gh login (parent finding must be ours).
-#       --arg provenance  the Provenance tag (lib.sh PROVENANCE_TAG, the single
-#                         source), so a daemon-authored comment is never mistaken
-#                         for an Operator reply (#153).
+# Args: --arg login  the bot's REST login (`<slug>[bot]`); the parent finding
+#                    must be ours. A reply is excluded when its own author is a
+#                    Bot (user.type), which covers our own acks and other bots
+#                    (ADR 0036 decisions 8, 9), replacing the old body-text
+#                    Provenance self-exclusion that produced the #153 false drop.
 # Output: [{parent_finding:{...}, operator_reply:{...}}] for each unaddressed reply.
 #
 # Extracted from reply-pr.sh so the selection is unit-testable
@@ -26,11 +27,11 @@
         $cur.in_reply_to_id != null
         # parent must be our finding
         and ($by_id[($cur.in_reply_to_id | tostring)].user.login == $login)
-        # exclude our own comments: every daemon comment threaded under a Finding (a
-        # reply ack) carries the Provenance tag, so the tag is the reliable own-comment
-        # gate. Without it a daemon reply ack, whose own id is not in the addressed-set,
-        # would be dispatched as an Operator reply (the #153 self-reply bug).
-        and (($cur.body // "") | contains($provenance) | not)
+        # answer only non-bot replies (ADR 0036 decision 9). This also excludes our
+        # own acks, which post as the bot: under a distinct bot login authorship
+        # separates the daemon's reply from a human's, so no body-text tag is needed
+        # (the #153 self-reply false drop is gone with it).
+        and (($cur.user.type // "") != "Bot")
         # exclude replies already in the addressed-set
         and (($addressed | index($cur.id | tostring)) | not)
       )

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# create-review.sh — create the review via gh api POST /reviews. Pending on
-# others' PRs (submit-review.sh finalizes it later); auto-submitted on own PRs
-# (ADR 0008).
+# create-review.sh — create and submit the review via gh api POST /reviews. Every
+# review submits immediately as a COMMENT under the bot identity (ADR 0036
+# decision 6): no pending draft, no own-vs-others fork.
 
 set -euo pipefail
 
@@ -9,7 +9,6 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 DRY_RUN=0
-OWN_PR=0
 HEAD_SHA=""
 HEAD_REPO_URL=""
 OWNER=""
@@ -19,6 +18,9 @@ SUMMARY_FILE=""
 ANCHORED=""
 UNANCHORED=""
 DROPPED_COMBO=0
+APP_ID=""
+INSTALLATION_ID=""
+APP_SLUG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -58,9 +60,17 @@ while [[ $# -gt 0 ]]; do
       DROPPED_COMBO="$2"
       shift 2
       ;;
-    --own-pr)
-      OWN_PR=1
-      shift
+    --app-id)
+      APP_ID="$2"
+      shift 2
+      ;;
+    --installation-id)
+      INSTALLATION_ID="$2"
+      shift 2
+      ;;
+    --app-slug)
+      APP_SLUG="$2"
+      shift 2
       ;;
     --dry-run)
       DRY_RUN=1
@@ -102,25 +112,7 @@ if ! [[ "$DROPPED_COMBO" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# Project identity for the footer/banner, derived from this checkout's git
-# remote. Any fork running from a normal clone gets its own identity with
-# zero config.
-derive_project_identity "$(dirname "$0")/.."
-project_url="$PROJECT_URL"
-project_name="$PROJECT_NAME"
-
 summary="$(cat "$SUMMARY_FILE")"
-
-# Auto-prepend a preview-release banner while pyproject.toml's version stays on 0.x.x.
-# Disappears automatically once the project ships a 1.0+ version.
-banner=""
-pyproject="$(dirname "$0")/../pyproject.toml"
-if [[ -r "$pyproject" ]]; then
-  version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$pyproject" | head -1)"
-  if [[ "$version" =~ ^0\. ]]; then
-    banner="_${project_name} v${version} (preview release). [Report a problem](${project_url}/issues)._"$'\n\n---\n\n'
-  fi
-fi
 
 # Per-finding degradation note (ADR 0005). Surfaces dropped findings so the
 # operator sees the redaction in the body rather than only in stderr logs.
@@ -131,21 +123,11 @@ if [[ "$DROPPED_COMBO" -gt 0 ]]; then
   dropped_note=$'\n\n'"_${DROPPED_COMBO} ${noun} dropped (forbidden severity×type combo)._"
 fi
 
-# Review footer per ADR 0010 (the posted-format contract; ADR 0001 D3 decides
-# one pending review per tick, not this string). Identity from
-# derive_project_identity above. The leading `\n\n---\n\n` detaches the footer
-# from whatever ends the body (summary, dropped-note, `## Findings outside the diff`,
-# or nothing). Review-level, so it carries attribution + next action, not the
-# item-level Provenance tag.
-# Own PRs auto-submit a COMMENT review (ADR 0008), so the action line is
-# post-hoc (edit) rather than pre-submit (submit/cancel on a pending one). It
-# says "edit", not "delete": GitHub rejects deleting a submitted review, so an
-# unwanted auto-submitted review can only be edited or have its comments hidden.
-if [[ $OWN_PR -eq 1 ]]; then
-  footer=$'\n\n---\n\n🤖 _Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit as needed._'
-else
-  footer=$'\n\n---\n\n🤖 _Drafted by ['"${project_name}"']('"${project_url}"'). Submit, edit, or cancel as needed._'
-fi
+# Review footer (ADR 0036 decisions 3, 4a): a single App-attributed sign-off,
+# rendered by lib.sh from the App slug and this SHA. Slug comes from --app-slug
+# (the bot's GraphQL login, threaded from review-pr.sh); a dry-run without it
+# falls to the plain fork line.
+footer="$(render_review_footer "$APP_SLUG" "$HEAD_SHA")"
 
 # Dedup sentinel per ADR 0006. Encodes the reviewed SHA so the next tick can
 # parse it from `gh api .../reviews` and skip same-SHA re-reviews / scope the
@@ -205,16 +187,14 @@ additional="$(jq -r \
   end
 ' "$UNANCHORED")"
 
-body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}${sentinel}"
+body_with_additional="${summary}${dropped_note}${additional}${footer}${sentinel}"
 
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
 # Inline body format per ADR 0002: type-first header, then the agent's body
-# (bold lead + optional bullets), then the Provenance tag. An Inline comment is
-# item-level, so it carries the tag (who wrote it), not a draft-status footer
-# (ADR 0010); $PROVENANCE_TAG is sourced from lib.sh, shared with the Status
-# comment and matched against create_reply.py's MARKER by a test.
-comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" --arg marker "$PROVENANCE_TAG" '
+# (bold lead + optional bullets). No provenance tag: the bot's own login carries
+# who-wrote-this now (ADR 0036), retiring the body-text marker.
+comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
   map(
     {
       path: .path,
@@ -223,8 +203,7 @@ comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" --arg
         "_" + ($typ[.type] // "❓") + " " + .type +
         "_ | _" +
         ($sev[.severity] // "❓") + " " + .severity + "_" +
-        "\n\n" + .body +
-        "\n\n" + $marker
+        "\n\n" + .body
       )
     }
     + (
@@ -237,53 +216,52 @@ comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" --arg
   )
 ' "$ANCHORED")"
 
-# Own PRs submit a COMMENT review in this same POST (ADR 0008): an `event` of
-# COMMENT creates and submits in one call, with no pending stage. Omitting
-# `event` (others' PRs) leaves the review PENDING for the operator to submit.
-event=""
-if [[ $OWN_PR -eq 1 ]]; then
-  event="COMMENT"
-fi
-
+# An `event` of COMMENT creates and submits the review in one call, with no
+# pending stage (ADR 0036 decision 6).
 payload="$(jq -n \
   --arg body "$body_with_additional" \
   --argjson comments "$comments_json" \
   --arg commit_id "$HEAD_SHA" \
-  --arg event "$event" \
   '{
     body: $body,
-    comments: $comments
+    comments: $comments,
+    event: "COMMENT"
   }
-  + (if $commit_id == "" then {} else {commit_id: $commit_id} end)
-  + (if $event == "" then {} else {event: $event} end)')"
+  + (if $commit_id == "" then {} else {commit_id: $commit_id} end)')"
 
 if [[ $DRY_RUN -eq 1 ]]; then
   printf '%s\n' "$payload"
   exit 0
 fi
 
-if [[ $OWN_PR -eq 1 ]]; then
-  log_info "submitting COMMENT review to ${OWNER}/${REPO}#${NUMBER} (own-PR auto-submit)"
-else
-  log_info "posting Pending review to ${OWNER}/${REPO}#${NUMBER}"
-fi
+[[ -n "$APP_ID" ]] || {
+  log_err "create-review.sh: missing --app-id"
+  exit 1
+}
+[[ -n "$INSTALLATION_ID" ]] || {
+  log_err "create-review.sh: missing --installation-id"
+  exit 1
+}
 
-# Capture both streams: gh api writes the 422 response body to stdout and a
-# short status line to stderr. The pending-conflict marker is in the response
-# body, so stderr-only capture misses it. Per ADR 0005 we don't auto-cancel
-# (would destroy the operator's in-flight draft).
+log_info "submitting review to ${OWNER}/${REPO}#${NUMBER}"
+
+# Write the payload to a file and pass --input <file> rather than piping it in:
+# `printf | run_with_app_token gh` runs gh on the right side of a pipe (a
+# subshell), and a mint there would land in that doomed subshell. The file form
+# keeps the wrapped gh in the main shell. gh api writes the response body to
+# stdout and a status line to stderr; 2>&1 captures both so a failure body is
+# logged (a wrapper log_err on a failed mint lands here too, and is surfaced).
 out_file="$(mktemp -t pr-review-post.XXXXXX)"
-trap 'rm -f "$out_file"' EXIT
+payload_file="$(mktemp -t pr-review-payload.XXXXXX)"
+trap 'rm -f "$out_file" "$payload_file"' EXIT
+printf '%s' "$payload" >"$payload_file"
 
-if ! printf '%s' "$payload" | gh api \
+if ! run_with_app_token "$APP_ID" "$INSTALLATION_ID" \
+  gh api \
   --method POST \
   "repos/${OWNER}/${REPO}/pulls/${NUMBER}/reviews" \
-  --input - >"$out_file" 2>&1; then
-  if grep -q "User can only have one pending review per pull request" "$out_file"; then
-    printf 'category=pending-conflict\n' >&2
-  else
-    printf 'category=post-failed\n' >&2
-  fi
+  --input "$payload_file" >"$out_file" 2>&1; then
+  printf 'category=post-failed\n' >&2
   cat "$out_file" >&2
   exit 1
 fi

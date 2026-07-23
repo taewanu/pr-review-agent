@@ -1,6 +1,6 @@
 # pr-review-agent
 
-Automated PR review agent that posts under your own GitHub identity. Run it in your terminal: it polls the repos you choose, drafts findings as a **Pending** review, and leaves submit/edit/cancel to you. Optionally install it as a background `launchd` job.
+Automated PR review agent that posts as a self-hosted GitHub App. Run it in your terminal: it polls the repos you choose and submits findings as a review under its `<app>[bot]` identity. Optionally install it as a background `launchd` job.
 
 > **Preview release (v0.x).** Works end-to-end on your own repos. Review wording, line anchoring, and re-review skipping are still being polished. Expect quirks until v1.0.
 
@@ -10,22 +10,21 @@ Automated PR review agent that posts under your own GitHub identity. Run it in y
 2. The daemon lists open PRs for each watched repo via `gh`.
 3. It skips drafts, PRs labeled `no-ai-review`, and PRs whose HEAD SHA was already reviewed.
 4. For the rest, it runs the review agent (`.claude/agents/review-agent-default.md`) via headless Claude Code (`claude -p`) against the diff, and anchors findings to file/line ranges.
-5. It posts the findings as a **Pending** review on your GitHub identity.
-6. You open the PR and submit, edit, or dismiss.
-
-On a colleague's PR the daemon never auto-submits: what lands under your name is your call. On your own PRs it submits a `COMMENT` review directly (your code, your words, editable after), per [ADR 0008](docs/adr/0008-own-pr-auto-submit.md).
+5. It submits the findings as a `COMMENT` review under its App bot identity, in one call ([ADR 0036](docs/adr/0036-github-app-identity.md)).
+6. You open the PR to read them, and edit or dismiss any you disagree with.
 
 ## Why this exists
 
-- Review comments post under your own GitHub identity, not a bot account.
-- Each teammate can run their own daemon; multiple independent reviews on the same PR are fine.
-- Runs on your laptop: no webhooks, no GitHub App, no hosting bill.
+- Review comments post as a dedicated `<app>[bot]`, distinct from your own GitHub identity, so the daemon's work is never confused with yours.
+- Each teammate can install the App on their own repos; multiple independent reviews on the same PR are fine.
+- Runs on your laptop as a self-hosted App: polling, so no webhooks and no hosting bill.
 - MIT-licensed. Retune via `.claude/agents/review-agent-default.md` (prompt) and `.env` tunables (confidence gate, findings cap).
 
 ## Prerequisites
 
 - macOS (Claude Code runs here; the optional background install uses `launchd`).
-- [`gh`](https://cli.github.com/) authenticated (`gh auth login`); reviews post under this identity per [ADR 0003](docs/adr/0003-identity-model.md).
+- A GitHub App you register and own: its App id in `GITHUB_APP_ID` and its private key at `~/.pr-review-agent/app.pem`. The daemon authenticates as the App, so no `gh auth login` is needed ([ADR 0036](docs/adr/0036-github-app-identity.md)); registration steps are still being written up.
+- [`gh`](https://cli.github.com/) on `PATH` (the daemon drives it with the App token), plus `openssl` and `curl` for the token mint.
 - [`claude`](https://claude.com/claude-code) on `PATH`.
 - `git`, `jq`, `python3` 3.13+.
 
@@ -38,7 +37,7 @@ git clone https://github.com/<you>/pr-review-agent.git
 cd pr-review-agent
 
 # create your config and edit it
-# at minimum: REPOS=<owner>/<repo>, GITHUB_USER=<your gh login>
+# at minimum: REPOS=<owner>/<repo>, GITHUB_APP_ID=<your App id>
 cp templates/.env.example .env
 
 # run it — progress prints to the terminal; Ctrl-C to stop
@@ -83,15 +82,7 @@ echo $(( $(date +%s) - $(cat ~/.pr-review-agent/daemon.heartbeat) ))s   # second
 
 ## Submitting a review
 
-**Your own PRs** auto-submit: the daemon posts a `COMMENT` review directly, no pending stage ([ADR 0008](docs/adr/0008-own-pr-auto-submit.md)). It is your code and your words, so you edit or hide it after the fact rather than vetting it first.
-
-**Others' PRs** stay pending until you submit. Submit with the helper:
-
-```bash
-bash daemon/submit-review.sh <pr-url>
-```
-
-It submits via the GitHub API (`POST .../reviews/:id/events`), which preserves the drafted summary. Use it rather than GitHub's "Finish your review" web modal, which can blank the summary.
+Every review submits immediately as a `COMMENT` review, posted by the App under its `<app>[bot]` identity ([ADR 0036](docs/adr/0036-github-app-identity.md)). There is no pending stage and no own-vs-others fork: a bot review has no private draft to protect, so it publishes in one call. Edit or hide it after the fact if needed.
 
 ## Replying to findings
 
@@ -101,7 +92,7 @@ Reply inline to a finding and the daemon picks it up on the next polling cycle. 
 - **Question or pushback** ("Why flag this?", "This is a false positive"): 👀 ("seen"), then a threaded reply that either stands by the finding with evidence from the file at HEAD or withdraws it as a false positive.
 - **Acknowledgment** ("Thanks", "Deferring to V2"): 👍 ("noted"), no text reply.
 
-**Solo-attribution non-goal:** in a single-identity setup ([ADR 0003](docs/adr/0003-identity-model.md)) the daemon and you share one login, so the reaction lands on your own comment. A user token carries no metadata to distinguish "daemon 👀" from "human 👀"; the only true fix is a separate bot identity (a GitHub App), which the operator-identity model rules out, the same blocker as the pickup check-run path. Accepted: 👀 is the least-human self-react, and the sole reader is the operator who configured the daemon.
+The reaction lands on your comment from the `<app>[bot]`, so a "bot 👀" is plainly distinct from your own ([ADR 0036](docs/adr/0036-github-app-identity.md)); the shared-login ambiguity the operator-identity model carried here is gone.
 
 ## Forking
 

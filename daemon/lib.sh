@@ -96,7 +96,7 @@ log_degradation_warnings() {
 # review-timeout) from the step label it wraps.
 # Recovered from a subprocess's `category=` line, never authored via log_failure
 # here (a slug may appear under more than one stage):
-#   create-review.sh   pending-conflict, post-failed
+#   create-review.sh   post-failed
 #   create_reply.py    no-fence, parse-error, schema-invalid, style-violation
 #   apply_edits.py     edit-empty, edit-no-fence, edit-parse-error, edit-schema-invalid, edit-coverage, edit-fidelity
 #   merge_findings.py  empty-stdout, all-lenses-failed, session-limit
@@ -507,7 +507,8 @@ _status_is_fast_forward() {
 # callers take the safe full PR diff.
 is_fast_forward() {
   local status
-  status="$(gh api "repos/$1/compare/$2...$3" --jq '.status' 2>/dev/null)"
+  status="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/$1/compare/$2...$3" --jq '.status' 2>/dev/null)"
   _status_is_fast_forward "$status"
 }
 
@@ -546,7 +547,25 @@ reply_defers_on_unreachable_fix() {
 # unpushed fix SHA (the race, absent: defer) from one that exists but diverged
 # after a rebase (present: verify against HEAD). ADR 0028.
 commit_exists() {
-  gh api "repos/$1/commits/$2" --jq '.sha' >/dev/null 2>&1
+  # Baseline: the base installation token. A fork PR addresses a repo other than
+  # the installed base ($1 is the head repo), and the base token may not read a
+  # private fork: that 404 reads as commit-absent and makes reply_defers_on_
+  # unreachable_fix defer the thread forever (ADR 0028, decision 2).
+  local inst="$PRA_INSTALLATION_ID" head_inst
+  # When the App is also installed on the head repo, read the commit under that
+  # installation's own token. app_installation_id returns 0 only when installed,
+  # so the `if` takes the head token on rc 0 and keeps the base on rc 1 (not
+  # installed) or rc 2 (could-not-check). rc 1 is the common public-fork case the
+  # base can still read; rc 2 is transient, so falling back re-probes next cycle
+  # rather than deferring the thread on a one-off blip. Testing the substitution
+  # with `if` also keeps it safe under `set -e` when the probe exits non-zero.
+  if head_inst="$(app_installation_id "${1%%/*}" "${1##*/}" "$PRA_APP_ID")" &&
+    [[ -n "$head_inst" ]]; then
+    inst="$head_inst"
+  fi
+
+  run_with_app_token "$PRA_APP_ID" "$inst" \
+    gh api "repos/$1/commits/$2" --jq '.sha' >/dev/null 2>&1
 }
 
 # State tracking for same-SHA dedup. One file per PR. Layered behind the
@@ -697,6 +716,28 @@ _mint_installation_token() {
   printf '%s %s' "$token" "$expires_at"
 }
 
+# _app_get <jwt> <url>
+# GETs a JWT-authenticated App endpoint, printing "<body>\n<http_code>". Returns
+# non-zero only on a transport failure (network, DNS, timeout), which it logs
+# with the url; a caller maps the http_code and reads the body itself. Shared by
+# the three App GET probes so the curl flags, timeouts, and stderr capture live
+# in one place. Not for _mint_installation_token, which POSTs a different shape.
+_app_get() {
+  local jwt="$1" url="$2" response stderr_capture
+  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
+  if ! response="$(curl -sS -w '\n%{http_code}' \
+    --connect-timeout 10 --max-time 30 \
+    -H "Authorization: Bearer ${jwt}" \
+    -H "Accept: application/vnd.github+json" \
+    "$url" 2>"$stderr_capture")"; then
+    log_err "GET ${url} failed: $(<"$stderr_capture")"
+    rm -f "$stderr_capture"
+    return 1
+  fi
+  rm -f "$stderr_capture"
+  printf '%s' "$response"
+}
+
 # app_installation_id <owner> <repo> <app-id>
 # Prints the installation id for one repository. Exit codes separate the two
 # outcomes a caller must treat differently:
@@ -707,21 +748,9 @@ _mint_installation_token() {
 # call the daemon already needs to make (ADR 0036 decision 4).
 app_installation_id() {
   local owner="$1" repo="$2" app_id="$3" jwt response id http_code
-  local stderr_capture
 
   jwt="$(_app_jwt "$app_id")" || return 2
-
-  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
-  if ! response="$(curl -sS -w '\n%{http_code}' \
-    --connect-timeout 10 --max-time 30 \
-    -H "Authorization: Bearer ${jwt}" \
-    -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${owner}/${repo}/installation" 2>"$stderr_capture")"; then
-    log_err "installation probe failed for ${owner}/${repo}: $(<"$stderr_capture")"
-    rm -f "$stderr_capture"
-    return 2
-  fi
-  rm -f "$stderr_capture"
+  response="$(_app_get "$jwt" "https://api.github.com/repos/${owner}/${repo}/installation")" || return 2
 
   http_code="$(tail -1 <<<"$response")"
   case "$http_code" in
@@ -782,6 +811,64 @@ discover_missing_installations() {
   if [[ ${#missing[@]} -gt 0 ]]; then
     log_err "App not installed on: ${missing[*]} (skipped until you install it)"
   fi
+}
+
+# app_auth_init <owner> <repo> <app-id>
+# Resolves everything one repo's authenticated work needs from a single probe,
+# and sets it as non-exported globals the per-PR code reads:
+#   PRA_APP_ID           the App id, echoed back so callers thread one value
+#   PRA_INSTALLATION_ID  for run_with_app_token / _gh_token
+#   PRA_BOT_LOGIN_REST   "<slug>[bot]", the author login on REST payloads
+#   PRA_BOT_LOGIN_GQL    "<slug>", the author login on GraphQL payloads
+# The two login forms are how the daemon recognizes its own artifacts under App
+# identity (ADR 0036 decision 8): REST comments carry the [bot] suffix, GraphQL
+# author nodes do not. Both come from the installation response's app_slug, so
+# no extra call. Exit codes match app_installation_id (0 installed / 1 not /
+# 2 could-not-check) so a caller can skip or fail the same way.
+app_auth_init() {
+  local owner="$1" repo="$2" app_id="$3" jwt response http_code body id slug
+
+  jwt="$(_app_jwt "$app_id")" || return 2
+  response="$(_app_get "$jwt" "https://api.github.com/repos/${owner}/${repo}/installation")" || return 2
+
+  http_code="$(tail -1 <<<"$response")"
+  case "$http_code" in
+    200) ;;
+    404) return 1 ;;
+    *)
+      log_err "installation probe for ${owner}/${repo} answered ${http_code}"
+      return 2
+      ;;
+  esac
+
+  body="$(sed '$d' <<<"$response")"
+  if ! id="$(jq -r '.id // empty' <<<"$body" 2>/dev/null)"; then
+    log_err "installation probe for ${owner}/${repo} returned unparseable JSON"
+    return 2
+  fi
+  slug="$(jq -r '.app_slug // empty' <<<"$body")"
+  if [[ -z "$id" || -z "$slug" ]]; then
+    log_err "installation probe for ${owner}/${repo} answered 200 without an id or app_slug"
+    return 2
+  fi
+
+  PRA_APP_ID="$app_id"
+  PRA_INSTALLATION_ID="$id"
+  # Read by scripts that source lib.sh (the step-3 wiring), invisible to the
+  # linter from here.
+  # shellcheck disable=SC2034
+  PRA_BOT_LOGIN_REST="${slug}[bot]"
+  # shellcheck disable=SC2034
+  PRA_BOT_LOGIN_GQL="$slug"
+}
+
+# app_auth_warm
+# Warms the process-lifetime token cache in the current shell, so the wrapped
+# calls below it (most of which run inside command substitutions, where a mint
+# would land in a doomed subshell) reuse one token instead of minting each.
+# Call once per entry-point process, in its main shell, after app_auth_init.
+app_auth_warm() {
+  _gh_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" || return 1
 }
 
 # _rfc3339_to_epoch <timestamp>
@@ -884,17 +971,26 @@ _gh_token() {
 # itself. `gh` cannot, and the daemon's Python helpers do not. Widening this
 # extends that trust, which is why test_app_auth.py pins the accepted shapes.
 #
-# Do not wrap this in `run_with_timeout`. Since #253 it runs the command as a
-# background job, and a background job is a subshell, so `_gh_token`'s cache
-# assignment dies with it and every wrapped call re-mints: the bug #252 fixed,
-# reached through a different door. Wrapping from inside is refused by the
-# allowlist above. What bounds a hung call is poll.sh's `run_with_pr_timeout`
-# around the whole dispatch, which is how the daemon's other gh calls are
-# bounded; the mint is bounded by curl's own --max-time. A tighter per-call cap
-# would have to be applied inside this function, after the mint.
+# For a per-call cap, pass `--timeout <secs>` after the two ids: it wraps the
+# command in `run_with_timeout` from inside, after the mint. Do not wrap this
+# call in `run_with_timeout` from outside instead. Since #253 that runs the
+# command as a background job, and a background job is a subshell, so
+# `_gh_token`'s cache assignment dies with it and every wrapped call re-mints:
+# the bug #252 fixed, reached through a different door. The mint itself is
+# bounded by curl's own --max-time; the whole dispatch is bounded by poll.sh's
+# `run_with_pr_timeout`, which is how the daemon's other gh calls are bounded.
 run_with_app_token() {
-  local app_id="$1" installation_id="$2" token command
+  local app_id="$1" installation_id="$2" token command timeout_secs=""
   shift 2
+
+  if [[ "${1:-}" == "--timeout" ]]; then
+    timeout_secs="${2:-}"
+    if [[ ! "$timeout_secs" =~ ^[0-9]+$ ]]; then
+      log_err "run_with_app_token --timeout needs a whole number of seconds, got '${timeout_secs}'"
+      return 1
+    fi
+    shift 2
+  fi
 
   if [[ $# -eq 0 ]]; then
     log_err "run_with_app_token needs a command to run"
@@ -922,7 +1018,11 @@ run_with_app_token() {
   fi
   token="$_GH_TOKEN_VALUE"
 
-  GH_TOKEN="$token" "$@"
+  if [[ -n "$timeout_secs" ]]; then
+    GH_TOKEN="$token" run_with_timeout "$timeout_secs" "$@"
+  else
+    GH_TOKEN="$token" "$@"
+  fi
 }
 
 # flatten_pages
@@ -950,7 +1050,8 @@ discover_sentinel_sha() {
   local owner="$1" repo="$2" pr="$3" login="$4"
   local reviews_json comments_json stderr_capture
   stderr_capture="$(mktemp -t pr-review-discover.XXXXXX)"
-  if ! reviews_json="$(gh api --paginate "repos/${owner}/${repo}/pulls/${pr}/reviews" 2>"$stderr_capture")"; then
+  if ! reviews_json="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api --paginate "repos/${owner}/${repo}/pulls/${pr}/reviews" 2>"$stderr_capture")"; then
     log_err "sentinel discovery: gh api .../pulls/${pr}/reviews failed: $(<"$stderr_capture")"
     rm -f "$stderr_capture"
     return 2
@@ -958,7 +1059,8 @@ discover_sentinel_sha() {
   # Comments are best-effort: a failure here degrades to reviews-only rather
   # than escalating to a return-2 skip, since reviews (the primary source)
   # already succeeded.
-  if ! comments_json="$(gh api --paginate "repos/${owner}/${repo}/issues/${pr}/comments" 2>"$stderr_capture")"; then
+  if ! comments_json="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api --paginate "repos/${owner}/${repo}/issues/${pr}/comments" 2>"$stderr_capture")"; then
     log_err "sentinel discovery: gh api .../issues/${pr}/comments failed (degrading to reviews-only): $(<"$stderr_capture")"
     comments_json="[]"
   fi
@@ -1425,7 +1527,8 @@ fetch_open_review_threads() {
   local resp
   # $owner/$repo/$pr are GraphQL variables, not shell vars; keep them literal.
   # shellcheck disable=SC2016
-  if ! resp="$(gh api graphql \
+  if ! resp="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api graphql \
     -f query='query($owner:String!,$repo:String!,$pr:Int!){
       repository(owner:$owner,name:$repo){
         pullRequest(number:$pr){
@@ -1458,38 +1561,55 @@ fetch_open_review_threads() {
       }]' <<<"$resp"
 }
 
-# derive_project_identity <repo-root>
-# Sets PROJECT_URL/PROJECT_NAME from `git remote get-url origin`. Returns
-# non-zero if the origin is missing or not a parseable github.com URL.
-# shellcheck disable=SC2034  # PROJECT_URL/NAME consumed by callers
-derive_project_identity() {
-  local repo_root="$1"
-  local remote_url derived_owner derived_repo
-  remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || remote_url=""
-  # Constrain repo to no-slash + tolerate trailing slash; strip `.git` shell-side
-  # (bash ERE lacks lazy `+?` so `(\.git)?` doesn't compose with greedy capture).
-  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/]+)/?$ ]]; then
-    derived_owner="${BASH_REMATCH[1]}"
-    derived_repo="${BASH_REMATCH[2]%.git}"
+# render_review_footer <app-slug> <head-sha>
+# The review body's sign-off (ADR 0036 decisions 3, 4a). One line linking the App
+# name to its profile page (github.com/apps/<slug>), which is where attribution
+# lives: the footer names the App, the profile names its owner. The canonical
+# `youshallnotmerge` App draws a themed line from a fixed pool; every other
+# operator's App gets one plain safety line, because the flavor is inseparable
+# from that name. The pool rotates by the head SHA: the review body is posted once
+# per SHA and never edited in place (only the Status comment is), so a per-SHA key
+# is stable within a review and varies across successive reviews on a PR. That is
+# the variety the trail-position idea aimed at, without a read on the post path. A
+# short or absent SHA (dry-run) falls to index 0. The leading rule detaches the
+# footer from whatever ends the body.
+render_review_footer() {
+  local slug="$1" head_sha="$2" link idx
+  [[ -n "$slug" ]] || slug="pr-review-agent"
+  link="https://github.com/apps/${slug}"
+  if [[ "$slug" != "youshallnotmerge" ]]; then
+    printf '\n\n---\n\n🤖 _Automated review by [%s](%s)._' "$slug" "$link"
+    return 0
   fi
-  if [[ -z "${derived_owner:-}" || -z "${derived_repo:-}" ]]; then
-    log_err "could not derive project identity — \`git -C $repo_root remote get-url origin\` did not return a parseable github.com URL"
-    return 1
-  fi
-  PROJECT_URL="https://github.com/${derived_owner}/${derived_repo}"
-  PROJECT_NAME="$derived_repo"
+  local pool=(
+    "You shall not merge until every thread is resolved."
+    "A wizard reviews precisely when it means to."
+    "One does not simply merge into main."
+    "Even the smallest diff can change the course of the codebase."
+    "Not all those who refactor are lost."
+    "Keep it secret, keep it safe: the token, never the diff."
+    "Fly, you fools. The tests are red."
+    "All we have to decide is what to do with the diff given us."
+    "Speak friend, and merge."
+    "Even the wise cannot see all ends of this diff."
+    "The board is set, the threads are moving."
+    "A red build is a warning, not a defeat."
+    "The diff passes to the maintainer now."
+    "Many that merge deserve review; some that fail deserve a second look."
+    "You cannot pass without a green build."
+    "I have no memory of this file."
+    "There is some good in this codebase, and it is worth reviewing."
+    "Not all tears are an evil, and not all failures are red."
+    "That still only counts as one commit."
+    "Merge in haste, repent at leisure."
+    "The way is shut until every thread is resolved."
+    "Little by little, one refactors the journey."
+  )
+  idx=0
+  # Hex-prefix arithmetic; the guard keeps a non-hex or short sha at index 0.
+  [[ "$head_sha" =~ ^[0-9a-fA-F]{8} ]] && idx=$((16#${head_sha:0:8} % ${#pool[@]}))
+  printf '\n\n---\n\n🧙 _%s_ · [%s](%s)' "${pool[$idx]}" "$slug" "$link"
 }
-
-# Provenance tag on every posted artifact that is not a Review body — the
-# Inline comment (create-review.sh), the Status comment (below), and the reply
-# (create_reply.py's own MARKER). Single bash source: create-review.sh sources lib.sh
-# and reads this. Answers "who wrote this", never draft-status (ADR 0010 §1).
-# ADR 0010 §3 is the documentary source of truth: this constant and
-# create_reply.py's MARKER each hard-code the string — a runtime shared constant
-# across the bash/Python boundary was rejected there as costlier than a drift
-# test — and test_provenance_tag.py pins the two definitions identical.
-# shellcheck disable=SC2034  # also consumed by create-review.sh after sourcing
-PROVENANCE_TAG='🤖 _pr-review-agent_'
 
 # Marker identifying the agent's edit-in-place review-status comment (#60).
 # find_status_comment keys on it to reuse the one comment across ticks rather
@@ -1500,13 +1620,13 @@ STATUS_COMMENT_MARKER='<!-- pr-review-agent:status -->'
 # status_sha_link <repo-url> <head-oid>
 # Renders the head SHA as a short, backtick-wrapped markdown link to its commit
 # page on the HEAD repo (the same repo the finding blob links target, so fork
-# PRs resolve correctly). Display is the 12-char short SHA; the href uses the
-# full SHA so GitHub resolves it unambiguously.
+# PRs resolve correctly). Display is the 7-char short SHA GitHub itself shows; the
+# href uses the full SHA so GitHub resolves it unambiguously.
 status_sha_link() {
   local repo_url="$1" head_oid="$2"
   # printf format is literal markdown; the values fill the %s (not shell expansion).
   # shellcheck disable=SC2016
-  printf '[`%s`](%s/commit/%s)' "${head_oid:0:12}" "$repo_url" "$head_oid"
+  printf '[`%s`](%s/commit/%s)' "${head_oid:0:7}" "$repo_url" "$head_oid"
 }
 
 # status_scope_link <repo-url> <last-sha> <head-oid>
@@ -1522,8 +1642,43 @@ status_scope_link() {
     # printf format is literal markdown; the values fill the %s (not shell expansion).
     # shellcheck disable=SC2016
     printf '[`%s..%s`](%s/compare/%s...%s)' \
-      "${last_sha:0:12}" "${head_oid:0:12}" "$repo_url" "$last_sha" "$head_oid"
+      "${last_sha:0:7}" "${head_oid:0:7}" "$repo_url" "$last_sha" "$head_oid"
   fi
+}
+
+# render_status_headline <app-slug> <state> <sha-link> [head-sha]
+# The status comment's first line. <state> is reviewing | pass | block. The
+# canonical youshallnotmerge App themes it: a wizard verb over a SHA-keyed emoji,
+# and the gate verdict "you shall pass" / "you shall not pass" (ADR 0036 4a). The
+# verdict is binary, not a count: the finding tally stays in the index rollup
+# below, so the head-line duplicates nothing (ADR 0020). Every other slug gets the
+# plain functional head-line. The emoji rotates by <head-sha> so a commit's line
+# is stable across the status comment's many in-place edits, varying across
+# commits; a short or absent sha falls to index 0.
+render_status_headline() {
+  local slug="$1" state="$2" sha_link="$3" head_sha="${4:-}" idx=0
+  if [[ "$slug" != "youshallnotmerge" ]]; then
+    case "$state" in
+      reviewing) printf '👀 Reviewing %s…' "$sha_link" ;;
+      *) printf '✅ Reviewed %s' "$sha_link" ;;
+    esac
+    return 0
+  fi
+  [[ "$head_sha" =~ ^[0-9a-fA-F]{7} ]] && idx=$((16#${head_sha:0:7} % 2))
+  case "$state" in
+    reviewing)
+      local prog=(🔮 🧙)
+      printf '%s Reviewing %s…' "${prog[$idx]}" "$sha_link"
+      ;;
+    pass)
+      local ok=(🪄 ✨)
+      printf '%s %s: you shall pass' "${ok[$idx]}" "$sha_link"
+      ;;
+    block)
+      local no=(🛑 🔥)
+      printf '%s %s: you shall not pass' "${no[$idx]}" "$sha_link"
+      ;;
+  esac
 }
 
 # render_status_comment <head-line> <scope-label> <file-count> <files> [index-block] [trail-block] [sentinel-sha]
@@ -1556,12 +1711,12 @@ render_status_comment() {
   local body="$head_line"$'\n\n'"_Scope: ${scope_label}_"
   [[ -n "$index_block" ]] && body+=$'\n\n'"$index_block"
   body+=$'\n\n'"<details><summary>${file_count} ${noun}</summary>"$'\n\n'"${bullets}"$'\n\n</details>'
-  # Trail sits below the file list and above provenance: scope and index stay the
-  # eye's first stop (current state), the trail reads as an appendix (history).
+  # Trail sits below the file list: scope and index stay the eye's first stop
+  # (current state), the trail reads as an appendix (history).
   [[ -n "$trail_block" ]] && body+=$'\n\n'"$trail_block"
-  # Visible Provenance tag (ADR 0010), then the hidden sentinel and Status
-  # markers last (both HTML comments, neither meant for the reader's eye).
-  body+=$'\n\n'"${PROVENANCE_TAG}"
+  # The hidden sentinel and Status markers last (both HTML comments, neither meant
+  # for the reader's eye). No visible provenance tag: the Status comment posts
+  # under the bot's own login, which carries who-wrote-this (ADR 0036).
   [[ -n "$sentinel_sha" ]] && body+=$'\n\n'"<!-- pr-review-agent:sha:${sentinel_sha} -->"
   body+=$'\n\n'"${STATUS_COMMENT_MARKER}"
   printf '%s\n' "$body"
@@ -1585,9 +1740,6 @@ status_failure_reason() {
       # daemon/review-pr.sh's dispatch loop from LENS_LABELS) is recognized
       # automatically, with no update needed here.
       printf 'The review agent timed out.'
-      ;;
-    pending-conflict)
-      printf 'An earlier review is still pending on this PR.'
       ;;
     session-limit)
       # The one failure whose cause the author can place: an external quota, not
@@ -1624,7 +1776,8 @@ diff_paths() {
 find_status_comment() {
   local owner="$1" repo="$2" pr="$3" operator="$4"
   [[ -n "$operator" ]] || return 0
-  gh api "repos/${owner}/${repo}/issues/${pr}/comments" --paginate \
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/${owner}/${repo}/issues/${pr}/comments" --paginate \
     --jq ".[] | select(.user.login == \"${operator}\") | select(.body | contains(\"${STATUS_COMMENT_MARKER}\")) | .id" \
     2>/dev/null | tail -1 || true
 }
@@ -1634,7 +1787,8 @@ find_status_comment() {
 # returns 0 on failure, so a missing status comment never aborts the review.
 post_status_comment() {
   local owner="$1" repo="$2" pr="$3" body="$4"
-  gh api "repos/${owner}/${repo}/issues/${pr}/comments" \
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/${owner}/${repo}/issues/${pr}/comments" \
     -f body="$body" --jq '.id' 2>/dev/null || true
 }
 
@@ -1646,7 +1800,8 @@ post_status_comment() {
 status_comment_body() {
   local owner="$1" repo="$2" comment_id="$3"
   [[ -n "$comment_id" ]] || return 0
-  gh api "repos/${owner}/${repo}/issues/comments/${comment_id}" --jq '.body' 2>/dev/null || true
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/${owner}/${repo}/issues/comments/${comment_id}" --jq '.body' 2>/dev/null || true
 }
 
 # edit_status_comment <owner> <repo> <comment-id> <body>
@@ -1666,7 +1821,8 @@ edit_status_comment() {
   local attempt sleep_secs="${STATUS_EDIT_RETRY_SLEEP_SECONDS:-2}"
   [[ -n "$comment_id" ]] || return 0
   for attempt in 1 2 3; do
-    gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
+    run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+      gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
       -f body="$body" >/dev/null 2>&1 && return 0
     [[ "$attempt" -lt 3 ]] && sleep "$sleep_secs"
   done

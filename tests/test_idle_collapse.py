@@ -16,6 +16,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from app_auth_fixture import install_app_stubs
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DAEMON = REPO_ROOT / "daemon"
 OWNER_REPO = "example/example"
@@ -48,6 +50,7 @@ def _setup(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     (tmp_path / ".env").write_text(
         f"REPOS={OWNER_REPO}\n"
         "GITHUB_USER=operator\n"
+        "GITHUB_APP_ID=4361858\n"
         "REVIEW_OWN_PRS=true\n"
         "OPT_OUT_LABEL=no-ai-review\n"
         "MAX_PARALLEL=1\n"
@@ -55,6 +58,7 @@ def _setup(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     pr_list = tmp_path / "pr_list.json"
     pr_list.write_text("[]")
     _executable(bindir / "gh", _GH_STUB % pr_list)
+    install_app_stubs(bindir)
     # Stub child scripts so a working cycle needs no real review/reply.
     for name in ("review-pr.sh", "reply-pr.sh"):
         _executable(daemon / name, "#!/usr/bin/env bash\nexit 0\n")
@@ -64,6 +68,7 @@ def _setup(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
 def _poll(daemon: Path, bindir: Path, state: Path) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["PATH"] = f"{bindir}:{env['PATH']}"
+    env["APP_KEY_PATH"] = str(bindir / "app.pem")
     env["PR_REVIEW_STATE_DIR"] = str(state)
     return subprocess.run(
         ["bash", str(daemon / "poll.sh")],

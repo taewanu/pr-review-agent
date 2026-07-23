@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from app_auth_fixture import install_app_stubs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DAEMON = REPO_ROOT / "daemon"
@@ -314,6 +315,7 @@ def _poll_setup(tmp_path: Path) -> tuple[Path, Path, Path]:
     (tmp_path / ".env").write_text(
         f"REPOS={OWNER_REPO}\n"
         "GITHUB_USER=operator\n"
+        "GITHUB_APP_ID=4361858\n"
         "REVIEW_OWN_PRS=true\n"
         "OPT_OUT_LABEL=no-ai-review\n"
         "MAX_PARALLEL=1\n"
@@ -330,12 +332,14 @@ def _poll_setup(tmp_path: Path) -> tuple[Path, Path, Path]:
         "  *) echo '[]'; exit 0 ;;\n"
         "esac\n",
     )
+    install_app_stubs(bindir)
     return daemon, bindir, state
 
 
 def _poll(daemon: Path, bindir: Path, state: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["PATH"] = f"{bindir}:{env['PATH']}"
+    env["APP_KEY_PATH"] = str(bindir / "app.pem")
     env["PR_REVIEW_STATE_DIR"] = str(state)
     return subprocess.run(
         ["bash", str(daemon / "poll.sh")],
