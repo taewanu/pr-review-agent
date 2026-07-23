@@ -170,16 +170,11 @@ def extract_payload(raw: str) -> dict:
                     "schema-invalid",
                     f"reply agent: replies[{i}] {bucket} mode {mode!r} not in {valid}",
                 )
-            # Reply bodies lead with an italic sentence (diverging from the
-            # inline comment's bold lead, ADR 0010 §4), peeled before the opener
-            # scan (strip_bold handles `_…_` too since #104) and held to the
-            # same 2–4 bullet rule (check_bullets).
-            style_violations += voice.check_text(
-                body,
-                prefixes=voice.FORBIDDEN_PREFIXES,
-                strip_bold=True,
-                check_bullets=True,
-                label=f"replies[{i}].body",
+            # Validate under the reply-body artifact rule set (ADR 0010 §4, owned
+            # by voice._ARTIFACT_RULES): its italic lead is peeled before the
+            # opener scan and it obeys the shared em-dash/task-ref/bullet rules.
+            style_violations += voice.check_artifact(
+                voice.REPLY_BODY, body, label=f"replies[{i}].body"
             )
 
     if style_violations:

@@ -208,28 +208,55 @@ def check_text(
     return violations
 
 
+# Artifact types (ADR 0010 §4). Each names a posted surface whose voice rule set
+# this module owns, so a call site validates by artifact and never re-assembles
+# the flags itself.
+SUMMARY = "summary"
+INLINE_COMMENT = "inline-comment"
+REPLY_BODY = "reply-body"
+
+# The per-artifact rule matrix, the code mirror of ADR 0010 §4: the opener set,
+# whether a bold or italic lead is peeled before the opener scan, and whether the
+# structural 2–4 bullet count applies. The em dash and task-ref checks run on
+# every artifact, so they are not matrix flags. Reserialization fidelity is not
+# here either: the post-Editor gate routes it through fidelity_violations so a
+# corruption fails the review while a cosmetic miss only warns. INLINE_COMMENT and
+# REPLY_BODY share a rule set (reply bodies are validated with the Inline-comment
+# rules, ADR 0010 §4 and its #100/#106 amendments) but stay distinct keys: they
+# are distinct artifacts, so a future divergence is one edit here.
+_ARTIFACT_RULES: dict[str, dict[str, object]] = {
+    SUMMARY: {"prefixes": FORBIDDEN_SUMMARY_PREFIXES, "strip_bold": False, "check_bullets": False},
+    INLINE_COMMENT: {"prefixes": FORBIDDEN_PREFIXES, "strip_bold": True, "check_bullets": True},
+    REPLY_BODY: {"prefixes": FORBIDDEN_PREFIXES, "strip_bold": True, "check_bullets": True},
+}
+
+
+def check_artifact(artifact: str, text: str, *, label: str | None = None) -> list[str]:
+    """Voice violations for one field, under the rule set ADR 0010 §4 assigns to
+    `artifact` (SUMMARY / INLINE_COMMENT / REPLY_BODY).
+
+    The per-artifact entry point: a call site names the artifact, never the flags,
+    so adding an artifact or changing a rule is one edit to _ARTIFACT_RULES.
+    `label` names the field in each message and defaults to the artifact name.
+    """
+    return check_text(text, label=label or artifact, **_ARTIFACT_RULES[artifact])
+
+
 def check_payload(summary: str, bodies: list[str]) -> list[str]:
     """Return the cosmetic voice violations for a final review payload.
 
-    Centralizes the two-field shape every review gate shares: the summary stays
-    plain prose (FORBIDDEN_SUMMARY_PREFIXES, no bold lead), and each comment body
-    leads with a bold sentence (strip_bold) and obeys the 2–4 bullet count. Both
+    The two-artifact convenience for the review path: the SUMMARY plus each
+    INLINE_COMMENT body, each validated under its own artifact rule set. Both
     `extract_json.py` (author parse) and `apply_edits.py` (post-Editor gate) call
-    this so the rules live in one place.
+    this so the review rules live in one place.
 
     Reserialization corruption is not checked here; `fidelity_violations` owns that
     rule, and the post-Editor gate routes it there separately so a corruption
     fails the review while a cosmetic miss only warns.
     """
-    violations = check_text(summary, prefixes=FORBIDDEN_SUMMARY_PREFIXES, label="summary")
+    violations = check_artifact(SUMMARY, summary, label="summary")
     for i, body in enumerate(bodies):
-        violations += check_text(
-            body,
-            prefixes=FORBIDDEN_PREFIXES,
-            strip_bold=True,
-            check_bullets=True,
-            label=f"comments[{i}].body",
-        )
+        violations += check_artifact(INLINE_COMMENT, body, label=f"comments[{i}].body")
     return violations
 
 
