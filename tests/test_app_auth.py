@@ -169,7 +169,7 @@ def test_200_without_an_id_is_exit_2_and_logs(tmp_path):
     assert "no installation id" in out.stderr
 
 
-# --- app_auth_init / app_owner / app_auth_warm (#241) -----------------------
+# --- app_auth_init / app_auth_warm (#241) -----------------------------------
 
 
 def test_app_auth_init_sets_the_four_globals(tmp_path):
@@ -206,22 +206,6 @@ def test_app_auth_init_missing_slug_is_exit_2(tmp_path):
     )
     assert "rc=2" in out.stdout
     assert "app_slug" in out.stderr
-
-
-def test_app_owner_returns_the_owner_login(tmp_path):
-    key = _app_key(tmp_path)
-    bindir = _stub_curl(tmp_path, '{"owner": {"login": "example-owner"}}')
-    out = _run(f"APP_KEY_PATH={key}; app_owner {APP_ID}", path_prefix=bindir)
-    assert out.returncode == 0, out.stderr
-    assert out.stdout == "example-owner"
-
-
-def test_app_owner_without_login_fails(tmp_path):
-    key = _app_key(tmp_path)
-    bindir = _stub_curl(tmp_path, '{"owner": {}}', http_code="200")
-    out = _run(f"APP_KEY_PATH={key}; app_owner {APP_ID} || echo rc=$?", path_prefix=bindir)
-    assert "rc=1" in out.stdout
-    assert "owner.login" in out.stderr
 
 
 def test_app_auth_warm_caches_one_token(tmp_path):

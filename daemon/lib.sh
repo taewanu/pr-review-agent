@@ -810,30 +810,6 @@ app_auth_init() {
   PRA_BOT_LOGIN_GQL="$slug"
 }
 
-# app_owner <app-id>
-# Prints the App owner's login, for the review footer's attribution (ADR 0036
-# decision 7). Reached via GET /app, which needs a JWT and so cannot go through
-# run_with_app_token.
-app_owner() {
-  local app_id="$1" jwt response http_code owner
-
-  jwt="$(_app_jwt "$app_id")" || return 1
-  response="$(_app_get "$jwt" "https://api.github.com/app")" || return 1
-
-  http_code="$(tail -1 <<<"$response")"
-  if [[ "$http_code" != "200" ]]; then
-    log_err "app-owner probe answered ${http_code}"
-    return 1
-  fi
-
-  owner="$(sed '$d' <<<"$response" | jq -r '.owner.login // empty' 2>/dev/null)"
-  if [[ -z "$owner" ]]; then
-    log_err "app-owner probe answered 200 without owner.login"
-    return 1
-  fi
-  printf '%s' "$owner"
-}
-
 # app_auth_warm
 # Warms the process-lifetime token cache in the current shell, so the wrapped
 # calls below it (most of which run inside command substitutions, where a mint
@@ -1541,8 +1517,8 @@ fetch_open_review_threads() {
 # operator's App gets one plain safety line, because the flavor is inseparable
 # from that name. The pool rotates by the head SHA: the review body is posted once
 # per SHA and never edited in place (only the Status comment is), so a per-SHA key
-# is stable within a review and varies across successive reviews on a PR — the
-# variety the trail-position idea aimed at, without a read on the post path. A
+# is stable within a review and varies across successive reviews on a PR. That is
+# the variety the trail-position idea aimed at, without a read on the post path. A
 # short or absent SHA (dry-run) falls to index 0. The leading rule detaches the
 # footer from whatever ends the body.
 render_review_footer() {
