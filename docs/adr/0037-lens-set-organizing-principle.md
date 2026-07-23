@@ -9,8 +9,8 @@ The review leg grew a lens set without an organizing principle. ADR 0023 shipped
 
 Two facts about this repo's operation reframe the question:
 
-- A single strong reviewer reading once matched the multi-lens recall at less cost (ADR 0034). The harness redundancy of a second read did not demonstrably buy recall, and the domain lenses produced no surviving finding in the eval corpus (#249).
-- Recall is unmeasurable at this PR volume (#185/#188/#218/#232 closed for it). "Does this lens catch more" cannot be settled by measurement, so the set must be organized by a principle instead.
+- ADR 0034 measured the subagent harness redundant: single-agent mode matched the same five-lens set's recall at 27-39% fewer tokens by dropping a dispatch layer that only forwarded a subagent's stdout. It did not measure whether the lens count itself buys recall, since both modes ran five lenses. Separately, the eval corpus holds no perf, security, or test-quality defect (#249), though the full census is unrun, so that too is a recorded judgment rather than a measured result.
+- Recall is unmeasurable at this PR volume (#185/#188/#218/#232 closed for it). Neither the value of a second read of the base's own ground nor the marginal recall of a domain lens can be settled by measurement here, so the set must be organized by a principle instead.
 
 ## Decision
 
@@ -22,7 +22,7 @@ A lens is justified only when it adds a capability the base reviewer (`default`)
 
 3. **Domain depth (`perf`, `security`, `tests`).** The base reviewer already reaches these classes; a domain lens only spends its whole budget reading one of them deeper. That is concentrated attention, not a new capability, so it earns its cost only where the domain is load-bearing for the repo under review. Off by default (#249); a fork where security or performance is the point turns it on in `.env`.
 
-What this rejects: a lens that reads the same input as the base and hunts the base's own core class is a redundant read, not an addition. The `correctness` lens was exactly that, ADR 0022's redundancy lever. Its four categories were already in the default prompt, so it was removed and its one missing category plus its depth instruction folded into `default` (ADR 0023 amended).
+What this rejects: a lens that reads the same input as the base and hunts the base's own core class is a redundant read, not an addition. The `correctness` lens was exactly that, ADR 0022's redundancy lever. Three of its four categories were already in the default prompt; the fourth, async/ordering divergence, plus its depth instruction, were folded into `default` and the lens removed (ADR 0023 amended).
 
 **Naming.** The base lens keeps the name `default`, not `code`. Every lens reads code, so `code` would not distinguish the base from the domain lenses; `default` names it for what it is, the reviewer that runs unless narrowed. This settles the rename #250 asked about: the axes are named by this three-tier principle, not by relabeling `default`.
 
