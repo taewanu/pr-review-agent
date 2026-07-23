@@ -1,9 +1,9 @@
 version: 2
 
 updates:
-  # Dependabot's only job here is the major action bumps (v6 -> v7): a PR is
-  # the sole in-repo signal that one shipped. The moving major tags (@v6, @v4)
-  # already absorb minor and patch releases on their own.
+  # ci.yml pins actions to commit SHAs, which never move on their own.
+  # Dependabot bumps each pinned SHA and its version comment as releases land,
+  # the only thing that advances a SHA pin.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
