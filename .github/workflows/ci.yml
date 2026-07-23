@@ -1,22 +1,35 @@
 name: ci
 
+# No GITHUB_TOKEN scopes: nothing here writes, and the reads (checkout, mise
+# tool downloads) are public. The stripped token stays injected, so those reads
+# keep the authenticated rate limit without needing a scope.
+permissions: {}
+
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded PR runs; main pushes key on the SHA so each commit keeps its own run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: jdx/mise-action@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: jdx/mise-action@v4.2.1
       - run: pre-commit run --all-files
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: jdx/mise-action@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: jdx/mise-action@v4.2.1
       - run: mise exec -- pip install -e '.[dev]'
       - run: mise exec -- pytest -q
