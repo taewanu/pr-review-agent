@@ -537,12 +537,11 @@ INTENT_FILE="$SCRATCH/$INTENT_BASENAME"
 # Filtering the three parallel arrays together preserves their index alignment;
 # the merge and gate are already lens-count-agnostic (ADR 0023 Decision 3).
 REVIEW_LENSES="$(resolve_tunable REVIEW_LENSES "$SCRIPT_DIR/../.env")"
-# Default set when unset (#249): the code sweep, its correctness deepening, and
-# intent. The three domain lenses (perf, security, tests) are off by default,
-# because nothing in this repo's review history has been a perf, security, or
-# test-quality finding, so the burden of proof is on keeping a domain lens, not on
-# removing it (ADR 0035). A fork where that domain is the point re-enables it here
-# or in .env. The full six stay selectable; this only changes the unset default.
+# Default set when unset (#249): default, correctness, intent. The three domain
+# lenses (perf, security, tests) are off by default; ADR 0035 records why (no
+# domain defect in the eval corpus, so the burden of proof is on keeping a lens,
+# and a fork where that domain is the point opts in). The full six stay
+# selectable; this only changes the unset default.
 REVIEW_LENSES="${REVIEW_LENSES:-default correctness intent}"
 if [[ -n "${REVIEW_LENSES:-}" ]]; then
   _sel_cmds=()
