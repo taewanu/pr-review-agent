@@ -7,21 +7,15 @@ Fixture is `tests/fixtures/create_review_snapshot/` and holds:
 - expected_payload.json: payload when no findings were dropped (default path)
 - expected_payload_dropped_2.json: payload when 2 forbidden-combo findings were dropped
 
-Snapshots store live-derived values as placeholders: the banner/footer
-identity as `__PROJECT_NAME__` / `__PROJECT_URL__`, and the pyproject
-version as `__VERSION__`. The test normalizes the live identity and
-version into those placeholders before comparing, so the snapshot passes
-on the canonical clone, any fork, and across version bumps alike. Identity
-itself is covered by `test_footer_reflects_git_remote_identity`.
+The footer is now deterministic from --app-slug (ADR 0036): the tests pass a fixed
+slug, so the snapshot stores the literal body with no live-derived values to
+normalize. The canonical `youshallnotmerge` slug draws a themed pool line keyed to
+the fixture SHA; regenerating after a pool edit is expected.
 
-Regenerate snapshots (derived values are normalized automatically — no
-manual find/replace step):
+Regenerate snapshots:
 
     python tests/test_create_review.py
     python tests/test_create_review.py --dropped-combo 2
-
-The `__main__` block at the bottom runs the daemon, applies `_strip_derived`
-to the body, and writes the result to the matching `expected_payload*.json`.
 """
 
 from __future__ import annotations
@@ -29,7 +23,6 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -39,12 +32,15 @@ DAEMON = REPO_ROOT / "daemon"
 
 FIXTURE_HEAD_SHA = "0123456789abcdef0123456789abcdef01234567"
 FIXTURE_HEAD_REPO_URL = "https://github.com/example/example"
+# The canonical App slug drives the themed footer pool; snapshots pin its output.
+CANONICAL_SLUG = "youshallnotmerge"
 
 
 def _run_create_review(
     *extra_args: str,
     head_sha: str | None = FIXTURE_HEAD_SHA,
     head_repo_url: str | None = FIXTURE_HEAD_REPO_URL,
+    app_slug: str | None = CANONICAL_SLUG,
 ) -> dict:
     """Returns the --dry-run review payload (the object POSTed to the reviews
     API: body + comments, plus commit_id/event when set)."""
@@ -68,59 +64,15 @@ def _run_create_review(
         args += ["--head-sha", head_sha]
     if head_repo_url is not None:
         args += ["--head-repo-url", head_repo_url]
+    if app_slug is not None:
+        args += ["--app-slug", app_slug]
     args += ["--dry-run", *extra_args]
     result = subprocess.run(args, capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
 
 
-def _git_remote_identity() -> tuple[str, str]:
-    """Owner and repo derived from the local git origin — same parse the
-    daemon does, used by the derive test to stay correct on any checkout."""
-    url = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "remote", "get-url", "origin"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    match = re.search(r"github\.com[:/]([^/]+)/(.+?)(?:\.git)?$", url)
-    assert match, f"unexpected git remote URL format: {url}"
-    return match.group(1), match.group(2)
-
-
-def _pyproject_version() -> str:
-    """Version the daemon stamps into the preview banner, read from the same
-    pyproject.toml create-review.sh greps. Normalized away in the snapshot so a
-    version bump doesn't drift it."""
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    return data["project"]["version"]
-
-
-def _strip_derived(body: str) -> str:
-    """Substitute live-derived values (git-remote identity, pyproject version)
-    with the fixture's placeholders so the snapshot stays stable across forks
-    and version bumps alike. Anchored on the exact banner/footer templates
-    emitted by create-review.sh."""
-    owner, repo = _git_remote_identity()
-    version = _pyproject_version()
-    return (
-        body.replace(
-            f"[{repo}](https://github.com/{owner}/{repo})",
-            "[__PROJECT_NAME__](__PROJECT_URL__)",
-        )
-        .replace(
-            f"[Report a problem](https://github.com/{owner}/{repo}/issues)",
-            "[Report a problem](__PROJECT_URL__/issues)",
-        )
-        .replace(
-            f"{repo} v{version} (preview release)",
-            "__PROJECT_NAME__ v__VERSION__ (preview release)",
-        )
-    )
-
-
 def test_dry_run_payload_matches_snapshot():
     actual = _run_create_review()
-    actual["body"] = _strip_derived(actual["body"])
     expected = json.loads((FIXTURE / "expected_payload.json").read_text())
     assert actual == expected, (
         "create-review.sh --dry-run payload drifted from snapshot. "
@@ -133,7 +85,6 @@ def test_dry_run_payload_with_dropped_combo_matches_snapshot():
     # between the summary and `## Findings outside the diff` so the operator sees the
     # redaction in the body itself, not just in stderr.
     actual = _run_create_review("--dropped-combo", "2")
-    actual["body"] = _strip_derived(actual["body"])
     expected = json.loads((FIXTURE / "expected_payload_dropped_2.json").read_text())
     assert actual == expected, (
         "create-review.sh --dry-run --dropped-combo 2 payload drifted from snapshot. "
@@ -152,7 +103,7 @@ def test_sentinel_present_and_matches_adr_0006_format():
     assert match.group(1) == FIXTURE_HEAD_SHA
     # Sentinel sits below the footer so it parses out cleanly without
     # mid-body false positives.
-    footer_idx = body.index("Edit as needed.")
+    footer_idx = body.index("github.com/apps/")
     assert match.start() > footer_idx
 
 
@@ -196,27 +147,21 @@ def test_review_submits_comment_immediately():
     assert _run_create_review().get("event") == "COMMENT"
 
 
-def test_footer_says_edit_not_submit_or_delete():
-    # The review is already submitted, so the action line is post-hoc, not the
-    # pre-submit submit/cancel of a pending review. It says "edit" rather than
-    # "delete" because GitHub rejects deleting a submitted review (REST and
-    # GraphQL both 422); an unwanted one can only be edited or have its comments
-    # hidden.
+def test_canonical_slug_footer_is_a_themed_pool_line():
+    # The canonical App draws a 🧙 pool line linking its profile (ADR 0036 4a).
     body = _run_create_review()["body"]
-    assert "Edit as needed." in body
-    assert "delete" not in body.lower()
-    assert "Submit, edit, or cancel as needed." not in body
-    # The 🤖 sits outside the italic span (#132).
-    assert "🤖 _Auto-submitted by" in body
+    assert f"](https://github.com/apps/{CANONICAL_SLUG})" in body
+    assert "🧙 _" in body
+    # No preview banner survives (deleted with the git-remote identity).
+    assert "preview release" not in body
 
 
-def test_footer_reflects_git_remote_identity():
-    # Zero-config path: the daemon parses the local git origin to fill the
-    # footer/banner. Body must surface that derived identity. Test stays
-    # correct on canonical and fork checkouts alike by querying git directly.
-    owner, repo = _git_remote_identity()
-    body = _run_create_review()["body"]
-    assert f"[{repo}](https://github.com/{owner}/{repo})" in body
+def test_other_slug_footer_is_the_plain_line():
+    # A fork with any other slug gets one plain safety line, since the flavor is
+    # tied to the canonical name.
+    body = _run_create_review(app_slug="my-fork-app")["body"]
+    assert "🤖 _Automated review by [my-fork-app](https://github.com/apps/my-fork-app)._" in body
+    assert "🧙" not in body
 
 
 if __name__ == "__main__":
@@ -224,7 +169,6 @@ if __name__ == "__main__":
 
     extra = sys.argv[1:]
     payload = _run_create_review(*extra)
-    payload["body"] = _strip_derived(payload["body"])
     suffix = "_dropped_2" if "--dropped-combo" in extra else ""
     out = FIXTURE / f"expected_payload{suffix}.json"
     out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")

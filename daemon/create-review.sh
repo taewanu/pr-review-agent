@@ -20,6 +20,7 @@ UNANCHORED=""
 DROPPED_COMBO=0
 APP_ID=""
 INSTALLATION_ID=""
+APP_SLUG=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -67,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       INSTALLATION_ID="$2"
       shift 2
       ;;
+    --app-slug)
+      APP_SLUG="$2"
+      shift 2
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -107,25 +112,7 @@ if ! [[ "$DROPPED_COMBO" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
-# Project identity for the footer/banner, derived from this checkout's git
-# remote. Any fork running from a normal clone gets its own identity with
-# zero config.
-derive_project_identity "$(dirname "$0")/.."
-project_url="$PROJECT_URL"
-project_name="$PROJECT_NAME"
-
 summary="$(cat "$SUMMARY_FILE")"
-
-# Auto-prepend a preview-release banner while pyproject.toml's version stays on 0.x.x.
-# Disappears automatically once the project ships a 1.0+ version.
-banner=""
-pyproject="$(dirname "$0")/../pyproject.toml"
-if [[ -r "$pyproject" ]]; then
-  version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$pyproject" | head -1)"
-  if [[ "$version" =~ ^0\. ]]; then
-    banner="_${project_name} v${version} (preview release). [Report a problem](${project_url}/issues)._"$'\n\n---\n\n'
-  fi
-fi
 
 # Per-finding degradation note (ADR 0005). Surfaces dropped findings so the
 # operator sees the redaction in the body rather than only in stderr logs.
@@ -136,18 +123,11 @@ if [[ "$DROPPED_COMBO" -gt 0 ]]; then
   dropped_note=$'\n\n'"_${DROPPED_COMBO} ${noun} dropped (forbidden severity×type combo)._"
 fi
 
-# Review footer per ADR 0010 (the posted-format contract; ADR 0001 D3 decides
-# one pending review per tick, not this string). Identity from
-# derive_project_identity above. The leading `\n\n---\n\n` detaches the footer
-# from whatever ends the body (summary, dropped-note, `## Findings outside the diff`,
-# or nothing). Review-level, so it carries attribution + next action, not the
-# item-level Provenance tag.
-# Every review submits immediately as a COMMENT under the bot (ADR 0036 decision
-# 6), so the action line is post-hoc (edit) rather than pre-submit. It says
-# "edit", not "delete": GitHub rejects deleting a submitted review, so an unwanted
-# review can only be edited or have its comments hidden. Footer content (App-owner
-# attribution, rotating pool) is reworked separately; this keeps it single.
-footer=$'\n\n---\n\n🤖 _Auto-submitted by ['"${project_name}"']('"${project_url}"'). Edit as needed._'
+# Review footer (ADR 0036 decisions 3, 4a): a single App-attributed sign-off,
+# rendered by lib.sh from the App slug and this SHA. Slug comes from --app-slug
+# (the bot's GraphQL login, threaded from review-pr.sh); a dry-run without it
+# falls to the plain fork line.
+footer="$(render_review_footer "$APP_SLUG" "$HEAD_SHA")"
 
 # Dedup sentinel per ADR 0006. Encodes the reviewed SHA so the next tick can
 # parse it from `gh api .../reviews` and skip same-SHA re-reviews / scope the
@@ -207,7 +187,7 @@ additional="$(jq -r \
   end
 ' "$UNANCHORED")"
 
-body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}${sentinel}"
+body_with_additional="${summary}${dropped_note}${additional}${footer}${sentinel}"
 
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.

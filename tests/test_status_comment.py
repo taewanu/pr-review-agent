@@ -418,3 +418,45 @@ def test_edit_status_comment_logs_when_retries_exhausted():
     assert result.returncode == 0
     assert "status comment edit failed after 3 attempts" in result.stderr
     assert "999" in result.stderr
+
+
+# --- render_review_footer (ADR 0036 decisions 3, 4a) ----------------------
+# The review body's sign-off: one line linking the App name to its profile. The
+# canonical youshallnotmerge slug draws a themed pool line rotated by the head
+# SHA; any other slug gets a single plain line. No gh, so _run's stub is unused.
+
+SHA_A = "0123456789abcdef0123456789abcdef01234567"
+SHA_B = "fedcba9876543210fedcba9876543210fedcba98"
+
+
+def _footer(slug: str, sha: str) -> str:
+    out, rc, _ = _run(f"render_review_footer {slug} {sha}")
+    assert rc == 0, out
+    return out
+
+
+def test_canonical_slug_draws_a_themed_pool_line():
+    out = _footer("youshallnotmerge", SHA_A)
+    assert out.startswith("\n\n---\n\n🧙 _")
+    assert out.endswith("· [youshallnotmerge](https://github.com/apps/youshallnotmerge)")
+
+
+def test_other_slug_gets_one_plain_line():
+    out = _footer("my-fork-app", SHA_A)
+    assert "🧙" not in out
+    assert out == (
+        "\n\n---\n\n🤖 _Automated review by [my-fork-app](https://github.com/apps/my-fork-app)._"
+    )
+
+
+def test_rotation_is_stable_per_sha_and_varies_across_shas():
+    # A given SHA always renders the same line (a review body is posted once per
+    # SHA); two different SHAs land on different pool lines here.
+    assert _footer("youshallnotmerge", SHA_A) == _footer("youshallnotmerge", SHA_A)
+    assert _footer("youshallnotmerge", SHA_A) != _footer("youshallnotmerge", SHA_B)
+
+
+def test_short_or_absent_sha_falls_to_the_first_line():
+    # dry-run without a head sha: index 0 rather than an arithmetic error.
+    first = _footer("youshallnotmerge", "''")
+    assert "You shall not merge until every thread is resolved." in first

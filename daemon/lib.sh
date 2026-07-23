@@ -1585,26 +1585,54 @@ fetch_open_review_threads() {
       }]' <<<"$resp"
 }
 
-# derive_project_identity <repo-root>
-# Sets PROJECT_URL/PROJECT_NAME from `git remote get-url origin`. Returns
-# non-zero if the origin is missing or not a parseable github.com URL.
-# shellcheck disable=SC2034  # PROJECT_URL/NAME consumed by callers
-derive_project_identity() {
-  local repo_root="$1"
-  local remote_url derived_owner derived_repo
-  remote_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null)" || remote_url=""
-  # Constrain repo to no-slash + tolerate trailing slash; strip `.git` shell-side
-  # (bash ERE lacks lazy `+?` so `(\.git)?` doesn't compose with greedy capture).
-  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/]+)/?$ ]]; then
-    derived_owner="${BASH_REMATCH[1]}"
-    derived_repo="${BASH_REMATCH[2]%.git}"
+# render_review_footer <app-slug> <head-sha>
+# The review body's sign-off (ADR 0036 decisions 3, 4a). One line linking the App
+# name to its profile page (github.com/apps/<slug>), which is where attribution
+# lives: the footer names the App, the profile names its owner. The canonical
+# `youshallnotmerge` App draws a themed line from a fixed pool; every other
+# operator's App gets one plain safety line, because the flavor is inseparable
+# from that name. The pool rotates by the head SHA: the review body is posted once
+# per SHA and never edited in place (only the Status comment is), so a per-SHA key
+# is stable within a review and varies across successive reviews on a PR — the
+# variety the trail-position idea aimed at, without a read on the post path. A
+# short or absent SHA (dry-run) falls to index 0. The leading rule detaches the
+# footer from whatever ends the body.
+render_review_footer() {
+  local slug="$1" head_sha="$2" link idx
+  [[ -n "$slug" ]] || slug="pr-review-agent"
+  link="https://github.com/apps/${slug}"
+  if [[ "$slug" != "youshallnotmerge" ]]; then
+    printf '\n\n---\n\n🤖 _Automated review by [%s](%s)._' "$slug" "$link"
+    return 0
   fi
-  if [[ -z "${derived_owner:-}" || -z "${derived_repo:-}" ]]; then
-    log_err "could not derive project identity — \`git -C $repo_root remote get-url origin\` did not return a parseable github.com URL"
-    return 1
-  fi
-  PROJECT_URL="https://github.com/${derived_owner}/${derived_repo}"
-  PROJECT_NAME="$derived_repo"
+  local pool=(
+    "You shall not merge until every thread is resolved."
+    "A wizard reviews precisely when it means to."
+    "One does not simply merge into main."
+    "Even the smallest diff can change the course of the codebase."
+    "Not all those who refactor are lost."
+    "Keep it secret, keep it safe: the token, never the diff."
+    "Fly, you fools. The tests are red."
+    "All we have to decide is what to do with the diff given us."
+    "Speak friend, and merge."
+    "Even the wise cannot see all ends of this diff."
+    "The board is set, the threads are moving."
+    "A red build is a warning, not a defeat."
+    "The diff passes to the maintainer now."
+    "Many that merge deserve review; some that fail deserve a second look."
+    "You cannot pass without a green build."
+    "I have no memory of this file."
+    "There is some good in this codebase, and it is worth reviewing."
+    "Not all tears are an evil, and not all failures are red."
+    "That still only counts as one commit."
+    "Merge in haste, repent at leisure."
+    "The way is shut until every thread is resolved."
+    "Little by little, one refactors the journey."
+  )
+  idx=0
+  # Hex-prefix arithmetic; the guard keeps a non-hex or short sha at index 0.
+  [[ "$head_sha" =~ ^[0-9a-fA-F]{8} ]] && idx=$((16#${head_sha:0:8} % ${#pool[@]}))
+  printf '\n\n---\n\n🧙 _%s_ · [%s](%s)' "${pool[$idx]}" "$slug" "$link"
 }
 
 # Marker identifying the agent's edit-in-place review-status comment (#60).
