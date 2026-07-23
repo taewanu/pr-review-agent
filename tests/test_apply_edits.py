@@ -265,15 +265,23 @@ def test_append_truncation_note_zero_is_a_no_op():
 def test_append_truncation_note_singular():
     payload = {"summary": "Clean diff.", "comments": []}
     result = apply_edits.append_truncation_note(payload, 1)
-    expected = "Clean diff.\n\n1 additional low-severity finding omitted by the review cap."
+    expected = "Clean diff.\n\n1 additional finding omitted by the review cap."
     assert result["summary"] == expected
 
 
 def test_append_truncation_note_plural():
     payload = {"summary": "Clean diff.", "comments": []}
     result = apply_edits.append_truncation_note(payload, 5)
-    expected = "Clean diff.\n\n5 additional low-severity findings omitted by the review cap."
+    expected = "Clean diff.\n\n5 additional findings omitted by the review cap."
     assert result["summary"] == expected
+
+
+def test_append_truncation_note_makes_no_severity_claim():
+    # The dropped tail can be important when a PR exceeds the cap in important
+    # findings, so the note must not call the omitted findings low-severity (#194).
+    payload = {"summary": "Clean diff.", "comments": []}
+    result = apply_edits.append_truncation_note(payload, 12)
+    assert "severity" not in result["summary"]
 
 
 def test_append_truncation_note_does_not_mutate_the_comments():
