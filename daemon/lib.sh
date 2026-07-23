@@ -96,11 +96,15 @@ log_degradation_warnings() {
 # Recovered from a subprocess's `category=` line, never authored via log_failure
 # here (a slug may appear under more than one stage):
 #   create-review.sh   pending-conflict, post-failed
-#   extract_json.py    empty-stdout, no-fence, parse-error, schema-invalid, style-violation
 #   create_reply.py    no-fence, parse-error, schema-invalid, style-violation
 #   apply_edits.py     edit-empty, edit-no-fence, edit-parse-error, edit-schema-invalid, edit-coverage, edit-fidelity
 #   merge_findings.py  empty-stdout, all-lenses-failed, session-limit
 #   load_config.py     config-parse-error, config-invalid, config-not-found
+# extract_json.py is the shared parse/gate library, not a routed subprocess: its
+# ExtractError slugs (empty-stdout, no-fence, parse-error, schema-invalid,
+# style-violation, cap-violation) are caught by merge_findings, which logs a
+# single failed lens as a merge-skip warning and rolls a total failure up to
+# all-lenses-failed (or session-limit).
 #
 # shellcheck disable=SC2034  # each is used by a sibling script that re-sources this file
 readonly FAIL_REPO_UNREACHABLE="repo-unreachable"
