@@ -60,6 +60,16 @@ Two independent dials.
    unchanged; the shipped template recommends `single-agent` on the measurement
    above.
 
+   > **Amended 2026-07-23 (single-agent default).** The code default is now
+   > `single-agent`, not `subagent`. The measurement stood, so the cheaper mode
+   > ships as the default rather than only the template's recommendation: an
+   > operator without the key now gets single-agent, matching the template, which
+   > keeps its explicit `REVIEW_MODE=single-agent` for legibility. Set `subagent`
+   > to opt back into the orchestrator-worker shape. Separately, the unset lens
+   > default is no longer "all" but `default intent` (#249, ADR 0037), so the
+   > orthogonal "`single-agent` with `REVIEW_LENSES` unset" example below now runs
+   > the default two lenses unless `REVIEW_LENSES` widens them, not the full set.
+
 2. **`REVIEW_LENSES`** picks how many lenses run, as a space-separated label
    list. Unset keeps all five. The merge and confidence gate are already
    lens-count-agnostic (ADR 0023 Decision 3).
