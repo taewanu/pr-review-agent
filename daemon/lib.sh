@@ -96,7 +96,7 @@ log_degradation_warnings() {
 # review-timeout) from the step label it wraps.
 # Recovered from a subprocess's `category=` line, never authored via log_failure
 # here (a slug may appear under more than one stage):
-#   create-review.sh   pending-conflict, post-failed
+#   create-review.sh   post-failed
 #   create_reply.py    no-fence, parse-error, schema-invalid, style-violation
 #   apply_edits.py     edit-empty, edit-no-fence, edit-parse-error, edit-schema-invalid, edit-coverage, edit-fidelity
 #   merge_findings.py  empty-stdout, all-lenses-failed, session-limit
