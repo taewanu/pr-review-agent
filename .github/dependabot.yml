@@ -1,9 +1,8 @@
 version: 2
 
 updates:
-  # ci.yml pins actions to commit SHAs, which never move on their own.
-  # Dependabot bumps each pinned SHA and its version comment as releases land,
-  # the only thing that advances a SHA pin.
+  # Opens a PR when a watched action ships a newer release: the in-repo signal
+  # to review and bump. Grouped weekly below.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
