@@ -241,10 +241,10 @@ def test_run_with_label_tags_each_line(tmp_path, capsys):
     sf.run(
         _ndjson(_assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}})),
         raw,
-        label="correctness",
+        label="perf",
     )
     err = capsys.readouterr().err
-    assert err == "[pr-review-agent]   [correctness] → Read: a.py\n"
+    assert err == "[pr-review-agent]   [perf] → Read: a.py\n"
 
 
 def test_run_truncated_stream_leaves_raw_out_empty(tmp_path):

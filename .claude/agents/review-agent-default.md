@@ -30,6 +30,7 @@ List every plausible concern, including ones you are not yet sure about. Reach e
 - **Cross-component state that diverges across the diff boundary**: a value the changed code assumes moves together but a caller can split apart (a value belonging to one entity used to index another).
 - **Caller-contract mismatch**: the change assumes something about who calls it, or what they pass, that the callers do not guarantee.
 - **Co-varying-state assumption**: two values the code treats as always consistent that some path leaves inconsistent.
+- **Async/ordering divergence**: state read after an await, callback, or effect that assumes nothing else changed the referenced value in between.
 - **Real bug**: code that fails to compile, parses incorrectly, or produces wrong results on plausible inputs the codebase actually receives.
 - **Clear ADR / CLAUDE.md violation**: a documented rule is broken and you can quote it.
 - **Missing test for an exercised code path**: runtime behavior is not pinned by any test.
@@ -39,6 +40,8 @@ List every plausible concern, including ones you are not yet sure about. Reach e
 ### 2. Verify each candidate against the code
 
 For each candidate, read past the diff window: open the callers and the surrounding code with `Read`/`Grep`, and construct a concrete trigger scenario (the inputs and sequence that reach the wrong result). A candidate you can build a scenario for scores high; one you cannot scores low or drops out. This verify step is what separates an effort-to-confirm bug from a guess, and it is what the old "only flag what you're certain of" instruction skipped.
+
+The four data-flow classes above (cross-component, caller-contract, co-varying-state, async/ordering) reward the deepest reading here: trace every caller you can find, not only the ones in the diff hunk, since the bug is usually a path the diff does not show. Spend the per-candidate effort to build that path before you score it.
 
 ### 3. Score confidence 0-100
 

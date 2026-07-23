@@ -280,7 +280,7 @@ def merge(
 
 def _label_from_path(path: str) -> str:
     """Derive a readable lens name from its raw-output filename, e.g.
-    `.pr-review-raw-correctness.txt` -> "correctness", `.pr-review-raw.txt`
+    `.pr-review-raw-perf.txt` -> "perf", `.pr-review-raw.txt`
     (the default lens) -> "default". Best-effort for stderr diagnostics only;
     an unrecognized name just prints as-is."""
     name = Path(path).name

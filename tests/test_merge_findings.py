@@ -121,8 +121,8 @@ def test_paraphrased_same_defect_at_same_line_still_merges():
 
 
 def test_five_lens_union_keeps_max_across_all_of_them():
-    # Production shape (ADR 0023): default + correctness + perf + security +
-    # tests, five raw payloads. Two agree on the location; the merge is not
+    # Production shape (ADR 0023/0034): default + perf + security + tests +
+    # intent, five raw payloads. Two agree on the location; the merge is not
     # hardcoded to a pair, the max holds regardless of how many lenses ran.
     lenses = [
         _lens(_finding(line=10, confidence=60)),
@@ -261,8 +261,8 @@ def test_one_lens_parse_failure_does_not_sink_the_others(capsys):
 def test_labels_name_the_failed_lens_in_the_skip_message(capsys):
     good = _lens(_finding(confidence=90))
     bad = "no fence here\n"
-    merge_findings.merge([good, bad], labels=["default", "correctness"])
-    assert "merge-skip: correctness payload failed" in capsys.readouterr().err
+    merge_findings.merge([good, bad], labels=["default", "perf"])
+    assert "merge-skip: perf payload failed" in capsys.readouterr().err
 
 
 def test_all_lenses_failing_raises_a_distinct_category():
@@ -288,9 +288,7 @@ def test_label_from_path_default_lens():
 
 
 def test_label_from_path_named_lens():
-    assert (
-        merge_findings._label_from_path("/scratch/.pr-review-raw-correctness.txt") == "correctness"
-    )
+    assert merge_findings._label_from_path("/scratch/.pr-review-raw-perf.txt") == "perf"
 
 
 def test_label_from_path_unrecognized_name_passes_through():

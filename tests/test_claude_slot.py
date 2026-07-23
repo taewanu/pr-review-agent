@@ -170,10 +170,10 @@ def test_label_logs_the_claimed_slot_and_pool_size(tmp_path: Path):
     # Dogfood follow-up: lens completion times varied 35-519s with no way to
     # tell whether a slow one was genuine complexity or slot contention. This
     # is the split: which slot, and how long the wait was.
-    result = _acquire_with_label(tmp_path, "correctness lens", pool_size=3)
+    result = _acquire_with_label(tmp_path, "perf lens", pool_size=3)
     assert result.returncode == 0
     assert result.stdout.strip() == str(_slot_file(tmp_path, 1))
-    assert "correctness lens: acquired slot 1/3" in result.stderr
+    assert "perf lens: acquired slot 1/3" in result.stderr
 
 
 def test_label_omits_wait_suffix_on_immediate_acquire(tmp_path: Path):

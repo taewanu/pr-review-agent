@@ -90,8 +90,8 @@ def sum_tokens(scratch_dir: Path) -> int:
 
 # The dials that select which review config runs. REVIEW_MODE and REVIEW_LENSES
 # are orthogonal (ADR 0034): mode sets how each lens runs, the lens set how many.
-# `REVIEW_MODE=single-agent` with REVIEW_LENSES unset is the default three lenses
-# (default correctness intent, #249), not one, so a results file naming only the
+# `REVIEW_MODE=single-agent` with REVIEW_LENSES unset is the default two lenses
+# (default intent), not one, so a results file naming only the
 # mode cannot say what it measured. Recording the resolved dials makes each
 # results JSON self-describing.
 REVIEW_CONFIG_VARS = (

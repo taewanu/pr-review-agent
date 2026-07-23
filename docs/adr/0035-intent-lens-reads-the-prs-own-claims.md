@@ -113,7 +113,9 @@ posts. The rule now branches on type (ADR 0016, amended).
   > it, so the lean default ships and a fork where a domain is the point re-enables
   > it in `.env` at no cost to anyone else. The six stay selectable; only the unset
   > default changed, set in the daemon and `templates/.env.example` together
-  > against the config-drift trap.
+  > against the config-drift trap. Later reduced to `default intent` when the
+  > `correctness` lens was folded into `default` and removed (ADR 0023 amended); the
+  > five remaining lenses stay selectable.
 - **Renaming the lens set's axes**, also asked for in #222: `default` is a sweep
   and `correctness` is a second deeper read of the same ground, so presenting the
   six as peers hides that dropping the sweep drops whole defect classes. Left
