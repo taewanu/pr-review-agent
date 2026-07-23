@@ -1555,17 +1555,6 @@ derive_project_identity() {
   PROJECT_NAME="$derived_repo"
 }
 
-# Provenance tag on every posted artifact that is not a Review body — the
-# Inline comment (create-review.sh), the Status comment (below), and the reply
-# (create_reply.py's own MARKER). Single bash source: create-review.sh sources lib.sh
-# and reads this. Answers "who wrote this", never draft-status (ADR 0010 §1).
-# ADR 0010 §3 is the documentary source of truth: this constant and
-# create_reply.py's MARKER each hard-code the string — a runtime shared constant
-# across the bash/Python boundary was rejected there as costlier than a drift
-# test — and test_provenance_tag.py pins the two definitions identical.
-# shellcheck disable=SC2034  # also consumed by create-review.sh after sourcing
-PROVENANCE_TAG='🤖 _pr-review-agent_'
-
 # Marker identifying the agent's edit-in-place review-status comment (#60).
 # find_status_comment keys on it to reuse the one comment across ticks rather
 # than post a second. Distinct from the sha sentinel, which lives in the Review
@@ -1631,12 +1620,12 @@ render_status_comment() {
   local body="$head_line"$'\n\n'"_Scope: ${scope_label}_"
   [[ -n "$index_block" ]] && body+=$'\n\n'"$index_block"
   body+=$'\n\n'"<details><summary>${file_count} ${noun}</summary>"$'\n\n'"${bullets}"$'\n\n</details>'
-  # Trail sits below the file list and above provenance: scope and index stay the
-  # eye's first stop (current state), the trail reads as an appendix (history).
+  # Trail sits below the file list: scope and index stay the eye's first stop
+  # (current state), the trail reads as an appendix (history).
   [[ -n "$trail_block" ]] && body+=$'\n\n'"$trail_block"
-  # Visible Provenance tag (ADR 0010), then the hidden sentinel and Status
-  # markers last (both HTML comments, neither meant for the reader's eye).
-  body+=$'\n\n'"${PROVENANCE_TAG}"
+  # The hidden sentinel and Status markers last (both HTML comments, neither meant
+  # for the reader's eye). No visible provenance tag: the Status comment posts
+  # under the bot's own login, which carries who-wrote-this (ADR 0036).
   [[ -n "$sentinel_sha" ]] && body+=$'\n\n'"<!-- pr-review-agent:sha:${sentinel_sha} -->"
   body+=$'\n\n'"${STATUS_COMMENT_MARKER}"
   printf '%s\n' "$body"

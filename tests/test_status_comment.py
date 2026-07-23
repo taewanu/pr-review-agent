@@ -97,12 +97,12 @@ def test_render_carries_header_scope_and_marker():
     assert "<!-- pr-review-agent:status -->" in out
 
 
-def test_render_carries_provenance_tag():
-    # The Status comment is agent-authored, so it carries the Provenance tag like
-    # every posted artifact that is not a Review body (ADR 0010).
+def test_render_carries_no_provenance_tag():
+    # The Status comment posts under the bot's own login, which carries
+    # who-wrote-this, so the body-text provenance tag is retired (ADR 0036).
     out, rc, _ = _run("render_status_comment 'h' 'full PR' 1 'only.sh'")
     assert rc == 0
-    assert "🤖 _pr-review-agent_" in out
+    assert "🤖 _pr-review-agent_" not in out
 
 
 def test_render_is_scope_only_never_findings():
@@ -137,12 +137,11 @@ def test_render_embeds_sentinel_when_given():
     assert f"<!-- pr-review-agent:sha:{SHA_40} -->" in out
 
 
-def test_render_sentinel_sits_after_provenance_before_status_marker():
+def test_render_sentinel_sits_before_status_marker():
     out, rc, _ = _run(f"render_status_comment 'h' 'full PR' 1 'only.sh' '' '' '{SHA_40}'")
-    provenance_pos = out.index("🤖 _pr-review-agent_")
     sentinel_pos = out.index(f"pr-review-agent:sha:{SHA_40}")
     marker_pos = out.index("<!-- pr-review-agent:status -->")
-    assert provenance_pos < sentinel_pos < marker_pos
+    assert sentinel_pos < marker_pos
 
 
 # --- status_sha_link / status_scope_link (head-line + scope builders) -----

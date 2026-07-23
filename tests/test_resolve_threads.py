@@ -23,7 +23,6 @@ IncrementDiff = resolve_threads.IncrementDiff
 select_candidates = resolve_threads.select_candidates
 select_retry_threads = resolve_threads.select_retry_threads
 parse_verdict = resolve_threads.parse_verdict
-MARKER = resolve_threads.PROVENANCE_MARKER
 # The stamp vocabulary lives in the shared resolution leaf (#159); reach it through
 # the module resolve_threads already imported.
 resolution = resolve_threads.resolution
@@ -137,7 +136,7 @@ def _thread(**over) -> dict:
         "thread_id": "PRRT_1",
         "is_resolved": False,
         "root_author": "operator",
-        "root_body": f"Unbounded loop.\n\n{MARKER}",
+        "root_body": "Unbounded loop.",
         "root_comment_id": "RC_1",
         "path": "daemon/lib.sh",
         "original_line": 10,
@@ -163,7 +162,7 @@ def test_candidate_happy_path():
             "line": 10,
             "head_line": 10,
             "head_start_line": None,
-            "finding_body": f"Unbounded loop.\n\n{MARKER}",
+            "finding_body": "Unbounded loop.",
         }
     ]
 
@@ -181,12 +180,6 @@ def test_resolved_thread_excluded():
 
 def test_non_operator_author_excluded():
     assert select_candidates([_thread(root_author="someone-else")], DIFF, "operator") == []
-
-
-def test_missing_provenance_marker_excluded():
-    assert (
-        select_candidates([_thread(root_body="A human's manual comment")], DIFF, "operator") == []
-    )
 
 
 def test_line_not_touched_excluded():
@@ -383,15 +376,11 @@ def test_retry_excludes_resolved_thread():
 
 
 def test_retry_excludes_non_daemon_thread():
+    # Authorship alone decides ownership under App identity (ADR 0036): a thread
+    # rooted by another login is not the bot's, stamp or not.
     assert (
         select_retry_threads(
             [_thread(has_resolution_stamp=True, root_author="someone")], "operator"
-        )
-        == []
-    )
-    assert (
-        select_retry_threads(
-            [_thread(has_resolution_stamp=True, root_body="manual comment")], "operator"
         )
         == []
     )
@@ -415,13 +404,11 @@ def test_candidate_and_retry_are_disjoint():
 
 
 def test_resolution_stamp_shape():
-    # The stamp is appended to the Finding's own comment, so it carries no
-    # Provenance marker (the host comment already has one). One visible line
+    # The stamp is appended to the Finding's own comment. One visible line
     # (lead + commit-anchored link + rationale), then the hidden dedup sentinel.
     stamp = resolution.build_stamp(
         "loop now breaks on a cap", "[`abc1234:L10`](https://x/blob/abc/a#L10)"
     )
-    assert MARKER not in stamp
     assert stamp.endswith(RESOLVED_SENTINEL)
     assert stamp.split("\n\n") == [
         "✅ _Resolved in_ [`abc1234:L10`](https://x/blob/abc/a#L10): loop now breaks on a cap",
@@ -661,7 +648,7 @@ def test_act_stamps_comment_then_resolves():
             {
                 "thread_id": "PRRT_a",
                 "comment_id": "RC_a",
-                "finding_body": f"Unbounded loop.\n\n{MARKER}",
+                "finding_body": "Unbounded loop.",
                 "path": "a.py",
                 "line": 10,
                 "rationale": "loop now caps",
@@ -696,7 +683,7 @@ def test_act_off_voice_rationale_still_resolves():
             {
                 "thread_id": "PRRT_a",
                 "comment_id": "RC_a",
-                "finding_body": f"Unbounded loop.\n\n{MARKER}",
+                "finding_body": "Unbounded loop.",
                 "path": "a.py",
                 "line": 10,
                 "rationale": "The outcome marker filename now leads with owner",
@@ -717,7 +704,7 @@ def test_act_off_voice_stamp_carries_clean_fallback():
             {
                 "thread_id": "PRRT_a",
                 "comment_id": "RC_a",
-                "finding_body": f"Unbounded loop.\n\n{MARKER}",
+                "finding_body": "Unbounded loop.",
                 "path": "a.py",
                 "line": 10,
                 "rationale": "The outcome marker filename now leads with owner",
@@ -748,7 +735,7 @@ def test_act_update_failure_leaves_thread_open():
             {
                 "thread_id": "PRRT_a",
                 "comment_id": "RC_a",
-                "finding_body": f"Unbounded loop.\n\n{MARKER}",
+                "finding_body": "Unbounded loop.",
                 "path": "a.py",
                 "line": 10,
                 "rationale": "loop now caps",
@@ -765,7 +752,7 @@ def test_act_update_failure_leaves_thread_open():
 def test_act_already_stamped_skips_edit_still_resolves():
     # A re-run over a comment that already carries the stamp (its resolve had dropped):
     # append_stamp returns None, so no second edit, but the thread is still resolved.
-    body = f"Unbounded loop.\n\n{MARKER}\n\n✅ _Resolved_: loop now caps\n\n{RESOLVED_SENTINEL}"
+    body = f"Unbounded loop.\n\n✅ _Resolved_: loop now caps\n\n{RESOLVED_SENTINEL}"
     result, calls = _run_act(
         [
             {
@@ -792,7 +779,7 @@ def test_act_skips_when_comment_id_missing():
             {
                 "thread_id": "PRRT_a",
                 "comment_id": None,
-                "finding_body": f"Unbounded loop.\n\n{MARKER}",
+                "finding_body": "Unbounded loop.",
                 "path": "a.py",
                 "line": 10,
                 "rationale": "loop now caps",

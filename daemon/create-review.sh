@@ -212,11 +212,9 @@ body_with_additional="${banner}${summary}${dropped_note}${additional}${footer}${
 # Build inline comment payloads. Range findings (end_line > line) use
 # {start_line, start_side, line, side, body}; single-line uses {line, side, body}.
 # Inline body format per ADR 0002: type-first header, then the agent's body
-# (bold lead + optional bullets), then the Provenance tag. An Inline comment is
-# item-level, so it carries the tag (who wrote it), not a draft-status footer
-# (ADR 0010); $PROVENANCE_TAG is sourced from lib.sh, shared with the Status
-# comment and matched against create_reply.py's MARKER by a test.
-comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" --arg marker "$PROVENANCE_TAG" '
+# (bold lead + optional bullets). No provenance tag: the bot's own login carries
+# who-wrote-this now (ADR 0036), retiring the body-text marker.
+comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" '
   map(
     {
       path: .path,
@@ -225,8 +223,7 @@ comments_json="$(jq --argjson sev "$SEV_EMOJI" --argjson typ "$TYPE_EMOJI" --arg
         "_" + ($typ[.type] // "❓") + " " + .type +
         "_ | _" +
         ($sev[.severity] // "❓") + " " + .severity + "_" +
-        "\n\n" + .body +
-        "\n\n" + $marker
+        "\n\n" + .body
       )
     }
     + (
