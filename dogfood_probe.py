@@ -1,8 +1,11 @@
-"""Throwaway file to dogfood the App review seam (ADR 0036). Delete with the PR."""
+"""Helper to summarize a repo's working-tree state."""
+
+import subprocess
 
 
-def parse_port(value):
-    # Fall back to the default when the value is unset.
-    if value == None:
-        return 8080
-    return int(value)
+def repo_status(repo_path):
+    """Return the porcelain git status for the given repo path."""
+    result = subprocess.run(
+        f"git -C {repo_path} status --porcelain", shell=True, capture_output=True, text=True
+    )
+    return result.stdout
