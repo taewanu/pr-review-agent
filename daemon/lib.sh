@@ -1629,20 +1629,31 @@ status_sha_link() {
   printf '[`%s`](%s/commit/%s)' "${head_oid:0:7}" "$repo_url" "$head_oid"
 }
 
-# status_scope_link <repo-url> <last-sha> <head-oid>
-# Renders the diff scope: a backtick-wrapped, linked compare range when a prior
-# review SHA is known (`<last>..<head>` display, /compare/<last>...<head> href —
-# GitHub compare takes THREE dots between full SHAs), or the literal, unlinked
-# `full PR` on a first review. Targets the HEAD repo for fork correctness.
+# status_scope_link <repo-url> <last-sha> <head-oid> <base-ref>
+# Renders the review scope as an explicit commit range. A first review (empty
+# last-sha) spans the PR base to HEAD, both named; a re-review spans the last
+# reviewed SHA to HEAD, wrapped in a /compare link (GitHub compare takes THREE
+# dots between full SHAs). The base ref is the left endpoint on a first review and
+# trailing context on a re-review, whose diff is last..HEAD and where the base
+# only says which branch the PR sits on (a stacked PR's base is not the default
+# branch). Targets the HEAD repo for fork correctness. Empty base-ref drops the
+# base mention.
 status_scope_link() {
-  local repo_url="$1" last_sha="$2" head_oid="$3"
+  local repo_url="$1" last_sha="$2" head_oid="$3" base_ref="$4"
+  # printf formats below are literal markdown; values fill the %s, no shell expansion.
   if [[ -z "$last_sha" ]]; then
-    printf 'full PR'
+    if [[ -n "$base_ref" ]]; then
+      # shellcheck disable=SC2016
+      printf 'files changed between the PR base (`%s`) and `%s`' "$base_ref" "${head_oid:0:7}"
+    else
+      printf 'files changed in the PR'
+    fi
   else
-    # printf format is literal markdown; the values fill the %s (not shell expansion).
     # shellcheck disable=SC2016
-    printf '[`%s..%s`](%s/compare/%s...%s)' \
+    printf 'files changed [between `%s` and `%s`](%s/compare/%s...%s)' \
       "${last_sha:0:7}" "${head_oid:0:7}" "$repo_url" "$last_sha" "$head_oid"
+    # shellcheck disable=SC2016
+    [[ -n "$base_ref" ]] && printf ' (base: `%s`)' "$base_ref"
   fi
 }
 

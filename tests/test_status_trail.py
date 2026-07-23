@@ -4,7 +4,7 @@ The trail is the one Status-comment element that owns state: a folded `<details>
 block of every reviewed HEAD SHA, accumulated across ticks by reading the prior
 rows back out of the comment body. These tests pin the block-scoped parse (it
 ignores findings-index list items), the skip-if-present idempotency policy, the
-purity of `merge`, the singular/plural count, and the round-trip (a rendered block
+purity of `merge`, the summary count, and the round-trip (a rendered block
 re-parses to the same rows) the accumulation relies on.
 """
 
@@ -33,7 +33,7 @@ _Scope: `767548c..2c2d8dd`_
 
 </details>
 
-<details><summary>Reviewed 2 commits</summary>
+<details><summary>Commits reviewed so far (2)</summary>
 
 - `a1b2c3d0` · 2026-06-24 11:18 UTC
 - `d4cabf6d` · 2026-06-24 12:47 UTC
@@ -96,15 +96,15 @@ def test_render_empty_when_no_rows_and_no_add():
     assert st.render("") == ""
 
 
-def test_render_singular_noun_for_one_commit():
+def test_render_summary_counts_one_commit():
     out = st.render("", add_sha="a1b2c3d0", add_time="2026-06-24 11:18 UTC")
-    assert "<summary>Reviewed 1 commit</summary>" in out
+    assert "<summary>Commits reviewed so far (1)</summary>" in out
     assert "- `a1b2c3d0` · 2026-06-24 11:18 UTC" in out
 
 
-def test_render_plural_noun_and_count():
+def test_render_summary_counts_multiple_commits():
     out = st.render(BODY_WITH_TRAIL, add_sha="ffffffff", add_time="2026-06-24 15:00 UTC")
-    assert "<summary>Reviewed 3 commits</summary>" in out
+    assert "<summary>Commits reviewed so far (3)</summary>" in out
 
 
 def test_render_round_trips_through_parse():
@@ -120,4 +120,4 @@ def test_accumulation_over_three_ticks():
         body = st.render(body, add_sha=sha, add_time=when)
     # Third tick re-sees aaaaaaaa: skipped, so two distinct rows, original times.
     assert st.parse_entries(body) == [("aaaaaaaa", "t1"), ("bbbbbbbb", "t2")]
-    assert "<summary>Reviewed 2 commits</summary>" in body
+    assert "<summary>Commits reviewed so far (2)</summary>" in body

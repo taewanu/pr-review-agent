@@ -162,18 +162,29 @@ def test_status_sha_link_is_commit_markdown_link():
 
 
 def test_status_scope_link_real_range_is_compare_link():
-    out, rc, _ = _run(f"status_scope_link '{_REPO}' '{_LAST}' '{_HEAD}'")
+    out, rc, _ = _run(f"status_scope_link '{_REPO}' '{_LAST}' '{_HEAD}' 'main'")
     assert rc == 0
-    # Display = short..short; href = /compare/<full>...<full> (THREE dots).
-    assert out.strip() == f"[`{_LAST[:7]}..{_HEAD[:7]}`]({_REPO}/compare/{_LAST}...{_HEAD})"
+    # Re-review: "between `<short>` and `<short>`" linked to /compare/<full>...<full>
+    # (THREE dots), then the base as trailing context.
+    assert out.strip() == (
+        f"files changed [between `{_LAST[:7]}` and `{_HEAD[:7]}`]"
+        f"({_REPO}/compare/{_LAST}...{_HEAD}) (base: `main`)"
+    )
     assert "..." in out  # three-dot compare ref, not the two-dot display range
 
 
-def test_status_scope_link_full_pr_is_unlinked():
-    out, rc, _ = _run(f"status_scope_link '{_REPO}' '' '{_HEAD}'")
+def test_status_scope_link_first_review_names_base_and_head():
+    out, rc, _ = _run(f"status_scope_link '{_REPO}' '' '{_HEAD}' 'main'")
     assert rc == 0
-    assert out.strip() == "full PR"
+    # First review: the range is the PR base to HEAD, both named, unlinked.
+    assert out.strip() == f"files changed between the PR base (`main`) and `{_HEAD[:7]}`"
     assert "](" not in out  # no markdown link
+
+
+def test_status_scope_link_first_review_without_base():
+    out, rc, _ = _run(f"status_scope_link '{_REPO}' '' '{_HEAD}' ''")
+    assert rc == 0
+    assert out.strip() == "files changed in the PR"
 
 
 def test_reviewed_head_line_uses_colon_not_em_dash():

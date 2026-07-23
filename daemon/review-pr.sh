@@ -749,20 +749,19 @@ python3 "$SCRIPT_DIR/anchor_findings.py" number "$DIFF_FILE" >"$NUMBERED_FILE"
 # <last-sha>..HEAD on re-review). One comment per PR, reused across ticks.
 STATUS_FILES="$(diff_paths "$DIFF_FILE")"
 STATUS_FILE_COUNT="$(printf '%s' "$STATUS_FILES" | grep -c . || true)"
-# Scope links to the HEAD-repo compare range on a re-review, or stays the
-# literal `full PR` on a first review (#102). Pass LAST_SHA only when the diff
-# was actually scoped to it (a fetch failure falls back to the full diff).
+# Scope names the commit range this review covered (#102): base..HEAD on a first
+# review, the compare link <last>..HEAD on a re-review. Pass LAST_SHA only when
+# the diff was actually scoped to it (a fetch failure falls back to the full
+# diff). BASE_REF is named unconditionally, not just when it differs from the
+# default branch: knowing the default would need its own `gh repo view` call, and
+# a stacked PR (base is another open PR's branch, not main) is common enough in a
+# solo/incremental workflow that the operator should not have to guess which diff
+# they are seeing. status_scope_link places it as the left endpoint or as context.
 if [[ $diff_scoped -eq 1 ]]; then
-  STATUS_SCOPE="$(status_scope_link "$HEAD_REPO_URL" "$LAST_SHA" "$HEAD_OID")"
+  STATUS_SCOPE="$(status_scope_link "$HEAD_REPO_URL" "$LAST_SHA" "$HEAD_OID" "$BASE_REF")"
 else
-  STATUS_SCOPE="$(status_scope_link "$HEAD_REPO_URL" "" "$HEAD_OID")"
+  STATUS_SCOPE="$(status_scope_link "$HEAD_REPO_URL" "" "$HEAD_OID" "$BASE_REF")"
 fi
-# Named unconditionally, not just when it differs from the repo's default
-# branch: knowing the default would need its own `gh repo view` call, and a
-# stacked PR (this PR's base is another open PR's branch, not main) is common
-# enough in a solo/incremental workflow that the operator should not have to
-# guess from context which diff they're looking at.
-[[ -n "$BASE_REF" ]] && STATUS_SCOPE="${STATUS_SCOPE} (base: \`${BASE_REF}\`)"
 # Find the status comment first, then recover the reviewed-SHAs trail (ADR 0021)
 # from its current body before the edits below overwrite it. The trail is the one
 # part of the comment that accumulates across ticks rather than being derived from
