@@ -90,6 +90,18 @@ A second dogfood round (same workload, after Decisions 9-11 landed) surfaced thr
 > reviewer, so the class keeps a reader. The default set is now `default intent`
 > (#249, ADR 0035 amended); the review runs one fewer lens.
 
+> **Amended 2026-07-23 (re-added as `data-flow`).** The removal above is reversed on
+> measured evidence. A 3-fixture recall run showed the focused read catches a
+> cross-component bug the folded default misses, and the broad default catches a
+> local bug the focused read drops: they are complementary, not redundant, so the
+> premise "the second read was never shown to add recall" no longer holds (ADR 0037
+> amendment records the run). The lens returns, renamed `data-flow` for the four
+> classes it actually hunts (the `correctness` name overclaimed). `default` keeps
+> the folded async category and depth note, so it still enumerates the classes as a
+> broad sweep while `data-flow` reads them deep, which is this ADR's original
+> Decision split minus the misnomer and minus the domain lenses (off by default,
+> #249). Default set: `default data-flow intent`.
+
 ## Boundary
 
 This ADR ships exactly five lenses (default plus four domain lenses). It does not add a dedicated adversarial verify pass, and does not make the lens set configurable via `.env`, the five lenses are fixed in `review-pr.sh` for this cut. It does not change the confidence rubric, the severity/type taxonomy (ADR 0002), the format layer (ADR 0010), or the editor's subtract-only contract (ADR 0016): the editor still sees one merged draft and cannot add findings.

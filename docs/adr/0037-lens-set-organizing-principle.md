@@ -26,6 +26,26 @@ What this rejects: a lens that reads the same input as the base and hunts the ba
 
 **Naming.** The base lens keeps the name `default`, not `code`. Every lens reads code, so `code` would not distinguish the base from the domain lenses; `default` names it for what it is, the reviewer that runs unless narrowed. This settles the rename #250 asked about: the axes are named by this three-tier principle, not by relabeling `default`.
 
+> **Amended 2026-07-23 (data-flow re-added, a fourth tier).** The claim above that
+> `correctness` was pure redundancy is corrected by measurement. A 3-fixture recall
+> run (single-agent, the eval harness) found the base `default` sweep and the
+> focused data-flow read catch *different* bugs, not the same one twice: the
+> focused read caught a cross-component bug (sounds-abroad#165) that `default`
+> missed even with the four data-flow categories and the depth instruction folded
+> into its prompt, while `default` caught a local zero-division that the focused
+> read drops as outside its scope. So the second read is a structural addition
+> after all, of a different kind than `intent`: not a different input, but a
+> different scope-and-depth on the same input, and the union catches what neither
+> does alone. The lens returns, renamed `data-flow` for the role it plays; the
+> `correctness` name overclaimed a general-correctness scope it never had (it only
+> ever hunted four data-flow classes). It rejoins the default set (`default
+> data-flow intent`) as a **fourth tier: a scope-focused specialist on the base's
+> own input**, distinct from the opt-in domain lenses (perf/security/tests), which
+> narrow to a domain the base only skims. n=3 is not a recall distribution, but the
+> complementarity is structural (different scopes catch different classes), not a
+> stochastic artifact. `default` keeps the folded async category and depth note: it
+> still enumerates the four classes as candidates, `data-flow` reads them deep.
+
 ## Consequences
 
 - Adding a lens now requires answering one question: what does the base reviewer structurally lack that this lens fills? A different input (like `intent`) can default on. Domain depth defaults off. A second read of the base's own ground is rejected outright.
