@@ -349,6 +349,7 @@ def test_artifact_rules_cover_every_artifact_constant():
         voice.SUMMARY,
         voice.INLINE_COMMENT,
         voice.REPLY_BODY,
+        voice.RESOLUTION_STAMP,
     }
 
 
@@ -372,8 +373,21 @@ def test_reply_body_peels_an_italic_lead_and_enforces_the_bullet_count():
     assert voice.check_artifact(voice.REPLY_BODY, "_Fixed:_ done.\n\n- only one")
 
 
+def test_resolution_stamp_rule_set():
+    # A distinct combo: the body opener set and the bullet count, but no lead peel
+    # (a stamp rationale is plain text). Pinned directly so a swap fails here.
+    assert voice._ARTIFACT_RULES[voice.RESOLUTION_STAMP] == {
+        "prefixes": voice.FORBIDDEN_PREFIXES,
+        "strip_bold": False,
+        "check_bullets": True,
+    }
+    assert voice.check_artifact(voice.RESOLUTION_STAMP, "This is now fixed.")  # opener
+    assert voice.check_artifact(voice.RESOLUTION_STAMP, "Fixed at HEAD.\n\n- one")  # bullets
+    assert voice.check_artifact(voice.RESOLUTION_STAMP, "Fixed the guard at HEAD.") == []
+
+
 def test_every_artifact_flags_em_dash_and_task_ref():
-    for artifact in (voice.SUMMARY, voice.INLINE_COMMENT, voice.REPLY_BODY):
+    for artifact in (voice.SUMMARY, voice.INLINE_COMMENT, voice.REPLY_BODY, voice.RESOLUTION_STAMP):
         assert voice.check_artifact(artifact, "a — b"), artifact
         assert voice.check_artifact(artifact, "See Slice 3 for context."), artifact
 

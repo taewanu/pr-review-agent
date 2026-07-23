@@ -208,32 +208,36 @@ def check_text(
     return violations
 
 
-# Artifact types (ADR 0010 §4). Each names a posted surface whose voice rule set
-# this module owns, so a call site validates by artifact and never re-assembles
-# the flags itself.
+# Artifact types. Each names a posted surface whose voice rule set this module
+# owns, so a call site validates by artifact and never re-assembles the flags
+# itself. SUMMARY / INLINE_COMMENT / REPLY_BODY mirror ADR 0010 §4; RESOLUTION_STAMP
+# is the later fix-rationale surface (resolve_threads.py), folded in here so no
+# posting path assembles voice flags on its own.
 SUMMARY = "summary"
 INLINE_COMMENT = "inline-comment"
 REPLY_BODY = "reply-body"
+RESOLUTION_STAMP = "resolution-stamp"
 
-# The per-artifact rule matrix, the code mirror of ADR 0010 §4: the opener set,
-# whether a bold or italic lead is peeled before the opener scan, and whether the
-# structural 2–4 bullet count applies. The em dash and task-ref checks run on
-# every artifact, so they are not matrix flags. Reserialization fidelity is not
-# here either: the post-Editor gate routes it through fidelity_violations so a
-# corruption fails the review while a cosmetic miss only warns. INLINE_COMMENT and
-# REPLY_BODY share a rule set (reply bodies are validated with the Inline-comment
-# rules, ADR 0010 §4 and its #100/#106 amendments) but stay distinct keys: they
-# are distinct artifacts, so a future divergence is one edit here.
+# The per-artifact rule matrix: the opener set, whether a bold or italic lead is
+# peeled before the opener scan, and whether the structural 2–4 bullet count
+# applies. The em dash and task-ref checks run on every artifact, so they are not
+# matrix flags. Reserialization fidelity is not here either: the post-Editor gate
+# routes it through fidelity_violations so a corruption fails the review while a
+# cosmetic miss only warns. INLINE_COMMENT and REPLY_BODY share a rule set (reply
+# bodies validate with the Inline-comment rules, ADR 0010 §4 and its #100/#106
+# amendments) but stay distinct keys, since they are distinct artifacts a future
+# divergence would split.
 _ARTIFACT_RULES: dict[str, dict[str, object]] = {
     SUMMARY: {"prefixes": FORBIDDEN_SUMMARY_PREFIXES, "strip_bold": False, "check_bullets": False},
     INLINE_COMMENT: {"prefixes": FORBIDDEN_PREFIXES, "strip_bold": True, "check_bullets": True},
     REPLY_BODY: {"prefixes": FORBIDDEN_PREFIXES, "strip_bold": True, "check_bullets": True},
+    RESOLUTION_STAMP: {"prefixes": FORBIDDEN_PREFIXES, "strip_bold": False, "check_bullets": True},
 }
 
 
 def check_artifact(artifact: str, text: str, *, label: str | None = None) -> list[str]:
-    """Voice violations for one field, under the rule set ADR 0010 §4 assigns to
-    `artifact` (SUMMARY / INLINE_COMMENT / REPLY_BODY).
+    """Voice violations for one field, under the rule set assigned to `artifact`
+    (SUMMARY / INLINE_COMMENT / REPLY_BODY / RESOLUTION_STAMP).
 
     The per-artifact entry point: a call site names the artifact, never the flags,
     so adding an artifact or changing a rule is one edit to _ARTIFACT_RULES.
