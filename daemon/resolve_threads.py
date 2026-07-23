@@ -59,13 +59,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import resolution  # noqa: E402
 import voice  # noqa: E402
+from diff_paths import parse_diff_path  # noqa: E402
 from links import build_blob_link  # noqa: E402
 from resolution import (  # noqa: E402
     append_stamp,
     build_stamp,
 )
 
-DIFF_GIT_RE = re.compile(r"^diff --git a/(?P<old>.+) b/(?P<new>.+)$")
 # Old-side range of a hunk: `@@ -<start>,<count> +... @@`. Count defaults to 1
 # when omitted; a count of 0 is a pure insertion with no old-side lines.
 HUNK_OLD_RE = re.compile(r"^@@ -(?P<start>\d+)(?:,(?P<count>\d+))? \+\d+(?:,\d+)? @@")
@@ -92,13 +92,27 @@ class IncrementDiff:
     @classmethod
     def parse(cls, text: str) -> "IncrementDiff":
         d = cls()
+        old_path: str | None = None
         paths: list[str] = []
+        seen_hunk = False
         for line in text.splitlines():
-            m = DIFF_GIT_RE.match(line)
-            if m:
-                # Register under both old and new path so a thread anchored to
-                # either name (renames) still matches; they coincide otherwise.
-                paths = [m.group("old"), m.group("new")]
+            if line.startswith("diff --git "):
+                old_path = None
+                paths = []
+                seen_hunk = False
+                continue
+            # Old and new paths come off the `--- a/` and `+++ b/` headers, which
+            # precede the first hunk and each carry a single unambiguous path,
+            # unlike the `diff --git a/… b/…` line (#13). The header-zone guard
+            # keeps an in-hunk deletion line (`-- a/…`) from being read as one.
+            if not seen_hunk and line.startswith("--- "):
+                old_path = parse_diff_path(line, "a/")
+                continue
+            if not seen_hunk and line.startswith("+++ "):
+                new_path = parse_diff_path(line, "b/")
+                # Register under both names so a thread anchored to either (a
+                # rename) still matches; they coincide otherwise.
+                paths = list(dict.fromkeys(p for p in (old_path, new_path) if p is not None))
                 for p in paths:
                     d.ranges.setdefault(p, [])
                 continue
@@ -106,6 +120,7 @@ class IncrementDiff:
                 continue
             m = HUNK_OLD_RE.match(line)
             if m:
+                seen_hunk = True
                 start = int(m.group("start"))
                 count = int(m.group("count")) if m.group("count") else 1
                 if count == 0:

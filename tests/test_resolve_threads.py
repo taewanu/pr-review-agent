@@ -63,6 +63,8 @@ def test_pure_insertion_has_no_old_side_lines():
         textwrap.dedent(
             """\
             diff --git a/f.py b/f.py
+            --- a/f.py
+            +++ b/f.py
             @@ -41,0 +42,3 @@
             +a
             +b
@@ -80,6 +82,8 @@ def test_old_count_defaults_to_one():
         textwrap.dedent(
             """\
             diff --git a/f.py b/f.py
+            --- a/f.py
+            +++ b/f.py
             @@ -7 +7,2 @@
              keep
             +added
@@ -95,6 +99,8 @@ def test_rename_registers_both_paths():
         textwrap.dedent(
             """\
             diff --git a/old/name.py b/new/name.py
+            --- a/old/name.py
+            +++ b/new/name.py
             @@ -3,2 +3,2 @@
             -old
             +new
@@ -105,11 +111,47 @@ def test_rename_registers_both_paths():
     assert diff.touched("new/name.py", 3)
 
 
+def test_touched_quoted_non_ascii_path():
+    # A thread on a non-ASCII-named file must resolve as touched; git quotes the
+    # path in the `--- a/` / `+++ b/` headers (#13).
+    diff = IncrementDiff.parse(
+        textwrap.dedent(
+            """\
+            diff --git "a/w\\303\\256t.py" "b/w\\303\\256t.py"
+            --- "a/w\\303\\256t.py"
+            +++ "b/w\\303\\256t.py"
+            @@ -3,2 +3,2 @@
+            -old
+            +new
+            """
+        )
+    )
+    assert diff.touched("wît.py", 3)
+
+
+def test_touched_path_containing_b_slash_substring():
+    diff = IncrementDiff.parse(
+        textwrap.dedent(
+            """\
+            diff --git a/x b/y.py b/x b/y.py
+            --- a/x b/y.py\t
+            +++ b/x b/y.py\t
+            @@ -3,2 +3,2 @@
+            -old
+            +new
+            """
+        )
+    )
+    assert diff.touched("x b/y.py", 3)
+
+
 def test_touched_range_overlap():
     diff = IncrementDiff.parse(
         textwrap.dedent(
             """\
             diff --git a/f.py b/f.py
+            --- a/f.py
+            +++ b/f.py
             @@ -20,2 +20,2 @@
             -a
             +b
@@ -128,7 +170,8 @@ def test_touched_range_overlap():
 def _diff_touching(path: str, start: int, count: int) -> IncrementDiff:
     body = "".join(f"-line{i}\n" for i in range(count))
     return IncrementDiff.parse(
-        f"diff --git a/{path} b/{path}\n@@ -{start},{count} +{start},0 @@\n{body}"
+        f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+        f"@@ -{start},{count} +{start},0 @@\n{body}"
     )
 
 

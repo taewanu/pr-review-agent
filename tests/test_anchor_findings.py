@@ -99,7 +99,12 @@ def test_parse_rename_uses_new_path():
     assert "src/old_name.py" not in d.hunks
 
 
-def test_parse_binary_file_records_path_with_no_hunks():
+def test_parse_binary_file_is_not_recorded():
+    # A binary file has a `diff --git` header but no `+++ b/` line, so with the
+    # new path read from `+++` the binary file is simply absent. That is inert:
+    # is_anchored and match_quote treat an absent path the same as a present-but-
+    # empty one, so a finding on a binary file relocates out of the diff either
+    # way. The text file that does carry a hunk still records.
     diff = textwrap.dedent(
         """\
         diff --git a/assets/logo.png b/assets/logo.png
@@ -114,10 +119,44 @@ def test_parse_binary_file_records_path_with_no_hunks():
         """
     )
     d = anchor_findings.Diff.parse(diff)
-    assert d.hunks == {
-        "assets/logo.png": [],
-        "src/foo.py": [(1, 2)],
-    }
+    assert d.hunks == {"src/foo.py": [(1, 2)]}
+    assert not d.is_anchored("assets/logo.png", 1)
+
+
+def test_parse_quoted_non_ascii_path_anchors():
+    # git quotes a non-ASCII path in the `+++` header (octal-escaped UTF-8 bytes);
+    # a finding on it must anchor to the new-side hunk, not route out of the diff.
+    diff = textwrap.dedent(
+        """\
+        diff --git "a/w\\303\\256t.py" "b/w\\303\\256t.py"
+        --- "a/w\\303\\256t.py"
+        +++ "b/w\\303\\256t.py"
+        @@ -1,1 +1,2 @@
+             keep
+        +    add
+        """
+    )
+    d = anchor_findings.Diff.parse(diff)
+    assert d.hunks == {"wît.py": [(1, 2)]}
+    assert d.is_anchored("wît.py", 2)
+
+
+def test_parse_path_containing_b_slash_substring_anchors():
+    # `a/x b/y.py b/x b/y.py` cannot be split from the `diff --git` line; the
+    # `+++` header carries the whole path (tab-terminated for its space).
+    diff = textwrap.dedent(
+        """\
+        diff --git a/x b/y.py b/x b/y.py
+        --- a/x b/y.py\t
+        +++ b/x b/y.py\t
+        @@ -1,1 +1,2 @@
+             keep
+        +    add
+        """
+    )
+    d = anchor_findings.Diff.parse(diff)
+    assert d.hunks == {"x b/y.py": [(1, 2)]}
+    assert d.is_anchored("x b/y.py", 2)
 
 
 def test_parse_empty_count_variant():
