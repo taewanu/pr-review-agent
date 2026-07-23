@@ -512,13 +512,12 @@ RAW_FILE="$SCRATCH/.pr-review-raw.txt"
 # (daemon/merge_findings.py), so a bug one lens misses another can still catch.
 # Parallel arrays, not an associative array, so this stays bash-3.2-safe (ADR
 # 0013's runtime constraint: stock macOS bash has no bash-4 associative arrays).
-LENS_COMMANDS=(/review-pr /review-pr-correctness /review-pr-perf /review-pr-security /review-pr-tests /review-pr-intent)
-LENS_LABELS=(default correctness perf security tests intent)
+LENS_COMMANDS=(/review-pr /review-pr-perf /review-pr-security /review-pr-tests /review-pr-intent)
+LENS_LABELS=(default perf security tests intent)
 # Each path's own filename suffix names its lens; a named variable per lens
 # would only be read once, right here, so the array is written inline.
 LENS_RAW_FILES=(
   "$RAW_FILE"
-  "$SCRATCH/.pr-review-raw-correctness.txt"
   "$SCRATCH/.pr-review-raw-perf.txt"
   "$SCRATCH/.pr-review-raw-security.txt"
   "$SCRATCH/.pr-review-raw-tests.txt"
@@ -530,19 +529,18 @@ LENS_RAW_FILES=(
 INTENT_BASENAME=".pr-review-intent.md"
 INTENT_FILE="$SCRATCH/$INTENT_BASENAME"
 # ADR 0034: restrict the active lens set via REVIEW_LENSES, a space-separated list
-# of labels (e.g. "default" or "default correctness"). Collapsing to fewer lenses
-# is the one lever that cuts review cost proportionally, trading the recall that
-# independent reads buy (ADR 0022/0023): measured, one lens misses the hard
-# co-varying-state class the full set catches.
-# Filtering the three parallel arrays together preserves their index alignment;
-# the merge and gate are already lens-count-agnostic (ADR 0023 Decision 3).
+# of labels (e.g. "default" or "default intent"). Collapsing to fewer lenses is
+# the one lever that cuts review cost proportionally, trading the recall a second
+# independent read can buy (ADR 0022/0023). The data-flow class a second read once
+# covered now lives in the default lens's own prompt: the correctness lens was
+# folded into default rather than run as a redundant read (ADR 0023 amended).
+# Filtering the parallel arrays together preserves their index alignment; the
+# merge and gate are already lens-count-agnostic (ADR 0023 Decision 3).
 REVIEW_LENSES="$(resolve_tunable REVIEW_LENSES "$SCRIPT_DIR/../.env")"
-# Default set when unset (#249): default, correctness, intent. The three domain
-# lenses (perf, security, tests) are off by default; ADR 0035 records why (no
-# domain defect in the eval corpus, so the burden of proof is on keeping a lens,
-# and a fork where that domain is the point opts in). The full six stay
-# selectable; this only changes the unset default.
-REVIEW_LENSES="${REVIEW_LENSES:-default correctness intent}"
+# Default set when unset: default plus intent. The three domain lenses (perf,
+# security, tests) are off by default (#249, ADR 0035). The five remaining lenses
+# stay selectable; this only changes the unset default.
+REVIEW_LENSES="${REVIEW_LENSES:-default intent}"
 if [[ -n "${REVIEW_LENSES:-}" ]]; then
   _sel_cmds=()
   _sel_labels=()
@@ -558,7 +556,7 @@ if [[ -n "${REVIEW_LENSES:-}" ]]; then
     done
   done
   if [[ ${#_sel_labels[@]} -eq 0 ]]; then
-    log_err "REVIEW_LENSES='$REVIEW_LENSES' matched no known lens (default correctness perf security tests intent)"
+    log_err "REVIEW_LENSES='$REVIEW_LENSES' matched no known lens (default perf security tests intent)"
     exit 1
   fi
   LENS_COMMANDS=("${_sel_cmds[@]}")

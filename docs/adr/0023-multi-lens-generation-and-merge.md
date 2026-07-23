@@ -75,6 +75,21 @@ A second dogfood round (same workload, after Decisions 9-11 landed) surfaced thr
 > written lens-count-agnostic (Decision 3), so the sixth lens needed no change to
 > either.
 
+> **Amended 2026-07-23 (correctness folded into default).** The `correctness` lens
+> is removed and its content folded into `review-agent-default`. It was a redundancy
+> lever (ADR 0022): a second independent read of the same class the default agent
+> already enumerated (cross-component state, caller-contract, co-varying-state; see
+> Context), not a new candidate class. Whether that second read caught bugs the
+> current default misses was never measured, and is unmeasurable at this repo's PR
+> volume, so the burden of proof sits on keeping the redundant lens, not on removing
+> it (the #249 logic). The one category default lacked, async/ordering divergence,
+> plus the depth instruction to trace every caller past the diff window, move into
+> the default prompt, so the class is read deeper by one agent rather than twice by
+> two. The Anthropic-skill reference that first argued for correctness (Context) is
+> unaffected: `review-agent-default` is this pipeline's correctness-and-quality
+> reviewer, so the class keeps a reader. The default set is now `default intent`
+> (#249, ADR 0035 amended); the review runs one fewer lens.
+
 ## Boundary
 
 This ADR ships exactly five lenses (default plus four domain lenses). It does not add a dedicated adversarial verify pass, and does not make the lens set configurable via `.env`, the five lenses are fixed in `review-pr.sh` for this cut. It does not change the confidence rubric, the severity/type taxonomy (ADR 0002), the format layer (ADR 0010), or the editor's subtract-only contract (ADR 0016): the editor still sees one merged draft and cannot add findings.

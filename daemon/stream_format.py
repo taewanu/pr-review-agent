@@ -79,7 +79,7 @@ PREFIX = "[pr-review-agent]   "  # indent under the log_step markers (lib.sh)
 def _emit(line: str, label: str | None = None) -> None:
     # label (ADR 0023 revision): concurrent lenses stream to the same terminal
     # at once now, so their live lines interleave; a label tags each line with
-    # its source (e.g. "[correctness]") so a reader can still follow one lens.
+    # its source (e.g. "[perf]") so a reader can still follow one lens.
     # None for every other caller (editor, reply-pr.sh) leaves output unchanged.
     tag = f"[{label}] " if label else ""
     print(f"{PREFIX}{tag}{line}", file=sys.stderr, flush=True)
