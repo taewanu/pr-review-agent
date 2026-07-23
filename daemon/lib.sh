@@ -784,6 +784,111 @@ discover_missing_installations() {
   fi
 }
 
+# app_auth_init <owner> <repo> <app-id>
+# Resolves everything one repo's authenticated work needs from a single probe,
+# and sets it as non-exported globals the per-PR code reads:
+#   PRA_APP_ID           the App id, echoed back so callers thread one value
+#   PRA_INSTALLATION_ID  for run_with_app_token / _gh_token
+#   PRA_BOT_LOGIN_REST   "<slug>[bot]", the author login on REST payloads
+#   PRA_BOT_LOGIN_GQL    "<slug>", the author login on GraphQL payloads
+# The two login forms are how the daemon recognizes its own artifacts under App
+# identity (ADR 0036 decision 8): REST comments carry the [bot] suffix, GraphQL
+# author nodes do not. Both come from the installation response's app_slug, so
+# no extra call. Exit codes match app_installation_id (0 installed / 1 not /
+# 2 could-not-check) so a caller can skip or fail the same way.
+app_auth_init() {
+  local owner="$1" repo="$2" app_id="$3" jwt response http_code body id slug
+  local stderr_capture
+
+  jwt="$(_app_jwt "$app_id")" || return 2
+
+  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
+  if ! response="$(curl -sS -w '\n%{http_code}' \
+    --connect-timeout 10 --max-time 30 \
+    -H "Authorization: Bearer ${jwt}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${owner}/${repo}/installation" 2>"$stderr_capture")"; then
+    log_err "installation probe failed for ${owner}/${repo}: $(<"$stderr_capture")"
+    rm -f "$stderr_capture"
+    return 2
+  fi
+  rm -f "$stderr_capture"
+
+  http_code="$(tail -1 <<<"$response")"
+  case "$http_code" in
+    200) ;;
+    404) return 1 ;;
+    *)
+      log_err "installation probe for ${owner}/${repo} answered ${http_code}"
+      return 2
+      ;;
+  esac
+
+  body="$(sed '$d' <<<"$response")"
+  if ! id="$(jq -r '.id // empty' <<<"$body" 2>/dev/null)"; then
+    log_err "installation probe for ${owner}/${repo} returned unparseable JSON"
+    return 2
+  fi
+  slug="$(jq -r '.app_slug // empty' <<<"$body")"
+  if [[ -z "$id" || -z "$slug" ]]; then
+    log_err "installation probe for ${owner}/${repo} answered 200 without an id or app_slug"
+    return 2
+  fi
+
+  PRA_APP_ID="$app_id"
+  PRA_INSTALLATION_ID="$id"
+  # Read by scripts that source lib.sh (the step-3 wiring), invisible to the
+  # linter from here.
+  # shellcheck disable=SC2034
+  PRA_BOT_LOGIN_REST="${slug}[bot]"
+  # shellcheck disable=SC2034
+  PRA_BOT_LOGIN_GQL="$slug"
+}
+
+# app_owner <app-id>
+# Prints the App owner's login, for the review footer's attribution (ADR 0036
+# decision 7). Reached via GET /app, which needs a JWT and so cannot go through
+# run_with_app_token. Same guard shape as the installation probe.
+app_owner() {
+  local app_id="$1" jwt response http_code owner stderr_capture
+
+  jwt="$(_app_jwt "$app_id")" || return 1
+
+  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
+  if ! response="$(curl -sS -w '\n%{http_code}' \
+    --connect-timeout 10 --max-time 30 \
+    -H "Authorization: Bearer ${jwt}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/app" 2>"$stderr_capture")"; then
+    log_err "app-owner probe failed: $(<"$stderr_capture")"
+    rm -f "$stderr_capture"
+    return 1
+  fi
+  rm -f "$stderr_capture"
+
+  http_code="$(tail -1 <<<"$response")"
+  if [[ "$http_code" != "200" ]]; then
+    log_err "app-owner probe answered ${http_code}"
+    return 1
+  fi
+
+  owner="$(sed '$d' <<<"$response" | jq -r '.owner.login // empty' 2>/dev/null)"
+  if [[ -z "$owner" ]]; then
+    log_err "app-owner probe answered 200 without owner.login"
+    return 1
+  fi
+  printf '%s' "$owner"
+}
+
+# app_auth_warm
+# Warms the process-lifetime token cache in the current shell, so the wrapped
+# calls below it (most of which run inside command substitutions, where a mint
+# would land in a doomed subshell) reuse one token instead of minting each.
+# Call once per entry-point process, in its main shell, after app_auth_init.
+app_auth_warm() {
+  _gh_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" || return 1
+}
+
 # _rfc3339_to_epoch <timestamp>
 # Prints a GitHub RFC3339 timestamp as Unix seconds. BSD `date` first (the
 # documented macOS target), GNU second so the test suite runs on Linux CI.

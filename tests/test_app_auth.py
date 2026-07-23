@@ -169,6 +169,74 @@ def test_200_without_an_id_is_exit_2_and_logs(tmp_path):
     assert "no installation id" in out.stderr
 
 
+# --- app_auth_init / app_owner / app_auth_warm (#241) -----------------------
+
+
+def test_app_auth_init_sets_the_four_globals(tmp_path):
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, '{"id": 148179165, "app_slug": "youshallnotmerge"}')
+    out = _run(
+        f"APP_KEY_PATH={key}; app_auth_init example example {APP_ID} && "
+        'printf "%s|%s|%s|%s" "$PRA_APP_ID" "$PRA_INSTALLATION_ID" '
+        '"$PRA_BOT_LOGIN_REST" "$PRA_BOT_LOGIN_GQL"',
+        path_prefix=bindir,
+    )
+    assert out.returncode == 0, out.stderr
+    # The bot login carries the [bot] suffix on REST, bare on GraphQL.
+    assert out.stdout == f"{APP_ID}|148179165|youshallnotmerge[bot]|youshallnotmerge"
+
+
+def test_app_auth_init_not_installed_is_exit_1(tmp_path):
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, '{"message": "Not Found"}', http_code="404")
+    out = _run(
+        f"APP_KEY_PATH={key}; app_auth_init example example {APP_ID} || echo rc=$?",
+        path_prefix=bindir,
+    )
+    assert "rc=1" in out.stdout
+
+
+def test_app_auth_init_missing_slug_is_exit_2(tmp_path):
+    """An id without an app_slug cannot yield the bot login, so it is a failure."""
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, '{"id": 1}', http_code="200")
+    out = _run(
+        f"APP_KEY_PATH={key}; app_auth_init example example {APP_ID} || echo rc=$?",
+        path_prefix=bindir,
+    )
+    assert "rc=2" in out.stdout
+    assert "app_slug" in out.stderr
+
+
+def test_app_owner_returns_the_owner_login(tmp_path):
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, '{"owner": {"login": "taewanu"}}')
+    out = _run(f"APP_KEY_PATH={key}; app_owner {APP_ID}", path_prefix=bindir)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "taewanu"
+
+
+def test_app_owner_without_login_fails(tmp_path):
+    key = _app_key(tmp_path)
+    bindir = _stub_curl(tmp_path, '{"owner": {}}', http_code="200")
+    out = _run(f"APP_KEY_PATH={key}; app_owner {APP_ID} || echo rc=$?", path_prefix=bindir)
+    assert "rc=1" in out.stdout
+    assert "owner.login" in out.stderr
+
+
+def test_app_auth_warm_caches_one_token(tmp_path):
+    """Warming once lets the substitution-bound calls below reuse the token."""
+    stub, counter = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    out = _run(
+        f"{stub}; PRA_APP_ID={APP_ID}; PRA_INSTALLATION_ID=1; "
+        "app_auth_warm; app_auth_warm; "
+        'printf %s "$_GH_TOKEN_VALUE"'
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "tok-abc"
+    assert counter.read_text() == "x", "warm minted more than once"
+
+
 def _stub_curl_per_repo(tmp_path: Path, installed: str) -> Path:
     """A curl that answers 200 for one repo and 404 for every other."""
     bindir = tmp_path / "bin"
