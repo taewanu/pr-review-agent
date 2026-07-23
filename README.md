@@ -83,15 +83,7 @@ echo $(( $(date +%s) - $(cat ~/.pr-review-agent/daemon.heartbeat) ))s   # second
 
 ## Submitting a review
 
-**Your own PRs** auto-submit: the daemon posts a `COMMENT` review directly, no pending stage ([ADR 0008](docs/adr/0008-own-pr-auto-submit.md)). It is your code and your words, so you edit or hide it after the fact rather than vetting it first.
-
-**Others' PRs** stay pending until you submit. Submit with the helper:
-
-```bash
-bash daemon/submit-review.sh <pr-url>
-```
-
-It submits via the GitHub API (`POST .../reviews/:id/events`), which preserves the drafted summary. Use it rather than GitHub's "Finish your review" web modal, which can blank the summary.
+Every review submits immediately as a `COMMENT` review, posted by the App under its `<app>[bot]` identity ([ADR 0036](docs/adr/0036-github-app-identity.md)). There is no pending stage and no own-vs-others fork: a bot review has no private draft to protect, so it publishes in one call. Edit or hide it after the fact if needed.
 
 ## Replying to findings
 

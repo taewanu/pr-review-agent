@@ -26,11 +26,12 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from app_auth_fixture import BOT_LOGIN_REST, install_app_stubs
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DAEMON = REPO_ROOT / "daemon"
 
 OWNER_REPO = "example/example"
-OPERATOR = "operator"
 SHA_HEAD = "a" * 40
 SHA_PRIOR = "b" * 40
 
@@ -53,7 +54,7 @@ def _pr(
     }
 
 
-def _sentinel_review(sha: str, *, login: str = OPERATOR) -> dict:
+def _sentinel_review(sha: str, *, login: str = BOT_LOGIN_REST) -> dict:
     body = f"summary\n\n<!-- pr-review-agent:sha:{sha} -->"
     return {
         "user": {"login": login},
@@ -148,7 +149,7 @@ def _run_poll(
     review_fail: set[int] | None = None,
     review_own_prs: bool = True,
     opt_out_label: str = "no-ai-review",
-    github_user: str = OPERATOR,
+    github_user: str = "operator",
     max_parallel: int = 1,
     review_sleep: float = 0,
 ) -> PollResult:
@@ -198,9 +199,11 @@ def _run_poll(
         _STUB_REVIEW.format(log=review_log, events=events, sleep=review_sleep, faildir=faildir),
     )
     _executable(daemon / "reply-pr.sh", _STUB_CHILD.format(log=reply_log, faildir=faildir))
+    app_env = install_app_stubs(bindir)
 
     env = os.environ.copy()
     env["PATH"] = f"{bindir}:{env['PATH']}"
+    env.update(app_env)
     env["PR_REVIEW_STATE_DIR"] = str(state_dir)
     proc = subprocess.run(
         ["bash", str(daemon / "poll.sh")],
@@ -246,17 +249,6 @@ def test_draft_pr_is_skipped_entirely(tmp_path):
     assert not res.reviewed(1)
     assert not res.replied(1)
     assert "skipped (draft)" in res.stderr
-
-
-def test_own_pr_is_skipped_when_opted_out(tmp_path):
-    res = _run_poll(
-        tmp_path,
-        [_pr(1, author=OPERATOR)],
-        review_own_prs=False,
-        github_user=OPERATOR,
-    )
-    assert not res.reviewed(1)
-    assert "own-PR opt-out" in res.stderr
 
 
 def test_opt_out_label_skips_the_pr(tmp_path):

@@ -507,7 +507,8 @@ _status_is_fast_forward() {
 # callers take the safe full PR diff.
 is_fast_forward() {
   local status
-  status="$(gh api "repos/$1/compare/$2...$3" --jq '.status' 2>/dev/null)"
+  status="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/$1/compare/$2...$3" --jq '.status' 2>/dev/null)"
   _status_is_fast_forward "$status"
 }
 
@@ -546,7 +547,25 @@ reply_defers_on_unreachable_fix() {
 # unpushed fix SHA (the race, absent: defer) from one that exists but diverged
 # after a rebase (present: verify against HEAD). ADR 0028.
 commit_exists() {
-  gh api "repos/$1/commits/$2" --jq '.sha' >/dev/null 2>&1
+  # Baseline: the base installation token. A fork PR addresses a repo other than
+  # the installed base ($1 is the head repo), and the base token may not read a
+  # private fork: that 404 reads as commit-absent and makes reply_defers_on_
+  # unreachable_fix defer the thread forever (ADR 0028, decision 2).
+  local inst="$PRA_INSTALLATION_ID" head_inst
+  # When the App is also installed on the head repo, read the commit under that
+  # installation's own token. app_installation_id returns 0 only when installed,
+  # so the `if` takes the head token on rc 0 and keeps the base on rc 1 (not
+  # installed) or rc 2 (could-not-check). rc 1 is the common public-fork case the
+  # base can still read; rc 2 is transient, so falling back re-probes next cycle
+  # rather than deferring the thread on a one-off blip. Testing the substitution
+  # with `if` also keeps it safe under `set -e` when the probe exits non-zero.
+  if head_inst="$(app_installation_id "${1%%/*}" "${1##*/}" "$PRA_APP_ID")" &&
+    [[ -n "$head_inst" ]]; then
+    inst="$head_inst"
+  fi
+
+  run_with_app_token "$PRA_APP_ID" "$inst" \
+    gh api "repos/$1/commits/$2" --jq '.sha' >/dev/null 2>&1
 }
 
 # State tracking for same-SHA dedup. One file per PR. Layered behind the
@@ -976,17 +995,26 @@ _gh_token() {
 # itself. `gh` cannot, and the daemon's Python helpers do not. Widening this
 # extends that trust, which is why test_app_auth.py pins the accepted shapes.
 #
-# Do not wrap this in `run_with_timeout`. Since #253 it runs the command as a
-# background job, and a background job is a subshell, so `_gh_token`'s cache
-# assignment dies with it and every wrapped call re-mints: the bug #252 fixed,
-# reached through a different door. Wrapping from inside is refused by the
-# allowlist above. What bounds a hung call is poll.sh's `run_with_pr_timeout`
-# around the whole dispatch, which is how the daemon's other gh calls are
-# bounded; the mint is bounded by curl's own --max-time. A tighter per-call cap
-# would have to be applied inside this function, after the mint.
+# For a per-call cap, pass `--timeout <secs>` after the two ids: it wraps the
+# command in `run_with_timeout` from inside, after the mint. Do not wrap this
+# call in `run_with_timeout` from outside instead. Since #253 that runs the
+# command as a background job, and a background job is a subshell, so
+# `_gh_token`'s cache assignment dies with it and every wrapped call re-mints:
+# the bug #252 fixed, reached through a different door. The mint itself is
+# bounded by curl's own --max-time; the whole dispatch is bounded by poll.sh's
+# `run_with_pr_timeout`, which is how the daemon's other gh calls are bounded.
 run_with_app_token() {
-  local app_id="$1" installation_id="$2" token command
+  local app_id="$1" installation_id="$2" token command timeout_secs=""
   shift 2
+
+  if [[ "${1:-}" == "--timeout" ]]; then
+    timeout_secs="${2:-}"
+    if [[ ! "$timeout_secs" =~ ^[0-9]+$ ]]; then
+      log_err "run_with_app_token --timeout needs a whole number of seconds, got '${timeout_secs}'"
+      return 1
+    fi
+    shift 2
+  fi
 
   if [[ $# -eq 0 ]]; then
     log_err "run_with_app_token needs a command to run"
@@ -1014,7 +1042,11 @@ run_with_app_token() {
   fi
   token="$_GH_TOKEN_VALUE"
 
-  GH_TOKEN="$token" "$@"
+  if [[ -n "$timeout_secs" ]]; then
+    GH_TOKEN="$token" run_with_timeout "$timeout_secs" "$@"
+  else
+    GH_TOKEN="$token" "$@"
+  fi
 }
 
 # flatten_pages
@@ -1042,7 +1074,8 @@ discover_sentinel_sha() {
   local owner="$1" repo="$2" pr="$3" login="$4"
   local reviews_json comments_json stderr_capture
   stderr_capture="$(mktemp -t pr-review-discover.XXXXXX)"
-  if ! reviews_json="$(gh api --paginate "repos/${owner}/${repo}/pulls/${pr}/reviews" 2>"$stderr_capture")"; then
+  if ! reviews_json="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api --paginate "repos/${owner}/${repo}/pulls/${pr}/reviews" 2>"$stderr_capture")"; then
     log_err "sentinel discovery: gh api .../pulls/${pr}/reviews failed: $(<"$stderr_capture")"
     rm -f "$stderr_capture"
     return 2
@@ -1050,7 +1083,8 @@ discover_sentinel_sha() {
   # Comments are best-effort: a failure here degrades to reviews-only rather
   # than escalating to a return-2 skip, since reviews (the primary source)
   # already succeeded.
-  if ! comments_json="$(gh api --paginate "repos/${owner}/${repo}/issues/${pr}/comments" 2>"$stderr_capture")"; then
+  if ! comments_json="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api --paginate "repos/${owner}/${repo}/issues/${pr}/comments" 2>"$stderr_capture")"; then
     log_err "sentinel discovery: gh api .../issues/${pr}/comments failed (degrading to reviews-only): $(<"$stderr_capture")"
     comments_json="[]"
   fi
@@ -1517,7 +1551,8 @@ fetch_open_review_threads() {
   local resp
   # $owner/$repo/$pr are GraphQL variables, not shell vars; keep them literal.
   # shellcheck disable=SC2016
-  if ! resp="$(gh api graphql \
+  if ! resp="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api graphql \
     -f query='query($owner:String!,$repo:String!,$pr:Int!){
       repository(owner:$owner,name:$repo){
         pullRequest(number:$pr){
@@ -1678,9 +1713,6 @@ status_failure_reason() {
       # automatically, with no update needed here.
       printf 'The review agent timed out.'
       ;;
-    pending-conflict)
-      printf 'An earlier review is still pending on this PR.'
-      ;;
     session-limit)
       # The one failure whose cause the author can place: an external quota, not
       # a defect in this PR or in the pipeline, with the retry already scheduled.
@@ -1716,7 +1748,8 @@ diff_paths() {
 find_status_comment() {
   local owner="$1" repo="$2" pr="$3" operator="$4"
   [[ -n "$operator" ]] || return 0
-  gh api "repos/${owner}/${repo}/issues/${pr}/comments" --paginate \
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/${owner}/${repo}/issues/${pr}/comments" --paginate \
     --jq ".[] | select(.user.login == \"${operator}\") | select(.body | contains(\"${STATUS_COMMENT_MARKER}\")) | .id" \
     2>/dev/null | tail -1 || true
 }
@@ -1726,7 +1759,8 @@ find_status_comment() {
 # returns 0 on failure, so a missing status comment never aborts the review.
 post_status_comment() {
   local owner="$1" repo="$2" pr="$3" body="$4"
-  gh api "repos/${owner}/${repo}/issues/${pr}/comments" \
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/${owner}/${repo}/issues/${pr}/comments" \
     -f body="$body" --jq '.id' 2>/dev/null || true
 }
 
@@ -1738,7 +1772,8 @@ post_status_comment() {
 status_comment_body() {
   local owner="$1" repo="$2" comment_id="$3"
   [[ -n "$comment_id" ]] || return 0
-  gh api "repos/${owner}/${repo}/issues/comments/${comment_id}" --jq '.body' 2>/dev/null || true
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/${owner}/${repo}/issues/comments/${comment_id}" --jq '.body' 2>/dev/null || true
 }
 
 # edit_status_comment <owner> <repo> <comment-id> <body>
@@ -1758,7 +1793,8 @@ edit_status_comment() {
   local attempt sleep_secs="${STATUS_EDIT_RETRY_SLEEP_SECONDS:-2}"
   [[ -n "$comment_id" ]] || return 0
   for attempt in 1 2 3; do
-    gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
+    run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+      gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${comment_id}" \
       -f body="$body" >/dev/null 2>&1 && return 0
     [[ "$attempt" -lt 3 ]] && sleep "$sleep_secs"
   done

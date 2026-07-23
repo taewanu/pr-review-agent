@@ -514,12 +514,14 @@ def test_python3_may_run_a_helper_but_not_inline_code(tmp_path):
 
 
 def test_outer_timeout_wrapping_defeats_the_cache(tmp_path):
-    """Pins why no per-call wrapper is offered, so the comment cannot regress.
+    """Pins why the per-call cap is `--timeout`, not an outer wrapper.
 
     run_with_timeout runs the command as a background job (#253), and a
     background job is a subshell, so _gh_token's cache assignment dies with it
-    and every wrapped call re-mints. An earlier revision asserted exit 127
-    instead, which held only while run_with_timeout was `perl … exec @ARGV`.
+    and every wrapped call re-mints. So a caller that needs a cap uses the
+    wrapper's own --timeout (applied inside, after the mint), not this. An
+    earlier revision asserted exit 127 instead, which held only while
+    run_with_timeout was `perl … exec @ARGV`.
     """
     stub, counter = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
     bindir = _stub_allowed(tmp_path)
@@ -535,6 +537,38 @@ def test_outer_timeout_wrapping_defeats_the_cache(tmp_path):
     )
 
 
+def test_timeout_flag_caps_the_command(tmp_path):
+    """The cap lives inside the wrapper (decision 1), because outside cannot work.
+
+    An outer `run_with_timeout N run_with_app_token …` re-mints every call (the
+    test above) and, since run_with_timeout is `perl … exec @ARGV`, exit 127 on a
+    shell function. --timeout applies run_with_timeout after the mint, so the cap
+    survives with the cache. It sits after the two ids, keeping the auth pair in a
+    fixed position across every call site.
+    """
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    slow = bindir / "gh"
+    slow.write_text("#!/usr/bin/env bash\nsleep 5\n")
+    slow.chmod(0o755)
+
+    out = _run(
+        f"{stub}; {WRAP} --timeout 1 gh api x || echo rc=$?",
+        path_prefix=bindir,
+    )
+    # perl's alarm kills it well inside the 5s sleep.
+    assert "rc=0" not in out.stdout
+    assert "rc=" in out.stdout
+
+
+def test_timeout_flag_rejects_a_non_number(tmp_path):
+    stub, _ = _with_counting_mint(tmp_path, "2099-01-01T00:00:00Z")
+    out = _run(f"{stub}; {WRAP} --timeout soon gh api x || echo rc=$?")
+    assert "rc=1" in out.stdout
+    assert "whole number of seconds" in out.stderr
+
+
 @pytest.mark.parametrize("command", ["git status", "curl https://x", "jq ."])
 def test_nothing_else_is_admitted(tmp_path, command):
     """Pins the accepted shapes to gh and .py helpers alone.
@@ -547,6 +581,49 @@ def test_nothing_else_is_admitted(tmp_path, command):
     out = _run(f"{stub}; {WRAP} {command} || echo rc=$?")
     assert "rc=1" in out.stdout
     assert "may hold an App token" in out.stderr
+
+
+# --- commit_exists fork-installation probe (ADR 0028, decision 2) -----------
+
+
+def _commit_exists_installation(tmp_path, probe_body: str) -> str:
+    """The installation id commit_exists authenticates the head-repo read with.
+
+    app_installation_id and run_with_app_token are stubbed: the probe returns
+    what `probe_body` dictates, and the wrapper records the installation id it was
+    handed (its 2nd arg) to a marker file. commit_exists redirects the wrapper's
+    stdout to /dev/null, so the stub writes to the file, not stdout.
+    """
+    marker = tmp_path / "inst"
+    _run(
+        "PRA_APP_ID=1; PRA_INSTALLATION_ID=base-inst; "
+        f"{probe_body} "
+        f'run_with_app_token() {{ printf "%s" "$2" >{marker}; }}; '
+        "commit_exists fork-owner/fork-repo deadbeef",
+    )
+    return marker.read_text() if marker.exists() else ""
+
+
+def test_commit_exists_uses_the_head_installation_when_installed(tmp_path):
+    # rc 0: the App is installed on the fork, so its own token reads the commit.
+    got = _commit_exists_installation(
+        tmp_path, "app_installation_id() { printf head-inst; return 0; }; "
+    )
+    assert got == "head-inst"
+
+
+def test_commit_exists_falls_back_to_base_when_head_not_installed(tmp_path):
+    # rc 1: the App is not on the fork. The base token still reads a public fork;
+    # a private one 404s and the thread defers (ADR 0028), the accepted behavior.
+    got = _commit_exists_installation(tmp_path, "app_installation_id() { return 1; }; ")
+    assert got == "base-inst"
+
+
+def test_commit_exists_falls_back_to_base_on_a_probe_failure(tmp_path):
+    # rc 2: a transient could-not-check keeps the base token rather than deferring
+    # forever on a one-off blip; the probe re-runs next cycle.
+    got = _commit_exists_installation(tmp_path, "app_installation_id() { return 2; }; ")
+    assert got == "base-inst"
 
 
 # --- Malformed responses ----------------------------------------------------

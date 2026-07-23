@@ -19,6 +19,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
+APP_STUB = REPO_ROOT / "tests" / "lib_app_stub.sh"
 
 SENTINEL_SHA_A = "a" * 40
 SENTINEL_SHA_B = "b" * 40
@@ -115,7 +116,7 @@ def _run(
             [
                 "bash",
                 "-c",
-                f"source {LIB}; discover_sentinel_sha owner repo 1 {login}",
+                f"source {LIB}; source {APP_STUB}; discover_sentinel_sha owner repo 1 {login}",
             ],
             capture_output=True,
             text=True,

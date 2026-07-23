@@ -15,6 +15,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from app_auth_fixture import install_app_stubs
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPLY_SH = REPO_ROOT / "daemon" / "reply-pr.sh"
 
@@ -32,8 +34,6 @@ def _stub_bin(tmp_path: Path) -> Path:
     gh.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
-        '"auth status") exit 0 ;;\n'
-        '"api user --jq .login") echo operator ;;\n'
         '*"/pulls/"*"/comments"*)\n'
         f"touch {tmp_path}/comments-api-hit\n"
         'echo "[]" ;;\n'
@@ -44,15 +44,18 @@ def _stub_bin(tmp_path: Path) -> Path:
     claude.write_text("#!/usr/bin/env bash\nexit 0\n")
     for stub in (gh, claude):
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    install_app_stubs(bin_dir)
     return bin_dir
 
 
 def _run(tmp_path: Path) -> subprocess.CompletedProcess:
+    bin_dir = _stub_bin(tmp_path)
     env = os.environ.copy()
-    env["PATH"] = f"{_stub_bin(tmp_path)}:{env['PATH']}"
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["APP_KEY_PATH"] = str(bin_dir / "app.pem")
     env["PR_REVIEW_STATE_DIR"] = str(tmp_path / "state")
     return subprocess.run(
-        ["bash", str(REPLY_SH), PR_URL],
+        ["bash", str(REPLY_SH), "--app-id", "4361858", PR_URL],
         capture_output=True,
         text=True,
         env=env,

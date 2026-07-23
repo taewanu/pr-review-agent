@@ -20,7 +20,7 @@ The daemon is the `daemon/run.sh` polling loop (ADR 0009): each cycle drives `da
 
 **Background, optional** (always-on across logout/reboot): `bash bin/install.sh` registers a `KeepAlive` launchd job running the same loop (supervising the process rather than firing a `StartInterval` timer, which stalled silently across sleep/wake, #83); stop with `bash bin/uninstall.sh`. Logs flow to `.daemon.log`; liveness: `echo $(( $(date +%s) - $(cat ~/.pr-review-agent/daemon.heartbeat) ))s since last cycle`. Caveat (ADR 0011): the launchd job is invisible and bound to this checkout's working tree, so keep that checkout on `main` — switching its branch silently breaks the running daemon. If you also develop here, run the dogfood daemon in the foreground or from a separate clone.
 
-**Manual one-shot** (debugging or single-PR runs): `bash daemon/review-pr.sh <pr-url>` runs the review pipeline once without polling. `bash daemon/reply-pr.sh <pr-url>` runs the operator-reply ack pass once without polling. `bash daemon/submit-review.sh <pr-url>` submits the drafted pending review on others' PRs via the API, preserving the body (own PRs auto-submit at review time per ADR 0008).
+**Manual one-shot** (debugging or single-PR runs): `bash daemon/review-pr.sh <pr-url>` runs the review pipeline once without polling. `bash daemon/reply-pr.sh <pr-url>` runs the operator-reply ack pass once without polling. Reviews submit immediately under the App identity (ADR 0036), so there is no separate submit step.
 
 Prereqs: `gh auth login` (operator identity per ADR 0003), `claude` on PATH, `jq`, `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing.
 

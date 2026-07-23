@@ -11,31 +11,40 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
-for cmd in gh claude jq git python3; do
+for cmd in gh claude jq git python3 openssl curl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log_err "missing '$cmd' on PATH"
     exit 1
   fi
 done
-if ! gh auth status >/dev/null 2>&1; then
-  log_err "gh not authenticated — run 'gh auth login' first"
+# App identity (ADR 0036): a machine with no `gh auth login` is a valid
+# deployment; what must exist is the App private key. The App id is checked when
+# it is resolved below, once the base repo is known.
+if [[ ! -r "$APP_KEY_PATH" ]]; then
+  log_err "App private key not readable at $APP_KEY_PATH — place it there or set APP_KEY_PATH (ADR 0036)"
   exit 1
 fi
-# Fail before the expensive claude call if project identity can't be derived.
-# create-review.sh re-derives at post time, but catching it here saves 2-3 min
-# of wasted work per tick. The PROJECT_URL/NAME globals set here are unused;
-# create-review.sh's later call is the authoritative one.
-derive_project_identity "$SCRIPT_DIR/.."
 
 KEEP_SCRATCH=0
 DRY_RUN=0
 LAST_SHA=""
 AT_SHA=""
+APP_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --keep-scratch)
       KEEP_SCRATCH=1
       shift
+      ;;
+    --app-id)
+      # The App id, threaded from poll.sh (config-authoritative). The manual
+      # one-shot omits it and self-resolves from .env below.
+      if [[ $# -lt 2 ]]; then
+        log_err "--app-id requires a value"
+        exit 1
+      fi
+      APP_ID="$2"
+      shift 2
       ;;
     --at-sha)
       # Review the PR as of an earlier commit (a bug later fixed within the same
@@ -263,7 +272,7 @@ extract_truncated_count() {
 # are not yet stamped, asks the fix-check agent whether each defect is gone at HEAD, and
 # on a fix stamps the Finding's comment resolved in place then resolves the thread. Also
 # re-resolves any thread already carrying a stamp whose earlier resolve dropped under
-# rate-limit (retry, §4). Reads run-scoped globals (SCRATCH at HEAD, DIFF_FILE, OPERATOR,
+# rate-limit (retry, §4). Reads run-scoped globals (SCRATCH at HEAD, DIFF_FILE, PRA_* auth,
 # diff_scoped, HEAD_*). Best-effort: the review has already landed when it runs, so every
 # failure is logged and returns 0 rather than failing the PR-tick.
 resolution() {
@@ -282,7 +291,7 @@ resolution() {
   # Threads already carrying a resolution stamp whose resolve dropped earlier:
   # re-resolve only, no re-judgment and no second stamp (ADR 0017 §4, ADR 0019).
   if ! python3 "$SCRIPT_DIR/resolve_threads.py" select-retry \
-    --threads "$threads_file" --operator "$OPERATOR" >"$retry_file"; then
+    --threads "$threads_file" --operator "$PRA_BOT_LOGIN_GQL" >"$retry_file"; then
     printf '[]' >"$retry_file"
   fi
 
@@ -299,7 +308,7 @@ resolution() {
   # leg's worst-case share of PER_PR_TIMEOUT.
   local untouched_cap="${RESOLVE_UNTOUCHED_CAP:-5}"
   local touched_cap="${RESOLVE_TOUCHED_CAP:-10}"
-  local select_args=(--threads "$threads_file" --diff "$DIFF_FILE" --operator "$OPERATOR"
+  local select_args=(--threads "$threads_file" --diff "$DIFF_FILE" --operator "$PRA_BOT_LOGIN_GQL"
     --untouched-cap "$untouched_cap" --touched-cap "$touched_cap")
   if [[ $diff_scoped -eq 0 ]]; then
     select_args+=(--all-open)
@@ -380,20 +389,41 @@ resolution() {
   log_info "stamping ${notes_n} resolved finding(s), retrying ${retry_n} resolve(s)"
   # The commit-driven path edits the Finding comment in place (ADR 0019); it opens no
   # review, so no pending-wrapper to pass or pre-clean (unlike the reply path).
-  python3 "$SCRIPT_DIR/resolve_threads.py" act \
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    python3 "$SCRIPT_DIR/resolve_threads.py" act \
     --notes "$notes_file" --retry "$retry_file" \
     --head-owner "$HEAD_REPO_OWNER" --head-repo "$HEAD_REPO_NAME" --head-sha "$HEAD_OID" ||
     log_info "resolution stamping failed (non-fatal)"
   return 0
 }
 
-meta="$(gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,author,title,body,closingIssuesReferences)"
+# App identity (ADR 0036): resolve this process's installation for the base repo
+# and warm its token in this main shell, so the wrapped gh calls below (most in
+# command substitutions, where a mint would land in a doomed subshell) reuse one
+# token. app_auth_init also sets the two bot-login globals the dedup and
+# resolution paths match on. --app-id comes from poll.sh; the manual one-shot
+# resolves it from .env.
+[[ -n "$APP_ID" ]] || APP_ID="$(resolve_tunable GITHUB_APP_ID "$SCRIPT_DIR/../.env")"
+if [[ -z "$APP_ID" ]]; then
+  log_err "no GITHUB_APP_ID (pass --app-id or set it in .env) — cannot authenticate as the App (ADR 0036)"
+  exit 1
+fi
+if ! app_auth_init "$BASE_OWNER" "$BASE_REPO" "$APP_ID"; then
+  log_err "App not installed on ${BASE_OWNER}/${BASE_REPO}, or the installation probe failed"
+  exit 1
+fi
+app_auth_warm || {
+  log_err "could not mint an App token for ${BASE_OWNER}/${BASE_REPO}"
+  exit 1
+}
+
+meta="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+  gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences)"
 HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
 HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
 HEAD_OID="$(jq -r '.headRefOid // empty' <<<"$meta")"
 BASE_REF="$(jq -r '.baseRefName // empty' <<<"$meta")"
-PR_AUTHOR="$(jq -r '.author.login // empty' <<<"$meta")"
 if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HEAD_OID" ]]; then
   log_err "gh pr view returned incomplete metadata for $PR_URL (closed PR with deleted fork?)"
   exit 1
@@ -415,24 +445,6 @@ if [[ -n "$AT_SHA" ]]; then
   # Stated every run, not gated on whether the body actually changed: proving it
   # did would need the description as of <sha>, which the API does not keep.
   log_info "pin covers the code only: the PR description is read live, not as of ${AT_SHA:0:12}; if it was rewritten since, the intent lens and the editor read the newer text"
-fi
-
-# Own-vs-others gates the submit path (ADR 0008): own PRs auto-submit a COMMENT
-# review, others' stay pending. The operator is the gh-authenticated identity
-# (ADR 0003), as in reply-pr.sh. Derived here, not passed from poll.sh, so the
-# manual one-shot is correct too; a blank author falls through to the others' path.
-OPERATOR="$(gh api user --jq '.login' 2>/dev/null || true)"
-OWN_PR=0
-if [[ -n "$PR_AUTHOR" && "$PR_AUTHOR" == "$OPERATOR" ]]; then
-  OWN_PR=1
-  # The submit half of this line is a claim about what happens later, so it has
-  # to respect --dry-run. Stated unconditionally, a run that posts nothing read
-  # as one that had just submitted a review to the operator's own PR.
-  if [[ $DRY_RUN -eq 1 ]]; then
-    log_info "own PR (author == operator '$OPERATOR'): dry-run, submitting nothing"
-  else
-    log_info "own PR (author == operator '$OPERATOR'): auto-submitting a COMMENT review"
-  fi
 fi
 
 # A pause written by whichever PR tripped the quota this cycle (#231). poll.sh
@@ -464,7 +476,7 @@ trap 'flip_status_failed $?; cleanup' EXIT
 # dispatch, but the manual one-shot bypasses that. A discovery failure falls
 # through to reviewing rather than skipping on uncertainty.
 if [[ $DRY_RUN -eq 0 ]] &&
-  existing_sha="$(discover_sentinel_sha "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")" &&
+  existing_sha="$(discover_sentinel_sha "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$PRA_BOT_LOGIN_REST")" &&
   [[ "$existing_sha" == "$HEAD_OID" ]]; then
   log_info "already reviewed ${HEAD_OID:0:12}, skipping"
   exit 0
@@ -480,7 +492,8 @@ fi
 # Bound the https clone/fetch so a stalled connection aborts cleanly instead of
 # hanging the loop (#121). Backstopped by poll.sh's per-PR watchdog.
 arm_git_stall_timeout
-gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
+run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+  gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
 (
   cd "$SCRATCH"
   # PR refs are server-side stable even after the head branch is deleted or
@@ -586,7 +599,7 @@ build_intent_file() {
     issue_rc=0
     # Each closing reference carries its own repo, so a cross-repo `Closes` is
     # fetched from where the issue actually lives, not from the PR's base.
-    run_with_timeout "${GH_API_CALL_TIMEOUT:-90}" \
+    run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" --timeout "${GH_API_CALL_TIMEOUT:-90}" \
       gh issue view "$n" --repo "$owner/$repo" --json title,body \
       >"$SCRATCH/.pr-review-issue-$n.json" 2>/dev/null || issue_rc=$?
     if [[ "$issue_rc" -ne 0 ]]; then
@@ -686,7 +699,7 @@ if [[ -n "$AT_SHA" ]]; then
   # lives in BASE_OWNER/BASE_REPO); a fork's base would need a cross-repo compare.
   GH_API_CALL_TIMEOUT="${GH_API_CALL_TIMEOUT:-90}"
   at_diff_rc=0
-  run_with_timeout "$GH_API_CALL_TIMEOUT" \
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" --timeout "$GH_API_CALL_TIMEOUT" \
     gh api "repos/${BASE_OWNER}/${BASE_REPO}/compare/${BASE_REF}...${AT_SHA}" \
     -H "Accept: application/vnd.github.diff" >"$DIFF_FILE" || at_diff_rc=$?
   if [[ "$at_diff_rc" -ne 0 ]]; then
@@ -715,7 +728,8 @@ if [[ -z "$AT_SHA" && $diff_scoped -eq 0 ]]; then
   # regardless of how large the outer per-PR watchdog needs to be.
   GH_API_CALL_TIMEOUT="${GH_API_CALL_TIMEOUT:-90}"
   diff_rc=0
-  run_with_timeout "$GH_API_CALL_TIMEOUT" gh pr diff "$PR_URL" >"$DIFF_FILE" || diff_rc=$?
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" --timeout "$GH_API_CALL_TIMEOUT" \
+    gh pr diff "$PR_URL" >"$DIFF_FILE" || diff_rc=$?
   if [[ "$diff_rc" -eq "$TIMEOUT_EXIT" ]]; then
     log_failure "$FAIL_DIFF_FETCH_TIMEOUT" "$PR_URL" "$HEAD_OID" "gh pr diff exceeded ${GH_API_CALL_TIMEOUT}s"
     exit 1
@@ -759,7 +773,7 @@ fi
 # stays empty, which self-disables the terminal status edit and flip_status_failed
 # below (both no-op on an empty id), so no other guard is needed for them.
 if [[ $DRY_RUN -eq 0 ]]; then
-  STATUS_COMMENT_ID="$(find_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$OPERATOR")"
+  STATUS_COMMENT_ID="$(find_status_comment "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" "$PRA_BOT_LOGIN_REST")"
   if [[ -n "$STATUS_COMMENT_ID" ]]; then
     STATUS_TRAIL_PRIOR="$(status_comment_body "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" |
       python3 "$SCRIPT_DIR/status_trail.py" 2>/dev/null || true)"
@@ -1140,20 +1154,14 @@ elif [[ "$new_findings_total" -gt 0 ]]; then
     --unanchored "$UNANCHORED_FILE"
     --dropped-combo "$DROPPED_COMBO"
   )
-  if [[ $OWN_PR -eq 1 ]]; then
-    post_args+=(--own-pr)
-    log_step "submitting COMMENT review (own PR)"
-  else
-    log_step "posting Pending review"
-  fi
+  # Reviews submit immediately as a COMMENT review under the bot identity (ADR
+  # 0036 decision 6): no pending draft, no own-vs-others fork.
+  log_step "submitting review"
+  post_args+=(--app-id "$APP_ID" --installation-id "$PRA_INSTALLATION_ID")
   if ! bash "$SCRIPT_DIR/create-review.sh" "${post_args[@]}" >"$POST_OUT" 2>"$POST_ERR"; then
     cat "$POST_ERR" >&2
     category="$(extract_category "$POST_ERR")"
-    reason="gh api POST failed"
-    if [[ "$category" == "pending-conflict" ]]; then
-      reason="existing pending review on PR — submit or cancel via UI before re-running"
-    fi
-    log_failure "$category" "$PR_URL" "$HEAD_OID" "$reason"
+    log_failure "$category" "$PR_URL" "$HEAD_OID" "review POST failed"
     exit 1
   fi
   # Report the landed review by id instead of dumping the raw JSON. A parse miss
@@ -1162,11 +1170,7 @@ elif [[ "$new_findings_total" -gt 0 ]]; then
   # html_url anchors the status index's "outside the diff" pointer at this review,
   # the home of any relocated finding (ADR 0005, ADR 0020 Decision 4).
   review_url="$(jq -r '.html_url // empty' "$POST_OUT" 2>/dev/null || true)"
-  if [[ $OWN_PR -eq 1 ]]; then
-    log_ok "submitted COMMENT review${review_id:+ #$review_id}"
-  else
-    log_ok "posted Pending review${review_id:+ #$review_id}"
-  fi
+  log_ok "submitted review${review_id:+ #$review_id}"
 elif [[ $DRY_RUN -eq 1 ]]; then
   # Zero findings under dry-run is a real result the harness must record (a recall
   # miss, not a failure), so it reports the same contract with a zero count. The
@@ -1215,7 +1219,7 @@ if [[ $DRY_RUN -eq 0 ]]; then
   index_block=""
   if fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$index_threads_file"; then
     index_block="$(python3 "$SCRIPT_DIR/findings_index.py" \
-      --threads "$index_threads_file" --operator "$OPERATOR" \
+      --threads "$index_threads_file" --operator "$PRA_BOT_LOGIN_GQL" \
       --unanchored "$unanchored_count" --review-url "$review_url" \
       --summary-file "$SUMMARY_FILE" \
       ${delta_args[@]+"${delta_args[@]}"} 2>/dev/null || true)"

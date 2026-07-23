@@ -150,9 +150,9 @@ def test_sentinel_present_and_matches_adr_0006_format():
     match = re.search(r"<!-- pr-review-agent:sha:([0-9a-f]{40}) -->", body)
     assert match, "ADR 0006 sentinel missing from review body"
     assert match.group(1) == FIXTURE_HEAD_SHA
-    # Sentinel sits below the operator footer so it parses out cleanly without
+    # Sentinel sits below the footer so it parses out cleanly without
     # mid-body false positives.
-    footer_idx = body.index("Submit, edit, or cancel as needed.")
+    footer_idx = body.index("Edit as needed.")
     assert match.start() > footer_idx
 
 
@@ -189,26 +189,24 @@ def test_additional_finding_location_bare_when_head_unset():
         assert "/blob/" not in body
 
 
-def test_own_pr_submits_comment_review():
-    # ADR 0008: own PRs auto-submit a COMMENT review in the create POST itself,
-    # via an `event` field. Others' PRs omit it and stay pending.
-    review = _run_create_review("--own-pr")
-    assert review.get("event") == "COMMENT"
-    # Others' path (default) carries no event key — the review stays pending.
-    assert "event" not in _run_create_review()
+def test_review_submits_comment_immediately():
+    # ADR 0036 decision 6: every review submits as a COMMENT in the create POST
+    # itself, via the `event` field. There is no pending path and no own-vs-others
+    # fork, so the event is always present.
+    assert _run_create_review().get("event") == "COMMENT"
 
 
-def test_own_pr_footer_says_edit_not_submit_or_delete():
+def test_footer_says_edit_not_submit_or_delete():
     # The review is already submitted, so the action line is post-hoc, not the
     # pre-submit submit/cancel of a pending review. It says "edit" rather than
     # "delete" because GitHub rejects deleting a submitted review (REST and
     # GraphQL both 422); an unwanted one can only be edited or have its comments
     # hidden.
-    body = _run_create_review("--own-pr")["body"]
+    body = _run_create_review()["body"]
     assert "Edit as needed." in body
     assert "delete" not in body.lower()
     assert "Submit, edit, or cancel as needed." not in body
-    # The 🤖 sits outside the italic span, matching the Provenance tag (#132).
+    # The 🤖 sits outside the italic span (#132).
     assert "🤖 _Auto-submitted by" in body
 
 
