@@ -227,14 +227,15 @@ flip_status_failed() {
   return 0
 }
 
-# Parse the `category=<slug>` first stderr line emitted by extract_json.py and
-# create-review.sh on failure. Falls back to `unknown` so the structured failure
-# line is always populated.
+# Recover the `category=<slug>` first stderr line the Python pipeline stages emit
+# on failure (the wire contract documented at lib.sh's failure-category home).
+# Falls back to the shared FAIL_UNKNOWN so the structured failure line is always
+# populated.
 extract_category() {
   local stderr_path="$1"
   local cat
   cat="$(grep -m1 '^category=' "$stderr_path" 2>/dev/null | cut -d= -f2 || true)"
-  [[ -n "$cat" ]] && printf '%s' "$cat" || printf 'unknown'
+  [[ -n "$cat" ]] && printf '%s' "$cat" || printf '%s' "$FAIL_UNKNOWN"
 }
 
 # Parse the `session_limit_deadline=<epoch>` second stderr line merge_findings.py
@@ -686,7 +687,7 @@ if [[ -n "$AT_SHA" ]]; then
     gh api "repos/${BASE_OWNER}/${BASE_REPO}/compare/${BASE_REF}...${AT_SHA}" \
     -H "Accept: application/vnd.github.diff" >"$DIFF_FILE" || at_diff_rc=$?
   if [[ "$at_diff_rc" -ne 0 ]]; then
-    log_failure "diff-fetch-failed" "$PR_URL" "$HEAD_OID" \
+    log_failure "$FAIL_DIFF_FETCH_FAILED" "$PR_URL" "$HEAD_OID" \
       "compare ${BASE_REF}...${AT_SHA:0:12} exited $at_diff_rc"
     exit 1
   fi
@@ -713,10 +714,10 @@ if [[ -z "$AT_SHA" && $diff_scoped -eq 0 ]]; then
   diff_rc=0
   run_with_timeout "$GH_API_CALL_TIMEOUT" gh pr diff "$PR_URL" >"$DIFF_FILE" || diff_rc=$?
   if [[ "$diff_rc" -eq "$TIMEOUT_EXIT" ]]; then
-    log_failure "diff-fetch-timeout" "$PR_URL" "$HEAD_OID" "gh pr diff exceeded ${GH_API_CALL_TIMEOUT}s"
+    log_failure "$FAIL_DIFF_FETCH_TIMEOUT" "$PR_URL" "$HEAD_OID" "gh pr diff exceeded ${GH_API_CALL_TIMEOUT}s"
     exit 1
   elif [[ "$diff_rc" -ne 0 ]]; then
-    log_failure "diff-fetch-failed" "$PR_URL" "$HEAD_OID" "gh pr diff exited $diff_rc"
+    log_failure "$FAIL_DIFF_FETCH_FAILED" "$PR_URL" "$HEAD_OID" "gh pr diff exited $diff_rc"
     exit 1
   fi
 fi
@@ -1074,11 +1075,11 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
     exit "$rc"
   ) || edit_rc=$?
   if [[ "$edit_rc" -eq "$TIMEOUT_EXIT" ]]; then
-    log_failure "edit-timeout" "$PR_URL" "$HEAD_OID" "editor agent exceeded ${EDITOR_AGENT_TIMEOUT}s"
+    log_failure "$FAIL_EDIT_TIMEOUT" "$PR_URL" "$HEAD_OID" "editor agent exceeded ${EDITOR_AGENT_TIMEOUT}s"
     exit 1
   fi
   if [[ ! -s "$EDIT_RAW_FILE" ]]; then
-    log_failure "edit-empty" "$PR_URL" "$HEAD_OID" "editor produced no output"
+    log_failure "$FAIL_EDIT_EMPTY" "$PR_URL" "$HEAD_OID" "editor produced no output"
     exit 1
   fi
   EDIT_ARGS+=(--edits "$EDIT_RAW_FILE")

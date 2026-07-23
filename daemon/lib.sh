@@ -74,6 +74,48 @@ log_degradation_warnings() {
   done < <(grep -E '^(merge-skip|finding-skip|confidence-gate|voice-warning)' "$stderr_file" || true)
 }
 
+# Failure categories — the one home for ADR 0005's failure table (#141). A
+# category is the machine-readable slug on a failure: log_failure prints it in
+# the `failure: <category> …` line, and each Python pipeline stage prints
+# `category=<slug>` on its FIRST stderr line, which extract_category recovers.
+# Keep this set in step with ADR 0005; a slug not listed here defaults to the
+# loud system-failure path.
+#
+# Emitted directly here in bash, one slug each:
+#   repo-unreachable    target repo not accessible
+#   diff-fetch-failed   gh pr diff exited non-zero
+#   diff-fetch-timeout  gh pr diff exceeded its cap
+#   edit-timeout        editor agent exceeded its cap
+#   edit-empty          editor produced no output
+#   reply-timeout       reply agent exceeded its cap
+#   empty-stdout        reply agent produced no output
+#   post-failed         posting the review or reply failed
+#   unknown             unclassified; the extractor's fallback
+# Also built dynamically as `<step>-timeout` by run_with_pr_timeout (e.g.
+# review-timeout) from the step label it wraps, and received from the Python
+# stages via the `category=` wire contract, never emitted in bash: no-fence,
+# parse-error, schema-invalid, style-violation (extract_json.py, create_reply.py);
+# all-lenses-failed, session-limit (merge_findings.py).
+#
+# shellcheck disable=SC2034  # each is used by a sibling script that re-sources this file
+readonly FAIL_REPO_UNREACHABLE="repo-unreachable"
+# shellcheck disable=SC2034
+readonly FAIL_DIFF_FETCH_FAILED="diff-fetch-failed"
+# shellcheck disable=SC2034
+readonly FAIL_DIFF_FETCH_TIMEOUT="diff-fetch-timeout"
+# shellcheck disable=SC2034
+readonly FAIL_EDIT_TIMEOUT="edit-timeout"
+# shellcheck disable=SC2034
+readonly FAIL_EDIT_EMPTY="edit-empty"
+# shellcheck disable=SC2034
+readonly FAIL_REPLY_TIMEOUT="reply-timeout"
+# shellcheck disable=SC2034
+readonly FAIL_EMPTY_STDOUT="empty-stdout"
+# shellcheck disable=SC2034
+readonly FAIL_POST_FAILED="post-failed"
+# shellcheck disable=SC2034
+readonly FAIL_UNKNOWN="unknown"
+
 # log_failure <category> <pr-url> <head-sha> <reason>
 # Positional fields per ADR 0005 so log scrapers don't re-parse prose.
 log_failure() {
