@@ -183,7 +183,7 @@ def _truncate_to_cap(payload: ReviewPayload) -> None:
     completed lens's output over a byproduct of merging, not a real defect.
 
     Ranks by severity (important > nit > pre_existing, the same order
-    review-agent-default.md's own single-lens truncation convention uses) then
+    review-agent-general.md's own single-lens truncation convention uses) then
     by confidence descending. An unscored (None) finding ranks after every
     scored finding at the same severity: a demonstrated high score is a
     stronger signal for a forced truncation choice than an absent one, though
@@ -281,13 +281,13 @@ def merge(
 def _label_from_path(path: str) -> str:
     """Derive a readable lens name from its raw-output filename, e.g.
     `.pr-review-raw-perf.txt` -> "perf", `.pr-review-raw.txt`
-    (the default lens) -> "default". Best-effort for stderr diagnostics only;
+    (the general lens) -> "general". Best-effort for stderr diagnostics only;
     an unrecognized name just prints as-is."""
     name = Path(path).name
     prefix, suffix = ".pr-review-raw", ".txt"
     if name.startswith(prefix) and name.endswith(suffix):
         middle = name[len(prefix) : -len(suffix)]
-        return middle.lstrip("-") or "default"
+        return middle.lstrip("-") or "general"
     return name
 
 

@@ -90,7 +90,7 @@ def test_all_lenses_succeed_no_log_noise(tmp_path):
 
     script = f"""
 REVIEW_AGENT_TIMEOUT=600
-LENS_LABELS=(default perf)
+LENS_LABELS=(general perf)
 LENS_RAW_FILES=("{raw_a}" "{raw_b}")
 lens_count=2
 lens_pids=()
