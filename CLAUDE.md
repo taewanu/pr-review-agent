@@ -1,6 +1,6 @@
 # pr-review-agent
 
-Automated PR review tool running under the operator's own GitHub identity. Daemon written in bash + Python, run as a foreground polling loop and optionally installed as a background `launchd` job (ADR 0011). Posts pending reviews via the `gh` CLI. Built on Claude Code subagents, skills, and slash commands.
+Automated PR review tool that posts as a self-hosted GitHub App (ADR 0036). Daemon written in bash + Python, run as a foreground polling loop and optionally installed as a background `launchd` job (ADR 0011). Submits reviews via the `gh` CLI under the App's `[bot]` identity. Built on Claude Code subagents, skills, and slash commands.
 
 ## Run commands
 
@@ -22,15 +22,13 @@ The daemon is the `daemon/run.sh` polling loop (ADR 0009): each cycle drives `da
 
 **Manual one-shot** (debugging or single-PR runs): `bash daemon/review-pr.sh <pr-url>` runs the review pipeline once without polling. `bash daemon/reply-pr.sh <pr-url>` runs the operator-reply ack pass once without polling. Reviews submit immediately under the App identity (ADR 0036), so there is no separate submit step.
 
-Prereqs: `gh auth login` (operator identity per ADR 0003), `claude` on PATH, `jq`, `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing.
+Prereqs: a registered GitHub App the daemon authenticates as (its id in `GITHUB_APP_ID`, its private key at `~/.pr-review-agent/app.pem`), so no `gh auth login` (ADR 0036); `gh`, `claude`, `openssl`, `curl` on PATH; `jq`; `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing.
 
 The daemon bundles its own agent + slash-command definitions into the scratch clone before invoking `claude -p` (per ADR 0007), so target repos do **not** need to carry `.claude/agents/` or `.claude/commands/`. A target repo can override by carrying its own file at the same path; the bundle's `[[ -e dst ]] || cp` guard preserves the existing file.
 
 ## Forking
 
-The review footer link is auto-derived from `git remote get-url origin` of the checkout. A normal `git clone` of any fork picks up the correct owner/repo with zero config. The canonical clone renders `taewanu/pr-review-agent`; a `myorg/my-fork` clone renders `myorg/my-fork`. The preview-release banner uses the same derived name, gated separately on `pyproject.toml` version `0.x`.
-
-The daemon fails with an actionable error only if origin is missing or unparseable (rare: tarball install or non-github remote). To fix, configure a github.com origin: `git remote add origin <url>`.
+The review footer names the App the daemon posts as, linking to its page (`github.com/apps/<slug>`). The slug comes from the installation probe's `app_slug` (`render_review_footer` in `daemon/lib.sh`), so attribution follows the App you register and install (ADR 0036), not the clone's git remote. A fork attributes to its own App once `GITHUB_APP_ID` and the private key are set.
 
 ## Branching
 
