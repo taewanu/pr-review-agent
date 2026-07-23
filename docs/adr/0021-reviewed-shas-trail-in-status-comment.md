@@ -18,7 +18,7 @@ The asymmetry is structural, not a bug: the Status comment is a current-state su
 
 ## Decision
 
-The Status comment carries a **reviewed-SHAs trail**: a folded `<details><summary>Reviewed N commits</summary>` block, appended below the file list and above the provenance line, listing every HEAD SHA the daemon has reviewed on this PR (newest last) with the UTC time it was reviewed.
+The Status comment carries a **reviewed-SHAs trail**: a folded `<details><summary>Commits reviewed so far (N)</summary>` block, appended below the file list and above the provenance line, listing every HEAD SHA the daemon has reviewed on this PR (newest last) with the UTC time it was reviewed.
 
 1. **Owned state, not derived.** The trail is the one Status-comment element that *accumulates* across ticks rather than being rebuilt from current PR state. It departs from ADR 0020 Decision 1's "derived view, nothing of its own to fall out of sync": the trail is precisely a thing of its own. The findings index stays derived and unchanged; the trail is a separate, explicitly stateful element beside it.
 

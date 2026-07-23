@@ -26,7 +26,7 @@ from pathlib import Path
 # never a findings-index list item (ADR 0020) that resembles an entry. The inner
 # group is the block body; _ENTRY_RE then pulls the rows from inside it.
 _BLOCK_RE = re.compile(
-    r"<details><summary>Reviewed \d+ commits?</summary>(.*?)</details>",
+    r"<details><summary>Commits reviewed so far \(\d+\)</summary>(.*?)</details>",
     re.DOTALL,
 )
 # A row is `- ` + a backtick-wrapped short SHA + ` · ` + the reviewed-at text.
@@ -73,8 +73,7 @@ def render(body: str, add_sha: str | None = None, add_time: str | None = None) -
     entries = merge(parse_entries(body), add_sha, add_time)
     if not entries:
         return ""
-    noun = "commit" if len(entries) == 1 else "commits"
-    lines = [f"<details><summary>Reviewed {len(entries)} {noun}</summary>", ""]
+    lines = [f"<details><summary>Commits reviewed so far ({len(entries)})</summary>", ""]
     lines += [f"- `{sha}` · {when}" for sha, when in entries]
     lines += ["", "</details>"]
     return "\n".join(lines)
