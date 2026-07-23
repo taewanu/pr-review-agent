@@ -181,6 +181,40 @@ def test_label_omits_wait_suffix_on_immediate_acquire(tmp_path: Path):
     assert "waited" not in result.stderr
 
 
+def test_label_omits_wait_suffix_when_the_clock_ticks_over_mid_acquire(tmp_path: Path):
+    """An instant acquire must not report a wait when the second rolls over.
+
+    Second-resolution `date +%s` reads an acquire that straddles a boundary
+    (start at .99, claim at the next .01) as a full second, so keying the suffix
+    off elapsed time claims a contention that never happened (#228). The suffix
+    keys off whether the poll loop blocked instead. A `date` stub returns N on
+    the first read and N+1 on every later one, with no real wait, which the
+    old elapsed-seconds logic mislabelled `(waited 1s)`.
+    """
+    # The counter lives in a file, not a shell var: each `$(date +%s)` runs in a
+    # command-substitution subshell, so a variable increment would not survive
+    # back to the caller and every read would see the same second.
+    counter = tmp_path / "date_calls"
+    counter.write_text("0")
+    stub = (
+        f'_cf="{counter}"; '
+        'date() { if [ "$1" = "+%s" ]; then '
+        'n=$(cat "$_cf"); echo $((n + 1)) >"$_cf"; '
+        'if [ "$n" -eq 0 ]; then printf 100; else printf 101; fi; '
+        'else command date "$@"; fi; }; '
+    )
+    result = subprocess.run(
+        ["bash", "-c", f"source {LIB}; {stub} acquire_claude_slot 'editor'"],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path, pool_size=3),
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "acquired slot 1/3" in result.stderr
+    assert "waited" not in result.stderr, result.stderr
+
+
 def test_label_reports_wait_time_when_it_actually_waited(tmp_path: Path):
     only = _slot_file(tmp_path, 1)
     only.write_text(f"{os.getpid()} {int(time.time())}\n")
