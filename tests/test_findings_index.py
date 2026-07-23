@@ -16,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "daemon"))
 
 import findings_index as fi  # noqa: E402
 
-OPERATOR = "operator-login"
-TAG = fi.PROVENANCE_MARKER
+# The bot's login. Under App identity (ADR 0036) authorship alone identifies the
+# bot's own Finding threads, so the index filters on root_author with no body-text
+# marker.
+OPERATOR = "example[bot]"
 
 
 def _thread(
@@ -28,14 +30,12 @@ def _thread(
     resolved: bool = False,
     url: str | None = None,
     author: str = OPERATOR,
-    daemon: bool = True,
 ) -> dict:
-    body = f"some finding text\n\n{TAG}" if daemon else "a human review note"
     return {
         "thread_id": tid,
         "is_resolved": resolved,
         "root_author": author,
-        "root_body": body,
+        "root_body": "some finding text",
         "root_comment_id": f"c-{tid}",
         "root_comment_url": url,
         "path": path,
@@ -51,8 +51,8 @@ def _thread(
 def test_filter_keeps_only_daemon_authored_findings():
     threads = [
         _thread("1", "a.py", 1),
-        _thread("2", "b.py", 2, author="someone-else"),  # not the operator
-        _thread("3", "c.py", 3, daemon=False),  # operator, but no provenance marker
+        _thread("2", "b.py", 2, author="someone-else"),  # another bot / user
+        _thread("3", "c.py", 3, author="a-human"),  # a human's manual review comment
     ]
     kept = fi.daemon_findings(threads, OPERATOR)
     assert [t["thread_id"] for t in kept] == ["1"]

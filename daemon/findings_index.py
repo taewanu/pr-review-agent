@@ -26,23 +26,16 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-# Provenance marker on every daemon-authored comment (ADR 0010 §3). Mirrors
-# lib.sh's PROVENANCE_TAG and resolve_threads.py's PROVENANCE_MARKER;
-# test_provenance_tag.py pins them identical. Tells a daemon Finding thread from
-# the Operator's own manual review comment, so the index counts only daemon Findings.
-PROVENANCE_MARKER = "🤖 _pr-review-agent_"
-
 
 def daemon_findings(threads: list[dict], operator: str) -> list[dict]:
-    """The PR's daemon-authored Finding threads, open and resolved alike.
+    """The PR's bot-authored Finding threads, open and resolved alike.
 
-    Unlike resolve_threads.select, this keeps resolved threads (the index reports
-    them as resolved) and stamped ones (a stamp is the resolved state, not a skip)."""
-    return [
-        t
-        for t in threads
-        if t.get("root_author") == operator and PROVENANCE_MARKER in (t.get("root_body") or "")
-    ]
+    Authorship alone identifies them: under App identity (ADR 0036) the bot has
+    its own login, so a thread the bot rooted is the bot's, with no body-text
+    marker needed. Unlike resolve_threads.select, this keeps resolved threads (the
+    index reports them as resolved) and stamped ones (a stamp is the resolved
+    state, not a skip)."""
+    return [t for t in threads if t.get("root_author") == operator]
 
 
 def _order(findings: list[dict]) -> list[dict]:

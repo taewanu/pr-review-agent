@@ -40,8 +40,6 @@ _Scope: `767548c..2c2d8dd`_
 
 </details>
 
-🤖 _pr-review-agent_
-
 <!-- pr-review-agent:status -->
 """
 
@@ -59,7 +57,7 @@ def test_parse_reads_only_trail_block_rows():
 
 
 def test_parse_empty_when_no_block():
-    assert st.parse_entries("✅ Reviewed `abc`\n\n🤖 _pr-review-agent_") == []
+    assert st.parse_entries("✅ Reviewed `abc`\n\n<!-- pr-review-agent:status -->") == []
     assert st.parse_entries("") == []
 
 
