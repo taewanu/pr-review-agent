@@ -193,7 +193,7 @@ def build_body(body: str, addressed_id: str, link: str | None = None) -> str:
     Reply sentinel footer. Location lives in the link, not the prose, so the agent
     body never repeats the file and line (#96). The bot's own login carries the
     disclosure the provenance marker used to (ADR 0036), so no marker is appended.
-    When the body has no italic lead (degenerate — replies are validated to lead
+    When the body has no italic lead (degenerate: replies are validated to lead
     with one), it stays whole with the link as a trailing paragraph, the pre-#96
     layout."""
     lead, rest = voice.split_lead(body)

@@ -40,7 +40,7 @@ def _logical_lines(text: str) -> list[str]:
 
 def _in_string_or_comment(prefix: str) -> bool:
     """True when the text before a match sits inside a double-quoted string or
-    past an unquoted `#` (a comment) — a gh in log prose, not a command."""
+    past an unquoted `#` (a comment): a gh in log prose, not a command."""
     in_quote = False
     for ch in prefix:
         if ch == '"':
