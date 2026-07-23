@@ -182,14 +182,13 @@ def test_label_omits_wait_suffix_on_immediate_acquire(tmp_path: Path):
 
 
 def test_label_omits_wait_suffix_when_the_clock_ticks_over_mid_acquire(tmp_path: Path):
-    """An instant acquire must not report a wait when the second rolls over.
+    """An instant acquire must not log a wait when the second rolls over.
 
-    Second-resolution `date +%s` reads an acquire that straddles a boundary
-    (start at .99, claim at the next .01) as a full second, so keying the suffix
-    off elapsed time claims a contention that never happened (#228). The suffix
-    keys off whether the poll loop blocked instead. A `date` stub returns N on
-    the first read and N+1 on every later one, with no real wait, which the
-    old elapsed-seconds logic mislabelled `(waited 1s)`.
+    acquire_claude_slot gates the suffix on whether the poll loop blocked, not
+    on elapsed `date +%s`, so a boundary-straddling instant acquire logs no
+    wait; the boundary mechanics live in the lib.sh comment. The stub returns N
+    then N+1 with no real wait, which the old elapsed-seconds logic mislabelled
+    `(waited 1s)`, so this test fails against pre-fix code.
     """
     # The counter lives in a file, not a shell var: each `$(date +%s)` runs in a
     # command-substitution subshell, so a variable increment would not survive

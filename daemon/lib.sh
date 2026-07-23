@@ -1101,8 +1101,8 @@ acquire_claude_slot() {
           # Report a wait only when the poll loop actually blocked, keyed off the
           # event rather than elapsed seconds. Second-resolution `date +%s` reads
           # an immediate acquire that straddles a boundary (start at .99, claim at
-          # the next .01) as a full second, which would claim a contention that
-          # never happened (#228).
+          # the next .01) as a full second, which would report a wait that never
+          # happened (#228).
           if ((polled)); then
             waited=$(($(date +%s) - start_ts))
             suffix=" (waited ${waited}s)"
