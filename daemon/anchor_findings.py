@@ -20,7 +20,9 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DIFF_GIT_RE = re.compile(r"^diff --git a/(?P<old>.+) b/(?P<new>.+)$")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from diff_paths import parse_diff_path  # noqa: E402
+
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
 # Combos reserved for surfacing system issues out-of-band, never posted as
@@ -36,7 +38,7 @@ FORBIDDEN_COMBOS: frozenset[tuple[str, str]] = frozenset(
 class _DiffLine:
     raw: str
     new_lineno: int | None = None  # new-file line number for an added/context line
-    new_path: str | None = None  # new path, set on a `diff --git` header
+    new_path: str | None = None  # new path, set on the `+++ b/` header
     hunk: tuple[int, int] | None = None  # (start, count), set on a `@@` header
 
 
@@ -51,12 +53,20 @@ def _iter_diff_lines(text: str) -> Iterator[_DiffLine]:
     current_path: str | None = None
     new_lineno: int | None = None
     for line in text.splitlines():
-        m = DIFF_GIT_RE.match(line)
-        if m:
-            current_path = m.group("new")
+        if line.startswith("diff --git "):
+            current_path = None
             new_lineno = None
-            yield _DiffLine(line, new_path=current_path)
+            yield _DiffLine(line)
             continue
+        # The new path comes off the `+++ b/` header, which precedes the file's
+        # first hunk, so new_lineno is still None here. Inside a hunk an added
+        # line can itself read `+++ b/…`; the header-zone gate tells them apart.
+        if new_lineno is None:
+            new_path = parse_diff_path(line, "b/")
+            if new_path is not None:
+                current_path = new_path
+                yield _DiffLine(line, new_path=current_path)
+                continue
         if current_path is None:
             yield _DiffLine(line)
             continue

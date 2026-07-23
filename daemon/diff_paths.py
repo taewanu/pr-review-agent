@@ -1,0 +1,73 @@
+"""Parse a file path from a unified-diff `--- a/…` / `+++ b/…` header (#13).
+
+The `diff --git a/OLD b/NEW` line is ambiguous for a path that contains the
+substring ` b/`: git does not quote a plain space there, so `a/(.+) b/(.+)`
+splits at the wrong ` b/`. The `---`/`+++` lines carry the path as the sole
+field, tab-terminated when it holds a space and C-quoted in double quotes when
+it holds a byte git escapes (non-ASCII, control, `"`, `\\`). That single-path
+form has no split to get wrong, so both diff parsers read the path from here.
+"""
+
+from __future__ import annotations
+
+# git C-style escapes inside a quoted path. Octal `\ooo` bytes are handled
+# separately; these are the named single-character escapes.
+_C_ESCAPES = {
+    "a": 0x07,
+    "b": 0x08,
+    "t": 0x09,
+    "n": 0x0A,
+    "v": 0x0B,
+    "f": 0x0C,
+    "r": 0x0D,
+    '"': 0x22,
+    "\\": 0x5C,
+}
+
+
+def _dequote(rest: str) -> str | None:
+    """Decode a git C-quoted path. `rest` starts at the opening double-quote.
+
+    Rebuilds the raw bytes (octal escapes are UTF-8 bytes, not code points) and
+    decodes them, so a multibyte character escaped as `\\303\\256` becomes the one
+    character it encodes. Returns None on an unterminated quote (malformed)."""
+    out = bytearray()
+    i = 1  # skip the opening quote
+    while i < len(rest):
+        c = rest[i]
+        if c == '"':
+            return out.decode("utf-8", "surrogateescape")
+        if c == "\\" and i + 1 < len(rest):
+            nxt = rest[i + 1]
+            if nxt in "01234567":
+                out.append(int(rest[i + 1 : i + 4], 8))
+                i += 4
+            else:
+                out.append(_C_ESCAPES.get(nxt, ord(nxt)))
+                i += 2
+        else:
+            out.extend(c.encode("utf-8"))
+            i += 1
+    return None
+
+
+def parse_diff_path(line: str, marker: str) -> str | None:
+    """The path from a `--- a/…` (marker `a/`) or `+++ b/…` (marker `b/`) header.
+
+    Returns None for `/dev/null` (an added or deleted side has no path on that
+    side) and for any line that is not that header, so a caller can try it on
+    every line. Strips the `a/`/`b/` prefix git prepends to a real path."""
+    prefix = "--- " if marker == "a/" else "+++ "
+    if not line.startswith(prefix):
+        return None
+    rest = line[len(prefix) :]
+    if rest.startswith('"'):
+        path = _dequote(rest)
+        if path is None:
+            return None
+    else:
+        # A space-bearing path is terminated by a tab; split it off.
+        path = rest.split("\t", 1)[0]
+    if not path.startswith(marker):
+        return None  # /dev/null, or a prefix git did not tag
+    return path[len(marker) :]
