@@ -66,3 +66,10 @@ def test_wrong_marker_side_returns_none():
 
 def test_unterminated_quote_is_none():
     assert parse_diff_path('+++ "b/oops.py', "b/") is None
+
+
+def test_malformed_octal_escape_is_none_not_raise():
+    # git always emits three octal digits; a short or oversized one is malformed
+    # and must degrade to None rather than raise out of the parser.
+    assert parse_diff_path(r'+++ "b/a\7"', "b/") is None
+    assert parse_diff_path(r'+++ "b/a\777b.py"', "b/") is None

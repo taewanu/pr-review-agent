@@ -40,7 +40,16 @@ def _dequote(rest: str) -> str | None:
         if c == "\\" and i + 1 < len(rest):
             nxt = rest[i + 1]
             if nxt in "01234567":
-                out.append(int(rest[i + 1 : i + 4], 8))
+                octal = rest[i + 1 : i + 4]
+                # git emits exactly three octal digits for a byte (\000-\377).
+                # Anything shorter or larger is malformed; degrade to None like
+                # an unterminated quote rather than raising out of the parser.
+                if len(octal) < 3 or any(d not in "01234567" for d in octal):
+                    return None
+                byte = int(octal, 8)
+                if byte > 0xFF:
+                    return None
+                out.append(byte)
                 i += 4
             else:
                 out.append(_C_ESCAPES.get(nxt, ord(nxt)))
