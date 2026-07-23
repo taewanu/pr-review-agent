@@ -1086,7 +1086,7 @@ _slot_pool_size() {
 # log_info always writes to stderr, never stdout, so it can't corrupt the
 # captured slot path.
 acquire_claude_slot() {
-  local label="${1:-}" dir pool_size poll_interval i slot_path start_ts waited suffix
+  local label="${1:-}" dir pool_size poll_interval i slot_path start_ts waited suffix polled=0
   dir="$(_state_dir)"
   mkdir -p "$dir"
   pool_size="$(_slot_pool_size)"
@@ -1097,9 +1097,16 @@ acquire_claude_slot() {
     while ((i <= pool_size)); do
       if slot_path="$(_try_claim_slot "$i")"; then
         if [[ -n "$label" ]]; then
-          waited=$(($(date +%s) - start_ts))
           suffix=""
-          ((waited > 0)) && suffix=" (waited ${waited}s)"
+          # Report a wait only when the poll loop actually blocked, keyed off the
+          # event rather than elapsed seconds. Second-resolution `date +%s` reads
+          # an immediate acquire that straddles a boundary (start at .99, claim at
+          # the next .01) as a full second, which would report a wait that never
+          # happened (#228).
+          if ((polled)); then
+            waited=$(($(date +%s) - start_ts))
+            suffix=" (waited ${waited}s)"
+          fi
           log_info "${label}: acquired slot ${i}/${pool_size}${suffix}"
         fi
         printf '%s\n' "$slot_path"
@@ -1107,6 +1114,7 @@ acquire_claude_slot() {
       fi
       i=$((i + 1))
     done
+    polled=1
     sleep "$poll_interval"
   done
 }
