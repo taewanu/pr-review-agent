@@ -248,7 +248,7 @@ def test_status_failure_reason_lens_timeouts_share_the_same_phrase():
     # Every lens (ADR 0023) reads as "the review" to the author too; which
     # internal generator stalled is not something they can act on.
     for category in (
-        "default-review-timeout",
+        "intent-review-timeout",
         "perf-review-timeout",
         "security-review-timeout",
         "tests-review-timeout",
