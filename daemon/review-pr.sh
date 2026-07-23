@@ -826,14 +826,16 @@ log_info "model: ${REVIEW_MODEL}"
 # orchestrator-worker shape); `single-agent` runs the lens in the process that
 # already isolates it, dropping the subagent layer that only forwarded its
 # stdout. The two dials are independent: `single-agent` with REVIEW_LENSES unset
-# is six single-agent lenses, not one.
+# is the default two lenses (`default intent`) run single-agent, not one.
+# single-agent is the code default (ADR 0034 amended): it matched subagent recall
+# at 27-39% fewer tokens, so an operator without the key gets the cheaper mode.
 #
 # The mode deliberately touches nothing else. An earlier draft also lowered
 # CONFIDENCE_THRESHOLD here, which silently overrode the operator's own .env
 # value and made two modes incomparable in measurement: the cheaper mode was
 # scored behind a looser gate than the one it was being compared against.
 REVIEW_MODE="$(resolve_tunable REVIEW_MODE "$SCRIPT_DIR/../.env")"
-case "${REVIEW_MODE:-subagent}" in
+case "${REVIEW_MODE:-single-agent}" in
   single-agent)
     SINGLE_AGENT_REVIEW=1
     ;;
