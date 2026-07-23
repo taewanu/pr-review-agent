@@ -149,33 +149,40 @@ def finalize(author: dict, edits_raw: str | None) -> dict:
     return final
 
 
-def append_truncation_note(payload: dict, truncated_count: int) -> dict:
-    """Append a count of findings the merge-time cap silently dropped (ADR 0023)
-    to the summary, mirroring Anthropic's own code-review plugin convention of
-    capping nits and mentioning the rest as a count rather than dropping them
-    with no visible trace. A no-op when truncated_count is 0.
-
-    Runs after the Editor's gate, not before: this is fixed UI chrome authored
-    here, not agent prose, so it skips voice.py the same way status_failure_
-    reason's phrases do. Keep the sentence 두괄식 and em-dash-free by hand."""
-    if truncated_count <= 0:
-        return payload
-    plural = "" if truncated_count == 1 else "s"
-    note = f"{truncated_count} additional low-severity finding{plural} omitted by the review cap."
+def _append_note(payload: dict, note: str) -> dict:
+    """Append one fixed line to the summary. Chrome authored here, not agent
+    prose, so it runs after the Editor's gate and skips voice.py the way
+    status_failure_reason's phrases do. Every note passed in is hand-kept 두괄식
+    and em-dash-free, since the gate no longer guards it."""
     return {**payload, "summary": f"{payload['summary']}\n\n{note}"}
 
 
-def append_editor_bypass_note(payload: dict, category: str) -> dict:
-    """Note on the summary that the editorial pass was skipped and why (#258).
+def append_truncation_note(payload: dict, truncated_count: int) -> dict:
+    """Append a count of findings the merge-time cap silently dropped (ADR 0023),
+    mirroring Anthropic's own code-review plugin convention of capping nits and
+    mentioning the rest as a count rather than dropping them with no visible
+    trace. A no-op when truncated_count is 0."""
+    if truncated_count <= 0:
+        return payload
+    plural = "" if truncated_count == 1 else "s"
+    return _append_note(
+        payload,
+        f"{truncated_count} additional low-severity finding{plural} omitted by the review cap.",
+    )
+
+
+def append_editor_bypass_note(payload: dict) -> dict:
+    """Mark on the summary that the editorial pass was skipped (#258).
 
     Reached only on the post-author fallback: the editor's decisions were
     unusable, so the merged author draft is posting un-edited. A reader must be
     able to tell a bypassed review from a clean one, or a degraded review passes
-    for a polished one. Same post-gate placement and hand-kept voice (두괄식,
-    em-dash-free) as append_truncation_note, since this is chrome, not agent prose.
-    """
-    note = "Editorial cleanup did not run on this review, so the findings below are the raw draft."
-    return {**payload, "summary": f"{payload['summary']}\n\n{note}"}
+    for a polished one. The internal failure category is logged to stderr, not
+    surfaced here, since it is of no use to a PR author."""
+    return _append_note(
+        payload,
+        "Editorial cleanup did not run on this review, so the findings below are the raw draft.",
+    )
 
 
 def main() -> int:
@@ -201,8 +208,14 @@ def main() -> int:
     args = parser.parse_args()
     author = json.loads(Path(args.author).read_text())
     edits_raw = Path(args.edits).read_text() if args.edits else None
+
+    def emit(payload: dict) -> int:
+        payload = append_truncation_note(payload, args.truncated_count)
+        print(json.dumps(payload))
+        return 0
+
     try:
-        final = finalize(author, edits_raw)
+        return emit(finalize(author, edits_raw))
     except ApplyError as exc:
         # A failure applying the editor's decisions is recoverable: the author
         # draft is independently valid and posting it beats discarding a review
@@ -211,19 +224,12 @@ def main() -> int:
         # the zero-finding skip gets; a structurally broken author would still
         # raise, but merge_findings.py schema-validated it upstream.
         if args.on_editor_error == "post-author" and edits_raw is not None:
-            final = finalize(author, None)
-            final = append_editor_bypass_note(final, exc.category)
             print(f"warning=editor-bypassed category={exc.category}", file=sys.stderr)
             print(f"apply_edits: {exc}", file=sys.stderr)
-            final = append_truncation_note(final, args.truncated_count)
-            print(json.dumps(final))
-            return 0
+            return emit(append_editor_bypass_note(finalize(author, None)))
         print(f"category={exc.category}", file=sys.stderr)
         print(f"apply_edits: {exc}", file=sys.stderr)
         return 1
-    final = append_truncation_note(final, args.truncated_count)
-    print(json.dumps(final))
-    return 0
 
 
 if __name__ == "__main__":

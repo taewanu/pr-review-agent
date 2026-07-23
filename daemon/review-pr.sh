@@ -998,17 +998,12 @@ TRUNCATED_COUNT="$(extract_truncated_count "$EXTRACT_ERR")"
 # --author on the clean file, so the fallback never applies a partial edit.
 EDIT_ARGS=(--author "$AUTHOR_FILE" --truncated-count "$TRUNCATED_COUNT" --on-editor-error post-author)
 if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
-  # The editor keys every decision by a finding's 0-based position, and its only
-  # cue was the array order across an 18KB payload, which it miscounted (#258).
-  # Stamp the index onto each finding in the copy the editor reads; apply_edits
+  # Stamp an explicit index onto each finding so the editor reads it rather than
+  # counting array positions, a fragile cue it miscounted (#258). apply_edits
   # still reads the clean $AUTHOR_FILE, so the extra key never reaches a post.
   AUTHOR_INDEXED_BASENAME=".pr-review-author-indexed.json"
   AUTHOR_INDEXED_FILE="$SCRATCH/$AUTHOR_INDEXED_BASENAME"
-  python3 -c 'import json, sys
-d = json.load(open(sys.argv[1]))
-for i, c in enumerate(d.get("comments", [])):
-    d["comments"][i] = {"index": i, **c}
-json.dump(d, open(sys.argv[2], "w"), indent=2)' "$AUTHOR_FILE" "$AUTHOR_INDEXED_FILE"
+  python3 "$SCRIPT_DIR/index_findings.py" <"$AUTHOR_FILE" >"$AUTHOR_INDEXED_FILE"
   log_step "running editor agent via claude -p"
   # Same unbounded `claude -p` shape and backstop as the review agent, raised
   # to 600s for the same dogfood-observed reason. Not backgrounded (nothing to

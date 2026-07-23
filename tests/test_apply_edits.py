@@ -297,7 +297,7 @@ def test_append_truncation_note_skips_the_voice_gate():
 
 def test_append_editor_bypass_note_marks_the_summary():
     payload = {"summary": "Two helpers renamed.", "comments": []}
-    result = apply_edits.append_editor_bypass_note(payload, "edit-coverage")
+    result = apply_edits.append_editor_bypass_note(payload)
     assert result["summary"].startswith("Two helpers renamed.\n\n")
     # A reader must be able to tell a bypassed review from a clean one.
     assert "editorial" in result["summary"].lower()
@@ -305,18 +305,8 @@ def test_append_editor_bypass_note_marks_the_summary():
 
 def test_append_editor_bypass_note_is_voice_clean():
     # Appended after the gate, so it is hand-kept em-dash-free like the other note.
-    result = apply_edits.append_editor_bypass_note(
-        {"summary": "s", "comments": []}, "edit-coverage"
-    )
+    result = apply_edits.append_editor_bypass_note({"summary": "s", "comments": []})
     assert "—" not in result["summary"]
-
-
-def test_append_editor_bypass_note_does_not_leak_the_category():
-    # The internal category name is not useful to a PR author.
-    result = apply_edits.append_editor_bypass_note(
-        {"summary": "s", "comments": []}, "edit-coverage"
-    )
-    assert "edit-coverage" not in result["summary"]
 
 
 # --- main(): the post-author fallback ----------------------------------------
@@ -354,7 +344,10 @@ def test_post_author_fallback_posts_the_draft_when_the_editor_miscounts(tmp_path
     # apply of the miscounted decisions onto the wrong findings.
     assert [c["body"] for c in posted["comments"]] == ["**A.** one", "**B.** two"]
     assert "editorial" in posted["summary"].lower()
-    assert "warning=editor-bypassed" in result.stderr
+    # The internal category is logged to stderr for the operator, never leaked
+    # into the summary a PR author reads.
+    assert "warning=editor-bypassed category=edit-coverage" in result.stderr
+    assert "edit-coverage" not in posted["summary"]
 
 
 def test_discard_is_the_default_and_still_fails(tmp_path):
