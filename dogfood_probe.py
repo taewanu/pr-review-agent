@@ -9,3 +9,8 @@ def repo_status(repo_path):
         f"git -C {repo_path} status --porcelain", shell=True, capture_output=True, text=True
     )
     return result.stdout
+
+
+def has_changes(repo_path):
+    """True when the repo has any uncommitted change."""
+    return bool(repo_status(repo_path).strip())
