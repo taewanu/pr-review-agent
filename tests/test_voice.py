@@ -338,3 +338,60 @@ def test_fidelity_violations_flags_a_corrupt_summary():
     # the reconciled summary while every body stays clean.
     out = voice.fidelity_violations("Cover `a &lt;= b` in the guard.", ["**Good.** Ships clean."])
     assert len(out) == 1 and out[0].startswith("summary ")
+
+
+# --- check_artifact (the per-artifact rule matrix, ADR 0010 §4) ---------------
+
+
+def test_artifact_rules_cover_every_artifact_constant():
+    # Adding an artifact constant without a rule set (or vice versa) fails here.
+    assert set(voice._ARTIFACT_RULES) == {
+        voice.SUMMARY,
+        voice.INLINE_COMMENT,
+        voice.REPLY_BODY,
+        voice.RESOLUTION_STAMP,
+    }
+
+
+def test_summary_forbids_a_bold_lead_and_skips_the_bullet_count():
+    # FORBIDDEN_SUMMARY_PREFIXES adds "**": the summary stays plain prose, no lead.
+    assert voice.check_artifact(voice.SUMMARY, "**Bold** opener.")
+    # A single bullet is fine: the summary is not held to the 2-4 body count.
+    assert voice.check_artifact(voice.SUMMARY, "Fix the leak.\n\n- one point") == []
+
+
+def test_inline_comment_peels_a_bold_lead_and_enforces_the_bullet_count():
+    # strip_bold peels the bold lead before the opener scan, so a bold lead is clean.
+    assert voice.check_artifact(voice.INLINE_COMMENT, "**Rename** `tmp` for clarity.") == []
+    # One bullet violates the 2-4 count (0 or 2-4, never one).
+    assert voice.check_artifact(voice.INLINE_COMMENT, "**Fix** it.\n\n- only one")
+
+
+def test_reply_body_peels_an_italic_lead_and_enforces_the_bullet_count():
+    # Reply leads are italic (ADR 0010 §4 #106); strip_bold peels `_…_` too (#104).
+    assert voice.check_artifact(voice.REPLY_BODY, "_Confirmed:_ the fix lands.") == []
+    assert voice.check_artifact(voice.REPLY_BODY, "_Fixed:_ done.\n\n- only one")
+
+
+def test_resolution_stamp_rule_set():
+    # A distinct combo: the body opener set and the bullet count, but no lead peel
+    # (a stamp rationale is plain text). Pinned directly so a swap fails here.
+    assert voice._ARTIFACT_RULES[voice.RESOLUTION_STAMP] == {
+        "prefixes": voice.FORBIDDEN_PREFIXES,
+        "strip_bold": False,
+        "check_bullets": True,
+    }
+    assert voice.check_artifact(voice.RESOLUTION_STAMP, "This is now fixed.")  # opener
+    assert voice.check_artifact(voice.RESOLUTION_STAMP, "Fixed at HEAD.\n\n- one")  # bullets
+    assert voice.check_artifact(voice.RESOLUTION_STAMP, "Fixed the guard at HEAD.") == []
+
+
+def test_every_artifact_flags_em_dash_and_task_ref():
+    for artifact in (voice.SUMMARY, voice.INLINE_COMMENT, voice.REPLY_BODY, voice.RESOLUTION_STAMP):
+        assert voice.check_artifact(artifact, "a — b"), artifact
+        assert voice.check_artifact(artifact, "See Slice 3 for context."), artifact
+
+
+def test_check_artifact_label_defaults_to_the_artifact_name():
+    out = voice.check_artifact(voice.INLINE_COMMENT, "a — b")
+    assert out and out[0].startswith(f"{voice.INLINE_COMMENT} ")

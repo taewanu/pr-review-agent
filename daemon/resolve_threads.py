@@ -293,12 +293,7 @@ def _rationale_violations(rationale: str) -> list[str]:
     lead with a dangling colon."""
     if not rationale:
         return ["empty rationale"]
-    return voice.check_text(
-        rationale,
-        prefixes=voice.FORBIDDEN_PREFIXES,
-        check_bullets=True,
-        label="resolution stamp",
-    )
+    return voice.check_artifact(voice.RESOLUTION_STAMP, rationale, label="resolution stamp")
 
 
 def degrade_rationale(rationale: str) -> tuple[str, str | None]:
