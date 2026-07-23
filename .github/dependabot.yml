@@ -1,0 +1,18 @@
+version: 2
+
+updates:
+  # Dependabot's only job here is the major action bumps (v6 -> v7): a PR is
+  # the sole in-repo signal that one shipped. The moving major tags (@v6, @v4)
+  # already absorb minor and patch releases on their own.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+    # checkout and mise-action are two distinct actions; grouping lands both
+    # in one weekly PR instead of one per action.
+    groups:
+      actions:
+        patterns:
+          - "*"
