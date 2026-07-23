@@ -165,9 +165,13 @@ def append_truncation_note(payload: dict, truncated_count: int) -> dict:
     if truncated_count <= 0:
         return payload
     plural = "" if truncated_count == 1 else "s"
+    # No severity word: the cap keeps the top-ranked findings and drops the
+    # lowest-ranked tail, which is low-severity in a mixed set but is important
+    # when a PR carries more important findings than the cap. The note only
+    # knows the count, so it must not assert a severity it cannot verify (#194).
     return _append_note(
         payload,
-        f"{truncated_count} additional low-severity finding{plural} omitted by the review cap.",
+        f"{truncated_count} additional finding{plural} omitted by the review cap.",
     )
 
 
