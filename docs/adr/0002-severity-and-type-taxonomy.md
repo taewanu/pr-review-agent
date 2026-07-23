@@ -80,18 +80,18 @@ The emoji maps:
 
 ### Body: bold lead, optional bullets
 
-The first non-empty line is the actionable conclusion in **bold**. Optional 2–4 bullets follow with mechanism, evidence, and suggested fix. Short findings skip the bullets:
+The first non-empty line is the problem in **bold**: what is wrong and why it matters, stated before the fix so a reader triaging the finding meets the stakes first, not a solution to reverse-engineer. Optional 2–4 bullets follow with mechanism, evidence, and suggested fix. Short findings skip the bullets:
 
 ```
 _🐛 bug_ | _🔴 important_
 
-**Drop `session.token` from the warning log.**
+**`[^/.]+` rejects dots, so `my.cool.repo` never resolves.**
 
-- `[^/.]+` rejects dots; GitHub allows them
-- Effect: `my.cool.repo` falls through to env-var error
-- Fix: loosen to `[^/]+?` + strip a trailing `.git` after match
+- GitHub repo names allow dots; the pattern does not
+- Effect: `my.cool.repo` falls through to the env-var error path
+- Fix: loosen to `[^/]+?` and strip a trailing `.git` after the match
 ```
 
-Bullets are 0 or 2–4, never one. A single bullet is just a sentence with extra weight. The bold first line enforces 두괄식 (lead with the point) structurally: the visible shape carries the rule, not only the prompt examples.
+Bullets are 0 or 2–4, never one. A single bullet is just a sentence with extra weight. The bold first line enforces 두괄식 (lead with the point) structurally: the visible shape carries the rule, not only the prompt examples. The point of a review finding is the problem it names, so the lead is the defect and its cost, with the fix following (#277).
 
 Post-hoc validation in `daemon/extract_json.py` catches forbidden openers (`This`, `The`, `Consider`, …) on both plain and bolded leads. The validator peels a leading `**` before the prefix scan, so word-level rules apply inside the bold too. The bold-lead shape itself is not enforced: a body that ships plain prose still passes the validator. Opener voice is the load-bearing rule.
