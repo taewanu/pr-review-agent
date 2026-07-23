@@ -290,3 +290,91 @@ def test_append_truncation_note_skips_the_voice_gate():
     result = apply_edits.append_truncation_note(payload, 3)
     assert result["summary"].startswith("This change is risky.")
     assert "3 additional" in result["summary"]
+
+
+# --- editor bypass note ------------------------------------------------------
+
+
+def test_append_editor_bypass_note_marks_the_summary():
+    payload = {"summary": "Two helpers renamed.", "comments": []}
+    result = apply_edits.append_editor_bypass_note(payload, "edit-coverage")
+    assert result["summary"].startswith("Two helpers renamed.\n\n")
+    # A reader must be able to tell a bypassed review from a clean one.
+    assert "editorial" in result["summary"].lower()
+
+
+def test_append_editor_bypass_note_is_voice_clean():
+    # Appended after the gate, so it is hand-kept em-dash-free like the other note.
+    result = apply_edits.append_editor_bypass_note(
+        {"summary": "s", "comments": []}, "edit-coverage"
+    )
+    assert "—" not in result["summary"]
+
+
+def test_append_editor_bypass_note_does_not_leak_the_category():
+    # The internal category name is not useful to a PR author.
+    result = apply_edits.append_editor_bypass_note(
+        {"summary": "s", "comments": []}, "edit-coverage"
+    )
+    assert "edit-coverage" not in result["summary"]
+
+
+# --- main(): the post-author fallback ----------------------------------------
+
+import subprocess  # noqa: E402
+
+
+def _miscounting_edits(n: int) -> str:
+    """Editor output with one decision too many: covers 0..n instead of 0..n-1.
+
+    This is the #258 failure: a phantom decision shifts the coverage set past the
+    draft, and apply_edits rejects the whole batch as edit-coverage.
+    """
+    decisions = [{"index": i, "action": "keep"} for i in range(n + 1)]
+    return _fence({"summary": "reconciled", "decisions": decisions})
+
+
+def _run_main(tmp_path: Path, author: dict, edits_raw: str | None, *flags: str):
+    author_path = tmp_path / "author.json"
+    author_path.write_text(json.dumps(author))
+    argv = ["python3", str(APPLY_PATH), "--author", str(author_path), *flags]
+    if edits_raw is not None:
+        edits_path = tmp_path / "edits.txt"
+        edits_path.write_text(edits_raw)
+        argv += ["--edits", str(edits_path)]
+    return subprocess.run(argv, capture_output=True, text=True)
+
+
+def test_post_author_fallback_posts_the_draft_when_the_editor_miscounts(tmp_path):
+    author = _author("**A.** one", "**B.** two")
+    result = _run_main(tmp_path, author, _miscounting_edits(2), "--on-editor-error", "post-author")
+    assert result.returncode == 0, result.stderr
+    posted = json.loads(result.stdout)
+    # The author bodies survive unchanged: this is a full bypass, not a partial
+    # apply of the miscounted decisions onto the wrong findings.
+    assert [c["body"] for c in posted["comments"]] == ["**A.** one", "**B.** two"]
+    assert "editorial" in posted["summary"].lower()
+    assert "warning=editor-bypassed" in result.stderr
+
+
+def test_discard_is_the_default_and_still_fails(tmp_path):
+    author = _author("**A.** one", "**B.** two")
+    result = _run_main(tmp_path, author, _miscounting_edits(2))
+    assert result.returncode == 1
+    assert "category=edit-coverage" in result.stderr
+
+
+def test_post_author_fallback_composes_with_the_voice_warning(tmp_path):
+    # The fallback re-gates the author draft with fidelity off, so a cosmetic
+    # voice miss warns and still posts (the same fail-open the zero-finding skip
+    # gets). The bug the editor would have caught was real, so a style slip is no
+    # reason to now discard it. Both the voice warning and the bypass note appear.
+    author = {
+        "summary": "This change is risky.",  # forbidden opener: a voice miss, not a hard fail
+        "comments": [{"path": "a.py", "line": 1, "severity": "nit", "type": "polish", "body": "b"}],
+    }
+    result = _run_main(tmp_path, author, _miscounting_edits(1), "--on-editor-error", "post-author")
+    assert result.returncode == 0, result.stderr
+    assert "voice-warning" in result.stderr
+    assert "warning=editor-bypassed" in result.stderr
+    assert "editorial" in json.loads(result.stdout)["summary"].lower()

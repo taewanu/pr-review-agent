@@ -165,6 +165,19 @@ def append_truncation_note(payload: dict, truncated_count: int) -> dict:
     return {**payload, "summary": f"{payload['summary']}\n\n{note}"}
 
 
+def append_editor_bypass_note(payload: dict, category: str) -> dict:
+    """Note on the summary that the editorial pass was skipped and why (#258).
+
+    Reached only on the post-author fallback: the editor's decisions were
+    unusable, so the merged author draft is posting un-edited. A reader must be
+    able to tell a bypassed review from a clean one, or a degraded review passes
+    for a polished one. Same post-gate placement and hand-kept voice (두괄식,
+    em-dash-free) as append_truncation_note, since this is chrome, not agent prose.
+    """
+    note = "Editorial cleanup did not run on this review, so the findings below are the raw draft."
+    return {**payload, "summary": f"{payload['summary']}\n\n{note}"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--author", required=True, help="path to the author payload JSON")
@@ -175,12 +188,36 @@ def main() -> int:
         default=0,
         help="findings dropped by merge_findings.py's cap truncation (ADR 0023)",
     )
+    parser.add_argument(
+        "--on-editor-error",
+        choices=("discard", "post-author"),
+        default="discard",
+        help=(
+            "what to do when the editor's decisions are unusable: 'discard' fails "
+            "the review (default); 'post-author' posts the merged author draft with "
+            "a bypass note (#258). Author-draft failures always fail regardless."
+        ),
+    )
     args = parser.parse_args()
     author = json.loads(Path(args.author).read_text())
     edits_raw = Path(args.edits).read_text() if args.edits else None
     try:
         final = finalize(author, edits_raw)
     except ApplyError as exc:
+        # A failure applying the editor's decisions is recoverable: the author
+        # draft is independently valid and posting it beats discarding a review
+        # that already passed generation. finalize(author, None) gates fidelity
+        # off, so a cosmetic voice miss warns rather than fails, the same fail-open
+        # the zero-finding skip gets; a structurally broken author would still
+        # raise, but merge_findings.py schema-validated it upstream.
+        if args.on_editor_error == "post-author" and edits_raw is not None:
+            final = finalize(author, None)
+            final = append_editor_bypass_note(final, exc.category)
+            print(f"warning=editor-bypassed category={exc.category}", file=sys.stderr)
+            print(f"apply_edits: {exc}", file=sys.stderr)
+            final = append_truncation_note(final, args.truncated_count)
+            print(json.dumps(final))
+            return 0
         print(f"category={exc.category}", file=sys.stderr)
         print(f"apply_edits: {exc}", file=sys.stderr)
         return 1

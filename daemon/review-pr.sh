@@ -991,8 +991,24 @@ TRUNCATED_COUNT="$(extract_truncated_count "$EXTRACT_ERR")"
 # SKIP_EDITOR=1 also bypasses it (#209 token measurement): apply_edits then posts
 # the merged, gated draft directly, testing whether the editor's precision cleanup
 # earns its separate claude -p or the gated lens output already suffices.
-EDIT_ARGS=(--author "$AUTHOR_FILE" --truncated-count "$TRUNCATED_COUNT")
+# --on-editor-error post-author: an unusable editor result (a miscount, corrupted
+# body, or unparseable output) posts the merged author draft with a bypass note
+# instead of discarding a review that already passed generation (#258). The
+# author draft is independently valid and gets its own gate; apply_edits keeps
+# --author on the clean file, so the fallback never applies a partial edit.
+EDIT_ARGS=(--author "$AUTHOR_FILE" --truncated-count "$TRUNCATED_COUNT" --on-editor-error post-author)
 if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -gt 0 ]]; then
+  # The editor keys every decision by a finding's 0-based position, and its only
+  # cue was the array order across an 18KB payload, which it miscounted (#258).
+  # Stamp the index onto each finding in the copy the editor reads; apply_edits
+  # still reads the clean $AUTHOR_FILE, so the extra key never reaches a post.
+  AUTHOR_INDEXED_BASENAME=".pr-review-author-indexed.json"
+  AUTHOR_INDEXED_FILE="$SCRATCH/$AUTHOR_INDEXED_BASENAME"
+  python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+for i, c in enumerate(d.get("comments", [])):
+    d["comments"][i] = {"index": i, **c}
+json.dump(d, open(sys.argv[2], "w"), indent=2)' "$AUTHOR_FILE" "$AUTHOR_INDEXED_FILE"
   log_step "running editor agent via claude -p"
   # Same unbounded `claude -p` shape and backstop as the review agent, raised
   # to 600s for the same dogfood-observed reason. Not backgrounded (nothing to
@@ -1020,7 +1036,7 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
       {
         printf 'Edit this draft review and emit your decisions JSON per your instructions.\n\n'
         printf '=== DRAFT PAYLOAD (findings to keep/drop/rewrite) ===\n'
-        cat "$AUTHOR_BASENAME"
+        cat "$AUTHOR_INDEXED_BASENAME"
         printf '\n\n=== DIFF (line-numbered) ===\n'
         cat "$NUMBERED_BASENAME"
         # ADR 0035: an intent finding is verified against the change's stated
@@ -1045,7 +1061,7 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
         rc=$?
     else
       # ADR 0035, as in the single-agent branch above.
-      editor_args="/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_BASENAME"
+      editor_args="/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_INDEXED_BASENAME"
       if [[ -s "$INTENT_FILE" ]]; then
         editor_args="$editor_args --intent $INTENT_BASENAME"
       fi

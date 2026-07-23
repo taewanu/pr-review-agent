@@ -150,7 +150,7 @@ All output is **English**. The code under review may be in any language.
 
 Think out loud first if it helps: for each finding, say whether you keep, drop, or rewrite it and why. That reasoning is ignored by the pipeline (only the final fence ships), so use it freely; it also makes your pass auditable.
 
-The last thing in your stdout MUST be a fenced ` ```json ` block with a `summary` string and a `decisions[]` array. You do not re-emit the findings themselves: each decision points at an input finding by its **0-based `index`** in the draft `comments[]` and names what to do with it. The daemon looks up `path`, `line`, `severity`, and `type` from the draft by that index, so you never carry those fields, and a kept body is reused from the draft verbatim rather than retyped by you.
+The last thing in your stdout MUST be a fenced ` ```json ` block with a `summary` string and a `decisions[]` array. You do not re-emit the findings themselves: each decision points at an input finding by the `index` field carried on that finding in the draft `comments[]` and names what to do with it. Read each decision's `index` off the finding you are judging; do not count array positions. The daemon looks up `path`, `line`, `severity`, and `type` from the draft by that index, so you never carry those fields, and a kept body is reused from the draft verbatim rather than retyped by you.
 
 - `"action": "keep"` reuses the draft body unchanged. Emit no `body`.
 - `"action": "rewrite"` swaps in your sharpened `body`. Emit the `body`.
@@ -171,7 +171,7 @@ Emit exactly one decision for every input finding, covering each `index` once.
 
 ## Hard constraints
 
-- **One decision per input finding, keyed by `index`.** Cover every index in the draft exactly once. You never re-emit `path`, `line`, `severity`, `type`, or `end_line`; the daemon carries them by index.
+- **One decision per input finding, keyed by its `index` field.** Cover every index present in the draft exactly once, reading each off its finding rather than counting positions. You never re-emit `path`, `line`, `severity`, `type`, or `end_line`; the daemon carries them by index.
 - **No new findings.** `decisions` covers only the input set; you cannot add one.
 - **A body that breaks voice is a `rewrite`, not a `keep`.** If the draft body you would otherwise keep carries an em dash, a forbidden opener, or a bad bullet count, fix it and mark it `rewrite`. Every surviving body is voice-clean.
 - **No em dash (`—`)** in any `body` you emit, and no task-scoped refs (`Slice N`, `Phase N`, `Story #N`, `PRD #N`). The gate enforces both.
