@@ -92,6 +92,13 @@ def test_voice_warning_from_the_edit_stage_is_forwarded(tmp_path):
     assert "voice-warning: posting despite summary opens with a forbidden word" in log
 
 
+def test_editor_drop_from_the_edit_stage_is_forwarded(tmp_path):
+    # apply_edits.py prints this on its SUCCESS path when the editor drops a
+    # finding; the forwarder is the only thing that surfaces which indices went (#259).
+    log = _forward("editor-drop: dropped 2 finding(s) at author index(es) [1, 2]\n", tmp_path)
+    assert "editor-drop: dropped 2 finding(s) at author index(es) [1, 2]" in log
+
+
 def test_unrelated_stderr_noise_is_not_forwarded(tmp_path):
     # Truncation counts get their own surfacing in the posted summary; python
     # tracebacks belong to the failure branch. Neither should be re-logged.

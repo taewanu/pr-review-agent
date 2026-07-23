@@ -101,6 +101,28 @@ Add a fresh **Editor agent** (`review-agent-editor`, see CONTEXT.md) as a daemon
 > the bypass note discloses that the review is un-edited, which is the honest
 > signal a floor would otherwise enforce.
 
+> **Amended 2026-07-23 (#259).** The Editor has no redundancy drop. The prompt had
+> carried a fourth drop reason, "it duplicates another finding," that this ADR
+> never authorized: its other three drop reasons all mean a Finding should not
+> ship, while an overlap means both Findings are real and merely say some of the
+> same thing. Resolving that overlap needs a merge, and the Editor's only tools
+> are drop and rewrite, keyed one decision per index, so it can act on a partial
+> overlap only by discarding one side and losing whatever that side alone said,
+> which is the #259 failure (three lenses on one defect, the survivor's rewrite
+> deleting a paragraph only a dropped one carried).
+>
+> A merge-bodies action is rejected: folding one Finding's body into another
+> references two indices and breaks the one-decision-per-index contract, and
+> de-duplication is a cross-Finding operation that belongs to merge_findings by
+> name and by its cluster design. So the Editor judges each Finding on its own and
+> lets two that overlap both stand. merge_findings owns the cross-line overlap ADR
+> 0023 records as a known gap; tightening its dedup (the exact `(path, line)`
+> grouping and character-level similarity that miss cross-line paraphrases, and the
+> keep-max-body merge that is itself lossy) is a separate issue (#268). The drop is
+> also no longer silent: `apply_edits.py` prints the dropped indices under the
+> `editor-drop` prefix, forwarded by `log_degradation_warnings` the way the
+> confidence gate's own drops are.
+
 ## Boundary
 
 This ADR decides the editorial pass over content. It does not touch the severity/type taxonomy (ADR 0002), finding relocation (anchoring), the format layer (ADR 0010 §1 to §3), or the reply path. The voice gate's *scope* is unchanged by ADR 0010 §4; only its pipeline position moves.

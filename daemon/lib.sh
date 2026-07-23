@@ -60,10 +60,11 @@ log_ok() {
 # log_degradation_warnings <captured-stderr-file>
 # Forwards quality-degradation warnings a stage prints on its SUCCESS path to the
 # daemon log, because review-pr.sh reads each captured stderr only on failure:
-# merge-skip / finding-skip / confidence-gate from merge_findings.py (#196), and
-# voice-warning from apply_edits.py (a cosmetic style miss downgraded to warn-and-
-# post). Without this a lens silently dropped to four (#196), or a missed voice
-# rule left no signal before cleanup() removed the scratch. Lives in lib.sh, not
+# merge-skip / finding-skip / confidence-gate from merge_findings.py (#196),
+# voice-warning and editor-drop from apply_edits.py (a cosmetic style miss
+# downgraded to warn-and-post, and the indices the editor dropped, #259). Without
+# this a lens silently dropped to four (#196), or a missed voice rule or an editor
+# drop left no signal before cleanup() removed the scratch. Lives in lib.sh, not
 # inline, so test_degradation_warnings.py can source it (same rationale as
 # wait_for_lens_pids, ADR 0026).
 log_degradation_warnings() {
@@ -71,7 +72,7 @@ log_degradation_warnings() {
   [[ -r "$stderr_file" ]] || return 0
   while IFS= read -r line; do
     log_info "$line"
-  done < <(grep -E '^(merge-skip|finding-skip|confidence-gate|voice-warning)' "$stderr_file" || true)
+  done < <(grep -E '^(merge-skip|finding-skip|confidence-gate|voice-warning|editor-drop)' "$stderr_file" || true)
 }
 
 # Failure categories: the one home for ADR 0005's failure table (#141). A

@@ -32,6 +32,8 @@ You may not change a finding's `severity`, `type`, `path`, or `line`. The taxono
 
 You may not invent findings. You are a second judgment over the author's set, not a fresh review. If you think the author missed something, that is out of scope here; work only with the findings you were given.
 
+You judge each finding on its own; you do not reconcile findings against each other. If two overlap, both stand: you cannot fold one body into another, so dropping one to cut redundancy would lose whatever only it said. Merging overlap is merge_findings' job (ADR 0016), never yours.
+
 ## When to drop a finding
 
 Drop a finding when re-reading the code shows it should not ship. Cut it when:
@@ -41,7 +43,6 @@ Drop a finding when re-reading the code shows it should not ship. Cut it when:
   **`type: "intent"` findings are the exception, and the test inverts for them** (ADR 0035). An intent finding says the code contradicts what the change promised, so correct-looking code at HEAD is the state it is reporting, not evidence against it. Check it against the other side instead: read `.pr-review-intent.md` in your cwd, which holds the PR's title, its description, and any linked issue, and find the sentence the finding says is broken. Drop it when the claim actually holds, when no such sentence is there, or when the finding is really about the code being wrong rather than about it differing from what was promised. Keep it when the description says one thing and the file says another.
 - **Its impact depends on inputs the codebase does not produce.** A validator, type, or contract upstream rules out the case. Hypothetical and defensive concerns ("if the shape ever changes", "a future maintainer might") are not real findings.
 - **It is a pedantic nit, a style or formatting point, or a wording preference.** Linters own style. A senior engineer would not raise it in person.
-- **It duplicates another finding.** Two findings make the same point; keep the stronger one and drop the other.
 
 When in doubt, keep it. Dropping a real finding is a worse error than keeping a marginal one: the author already filtered for high signal, so the prior is that a finding is real. Cut on evidence from the code, not on taste.
 
