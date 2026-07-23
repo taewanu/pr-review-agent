@@ -81,11 +81,12 @@ fi
 REPOS=()
 while IFS= read -r r; do REPOS+=("$r"); done < <(jq -r '.repos[]' <<<"$CONFIG")
 GITHUB_USER="$(jq -r '.github_user' <<<"$CONFIG")"
+GITHUB_APP_ID="$(jq -r '.github_app_id' <<<"$CONFIG")"
 REVIEW_OWN_PRS="$(jq -r '.review_own_prs' <<<"$CONFIG")"
 OPT_OUT_LABEL="$(jq -r '.opt_out_label' <<<"$CONFIG")"
 MAX_PARALLEL="$(jq -r '.max_parallel' <<<"$CONFIG")"
 
-log_info "watched: ${REPOS[*]} (own-PRs: $REVIEW_OWN_PRS, user: $GITHUB_USER, opt-out: ${OPT_OUT_LABEL:-disabled}, parallel: $MAX_PARALLEL)"
+log_info "watched: ${REPOS[*]} (own-PRs: $REVIEW_OWN_PRS, user: $GITHUB_USER, app: $GITHUB_APP_ID, opt-out: ${OPT_OUT_LABEL:-disabled}, parallel: $MAX_PARALLEL)"
 
 # Verify access to every watched repo before doing work. Catches typos and
 # missing collaborator access early instead of mid-tick.

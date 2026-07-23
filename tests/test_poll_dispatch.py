@@ -167,6 +167,7 @@ def _run_poll(
     (root / ".env").write_text(
         f"REPOS={OWNER_REPO}\n"
         f"GITHUB_USER={github_user}\n"
+        "GITHUB_APP_ID=4361858\n"
         f"REVIEW_OWN_PRS={'true' if review_own_prs else 'false'}\n"
         f"OPT_OUT_LABEL={opt_out_label}\n"
         f"MAX_PARALLEL={max_parallel}\n"

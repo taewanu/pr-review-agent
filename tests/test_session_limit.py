@@ -314,6 +314,7 @@ def _poll_setup(tmp_path: Path) -> tuple[Path, Path, Path]:
     (tmp_path / ".env").write_text(
         f"REPOS={OWNER_REPO}\n"
         "GITHUB_USER=operator\n"
+        "GITHUB_APP_ID=4361858\n"
         "REVIEW_OWN_PRS=true\n"
         "OPT_OUT_LABEL=no-ai-review\n"
         "MAX_PARALLEL=1\n"
