@@ -67,8 +67,8 @@ Two independent dials.
    > keeps its explicit `REVIEW_MODE=single-agent` for legibility. Set `subagent`
    > to opt back into the orchestrator-worker shape. Separately, the unset lens
    > default is no longer "all" but `default intent` (#249, ADR 0037), so the
-   > "five single-agent lenses" example below now reads as the default two unless
-   > `REVIEW_LENSES` widens them.
+   > orthogonal "`single-agent` with `REVIEW_LENSES` unset" example below now runs
+   > the default two lenses unless `REVIEW_LENSES` widens them, not the full set.
 
 2. **`REVIEW_LENSES`** picks how many lenses run, as a space-separated label
    list. Unset keeps all five. The merge and confidence gate are already

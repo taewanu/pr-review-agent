@@ -570,7 +570,7 @@ def main(argv: list[str] | None = None) -> int:
         + (
             " ".join(f"{k}={v}" for k, v in config.items())
             if config
-            else "none set (review-pr.sh defaults: subagent, all six lenses)"
+            else "none set (review-pr.sh defaults: single-agent, lenses `default intent`)"
         ),
         file=sys.stderr,
     )
