@@ -16,6 +16,7 @@ that dies of its own signal is still reported as itself rather than as a cap.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
@@ -44,6 +45,54 @@ def _run(snippet: str, env: dict[str, str] | None = None) -> subprocess.Complete
         # runs unbounded, and a hanging test would prove it by hanging CI.
         timeout=60,
     )
+
+
+def _pid_or_none(pidfile: Path) -> int | None:
+    """The pid the nested command recorded, or None if it never wrote one."""
+    text = pidfile.read_text().strip() if pidfile.exists() else ""
+    return int(text) if text else None
+
+
+def _read_pid(pidfile: Path) -> int:
+    """The recorded pid; fail loudly if the inner tree never wrote one."""
+    pid = _pid_or_none(pidfile)
+    if pid is None:
+        raise AssertionError(f"{pidfile.name} was never written: the inner tree never started")
+    return pid
+
+
+def _wait_until_gone(pid: int, timeout: float) -> bool:
+    """Poll until `pid` exits, up to `timeout` seconds; True if it went."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _kill_tree(pid: int | None) -> None:
+    """Best-effort cleanup so a leaked process never escapes the test run.
+
+    Signals the whole process group when it is safe: an orphan re-parents but
+    keeps its group, so killpg reaches siblings a single os.kill would miss. It
+    skips the group when it is our own, which a re-parented tree can share, since
+    killing that would take the test runner down with it.
+    """
+    if pid is None:
+        return
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    if pgid != os.getpgid(0):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pgid, signal.SIGKILL)
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
 
 
 def test_under_cap_passes_through_exit_and_stdout():
@@ -83,14 +132,9 @@ def test_timeout_kills_the_commands_children(tmp_path):
     result = _run(f"run_with_timeout 1 sh -c 'sleep 30 & echo $! >{pidfile}; wait'")
     assert result.returncode == TIMEOUT_EXIT, result.stderr
 
-    grandchild = int(pidfile.read_text().strip())
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        try:
-            os.kill(grandchild, 0)
-        except ProcessLookupError:
-            return
-        time.sleep(0.1)
+    grandchild = _read_pid(pidfile)
+    if _wait_until_gone(grandchild, timeout=10):
+        return
     os.kill(grandchild, signal.SIGKILL)  # don't leak it out of the test run
     raise AssertionError(f"pid {grandchild} outlived the cap")
 
@@ -105,8 +149,12 @@ def test_timeout_escalates_to_sigkill_when_term_is_ignored():
     ends it.
     """
     start = time.monotonic()
+    # Cap 2, not 1: at cap 1 a second-boundary read fires the watchdog with ~0
+    # effective duration, so the KILL lands at just the grace (~2.3s) and trips
+    # the lower bound below (#260, same degeneracy the nested-cap test hit). At
+    # cap 2 the effective duration is at least ~1s, keeping elapsed above 3s.
     result = _run(
-        "run_with_timeout 1 sh -c 'trap \"\" TERM; while :; do sleep 0.2; done'",
+        "run_with_timeout 2 sh -c 'trap \"\" TERM; while :; do sleep 0.2; done'",
         env={"TIMEOUT_KILL_GRACE": "2"},
     )
     elapsed = time.monotonic() - start
@@ -138,13 +186,52 @@ def test_escalation_reaches_a_child_whose_parent_took_the_term(tmp_path):
     )
     assert result.returncode == TIMEOUT_EXIT, result.stderr
 
-    orphan = int(pidfile.read_text().strip())
+    orphan = _read_pid(pidfile)
     try:
         os.kill(orphan, 0)
     except ProcessLookupError:
         return
     os.kill(orphan, signal.SIGKILL)  # don't leak it out of the test run
     raise AssertionError(f"pid {orphan} survived: it re-parented out of the walk")
+
+
+def _leaked_tree_report(deep_pid: int | None, marker: str) -> str:
+    """Diagnostics for a nested-cap orphan: a ps snapshot plus which pid lived.
+
+    Of the outer bash / inner bash / inner `sh -c` / `sleep 120` chain, which
+    processes are still alive separates "snapshot taken before the tree existed"
+    from "descendants re-parented after the TERM" (#260): the single fact the
+    failure otherwise leaves inferred rather than observed.
+
+    `marker` is the test's tmp_path; every process the nested call spawned
+    carries it on its command line, so filtering ps to it isolates this test's
+    tree from the rest of the suite run.
+    """
+    try:
+        if deep_pid is None:
+            verdict = "no pid was recorded (the inner tree never wrote one)"
+        else:
+            try:
+                os.kill(deep_pid, 0)
+                alive = True
+            except ProcessLookupError:
+                alive = False
+            verdict = f"pid {deep_pid} (sleep 120) is {'ALIVE' if alive else 'gone'}"
+
+        snap = subprocess.run(
+            ["ps", "-eo", "pid,ppid,pgid,stat,etime,command"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        rows = [
+            line
+            for line in snap.stdout.splitlines()
+            if marker in line or line.split()[:1] == [str(deep_pid)]
+        ]
+        return "\n".join([verdict, *rows]) if rows else f"{verdict}\n(no matching ps rows)"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"pid {deep_pid}: ps unavailable ({exc})"
 
 
 def test_a_nested_cap_does_not_orphan_the_inner_tree(tmp_path):
@@ -160,18 +247,42 @@ def test_a_nested_cap_does_not_orphan_the_inner_tree(tmp_path):
     inner_script.write_text(
         f"source {LIB}\nrun_with_timeout 300 sh -c 'sleep 120 & echo $! >{pidfile}; wait'\n"
     )
-    _run(f"run_with_timeout 1 bash {inner_script}")
 
-    deep = int(pidfile.read_text().strip())
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
+    # Outer cap 2, not 1: at cap 1 the watchdog's first `date +%s` read can land
+    # at floor(T)+1 across a second boundary and fire with ~0 effective duration,
+    # before the inner tree has forked the `sleep 120` for the outer kill to
+    # reach (#260). Cap 2 keeps that first read below the deadline by
+    # construction. stdout is detached so a leaked child cannot hold the capture
+    # pipe open and turn this failure into a 60s hang.
+    start = time.monotonic()
+    # One finally covers both exits: the assertion path below and the 60s-hang
+    # path, which is the one a leak is guaranteed on, so cleanup must reach it.
+    try:
         try:
-            os.kill(deep, 0)
-        except ProcessLookupError:
+            result = subprocess.run(
+                ["bash", "-c", f"source {LIB}; run_with_timeout 2 bash {inner_script}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError(
+                "run_with_timeout hung past 60s; a leaked child held it open\n"
+                + _leaked_tree_report(_pid_or_none(pidfile), str(tmp_path))
+            ) from exc
+        elapsed = time.monotonic() - start
+        assert result.returncode == TIMEOUT_EXIT, result.stderr
+
+        deep = _read_pid(pidfile)
+        if _wait_until_gone(deep, timeout=10):
             return
-        time.sleep(0.1)
-    os.kill(deep, signal.SIGKILL)  # don't leak it out of the test run
-    raise AssertionError(f"pid {deep} outlived the outer cap")
+        raise AssertionError(
+            f"pid {deep} outlived the outer cap after {elapsed:.1f}s\n"
+            + _leaked_tree_report(deep, str(tmp_path))
+        )
+    finally:
+        _kill_tree(_pid_or_none(pidfile))
 
 
 def test_an_early_finishing_command_does_not_hold_a_pipe_open():
