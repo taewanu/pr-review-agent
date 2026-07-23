@@ -61,7 +61,7 @@ The background job is invisible and bound to this checkout's working tree, so ke
 
 One file at the repo root:
 
-- **`.env`** (required): which repos to watch, your GitHub user, and the daemon's tunables. Copy `templates/.env.example` and edit it — every key is documented there, which is why this list does not repeat them.
+- **`.env`** (required): which repos to watch, the id of the App it posts as, and the daemon's tunables. Copy `templates/.env.example` and edit it; every key is documented there, which is why this list does not repeat them.
 
 Watched repos need nothing checked in. The daemon bundles its own agent and slash-command definitions into each per-PR clone before it reviews ([ADR 0007](docs/adr/0007-operator-bundled-agents.md)); a repo that wants different behaviour can carry its own file at the same path and the bundle leaves it alone.
 
@@ -96,9 +96,9 @@ The reaction lands on your comment from the `<app>[bot]`, so a "bot 👀" is pla
 
 ## Forking
 
-The review footer link and preview-release banner derive from `git remote get-url origin`. Any clone uses its own owner/repo with no config edit.
+Reviews post under your own GitHub App, so a fork attributes to whoever runs it with no shared identity. The footer links to the App's page (`github.com/apps/<slug>`), and the slug comes from the App you register and install ([ADR 0036](docs/adr/0036-github-app-identity.md)), not from the clone's git remote.
 
-This errors only when `origin` is missing or doesn't point to `github.com`. Fix: `git remote add origin <github-url>`.
+To run a fork: register your own App, then set its id in `GITHUB_APP_ID` and drop its private key at `~/.pr-review-agent/app.pem` (see [Prerequisites](#prerequisites)).
 
 ## License
 
