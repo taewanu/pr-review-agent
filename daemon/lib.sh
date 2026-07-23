@@ -653,23 +653,34 @@ _mint_installation_token() {
 #   2: the call itself failed (network, 5xx), which is evidence of neither
 # The 404 is exactly the missing-installation signal, so the check falls out of a
 # call the daemon already needs to make (ADR 0036 decision 4).
-app_installation_id() {
-  local owner="$1" repo="$2" app_id="$3" jwt response id http_code
-  local stderr_capture
 
-  jwt="$(_app_jwt "$app_id")" || return 2
-
+# _app_get <jwt> <url>
+# GETs a JWT-authenticated App endpoint, printing "<body>\n<http_code>". Returns
+# non-zero only on a transport failure (network, DNS, timeout), which it logs
+# with the url; a caller maps the http_code and reads the body itself. Shared by
+# the three App GET probes so the curl flags, timeouts, and stderr capture live
+# in one place. Not for _mint_installation_token, which POSTs a different shape.
+_app_get() {
+  local jwt="$1" url="$2" response stderr_capture
   stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
   if ! response="$(curl -sS -w '\n%{http_code}' \
     --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${jwt}" \
     -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${owner}/${repo}/installation" 2>"$stderr_capture")"; then
-    log_err "installation probe failed for ${owner}/${repo}: $(<"$stderr_capture")"
+    "$url" 2>"$stderr_capture")"; then
+    log_err "GET ${url} failed: $(<"$stderr_capture")"
     rm -f "$stderr_capture"
-    return 2
+    return 1
   fi
   rm -f "$stderr_capture"
+  printf '%s' "$response"
+}
+
+app_installation_id() {
+  local owner="$1" repo="$2" app_id="$3" jwt response id http_code
+
+  jwt="$(_app_jwt "$app_id")" || return 2
+  response="$(_app_get "$jwt" "https://api.github.com/repos/${owner}/${repo}/installation")" || return 2
 
   http_code="$(tail -1 <<<"$response")"
   case "$http_code" in
@@ -746,21 +757,9 @@ discover_missing_installations() {
 # 2 could-not-check) so a caller can skip or fail the same way.
 app_auth_init() {
   local owner="$1" repo="$2" app_id="$3" jwt response http_code body id slug
-  local stderr_capture
 
   jwt="$(_app_jwt "$app_id")" || return 2
-
-  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
-  if ! response="$(curl -sS -w '\n%{http_code}' \
-    --connect-timeout 10 --max-time 30 \
-    -H "Authorization: Bearer ${jwt}" \
-    -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${owner}/${repo}/installation" 2>"$stderr_capture")"; then
-    log_err "installation probe failed for ${owner}/${repo}: $(<"$stderr_capture")"
-    rm -f "$stderr_capture"
-    return 2
-  fi
-  rm -f "$stderr_capture"
+  response="$(_app_get "$jwt" "https://api.github.com/repos/${owner}/${repo}/installation")" || return 2
 
   http_code="$(tail -1 <<<"$response")"
   case "$http_code" in
@@ -796,23 +795,12 @@ app_auth_init() {
 # app_owner <app-id>
 # Prints the App owner's login, for the review footer's attribution (ADR 0036
 # decision 7). Reached via GET /app, which needs a JWT and so cannot go through
-# run_with_app_token. Same guard shape as the installation probe.
+# run_with_app_token.
 app_owner() {
-  local app_id="$1" jwt response http_code owner stderr_capture
+  local app_id="$1" jwt response http_code owner
 
   jwt="$(_app_jwt "$app_id")" || return 1
-
-  stderr_capture="$(mktemp -t pr-review-app.XXXXXX)"
-  if ! response="$(curl -sS -w '\n%{http_code}' \
-    --connect-timeout 10 --max-time 30 \
-    -H "Authorization: Bearer ${jwt}" \
-    -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/app" 2>"$stderr_capture")"; then
-    log_err "app-owner probe failed: $(<"$stderr_capture")"
-    rm -f "$stderr_capture"
-    return 1
-  fi
-  rm -f "$stderr_capture"
+  response="$(_app_get "$jwt" "https://api.github.com/app")" || return 1
 
   http_code="$(tail -1 <<<"$response")"
   if [[ "$http_code" != "200" ]]; then
