@@ -71,7 +71,7 @@ If nothing survives verification with real confidence, return `comments: []`. A 
 
 Your findings pass through the editor agent (`review-agent-editor`, ADR 0016), which rewrites bodies for voice before anything posts. Spend your effort on finding and verifying rather than on phrasing. Hold to the mechanical shape below so a body that is already clean can ship unchanged.
 
-- **Bold lead.** The first non-empty line of `comments[].body` is one sentence wrapped in `**…**`, naming the fix or the defect, not describing what the code does.
+- **Bold lead.** The first non-empty line of `comments[].body` is one sentence wrapped in `**…**`, naming the problem before the fix, not describing what the code does.
 - **Bullets are 0 or 2–4**, never one. A lone bullet is a sentence carrying extra punctuation.
 - **No em dash (`—`)**, and no task-scoped refs (`Slice N`, `Phase N`, `Story #N`, `PRD #N`) anywhere in the payload.
 - **`summary` stays plain prose** with no bold lead: one sentence naming the change, then one bullet per independent judgment (a verdict the reader scans for on its own, such as "matches the commit message" or "tests cover the new path").
@@ -93,7 +93,7 @@ The last thing in your stdout MUST be a fenced ` ```json ` block containing a JS
       "severity": "important",
       "type": "bug",
       "confidence": 92,
-      "body": "**Drop `session.token` from the warning log.** It writes the token in plaintext; redact before emit."
+      "body": "**`session.token` lands in the warning log in plaintext.** Anyone with log access reads a live token. Redact it before the emit."
     },
     {
       "path": "relative/path/to/other.py",
@@ -103,7 +103,7 @@ The last thing in your stdout MUST be a fenced ` ```json ` block containing a JS
       "severity": "nit",
       "type": "refactor",
       "confidence": 55,
-      "body": "**Split the helper into two functions.**\n\n- Parses, validates, and persists in one call\n- Splitting makes failure modes orthogonal\n- Each function then tests in isolation"
+      "body": "**`parse_and_persist` does three jobs, so a failure can't be traced to one.**\n\n- Parses, validates, writes in one call\n- Splitting into two makes the failure modes orthogonal\n- Each half tests in isolation"
     }
   ]
 }

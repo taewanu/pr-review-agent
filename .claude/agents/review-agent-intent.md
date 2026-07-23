@@ -62,7 +62,7 @@ Cite the file the broken claim is **about**, not the description. If the descrip
 
 ## Output prose and format
 
-Your findings pass through the editor agent (`review-agent-editor`, ADR 0016), which rewrites bodies for voice before anything posts, so spend your effort on finding and verifying rather than on phrasing. Hold to the output shape: a `body` leads with one bold sentence (`**…**`) naming the fix or the defect, then 0 or 2–4 bullets, never one; `summary` stays plain prose with no bold lead. `daemon/voice.py` hard-enforces the bullet count post-hoc, along with the opener, em dash, and task-ref rules; the bold lead itself is a convention it does not force.
+Your findings pass through the editor agent (`review-agent-editor`, ADR 0016), which rewrites bodies for voice before anything posts, so spend your effort on finding and verifying rather than on phrasing. Hold to the output shape: a `body` leads with one bold sentence (`**…**`) naming the problem before the fix, then 0 or 2–4 bullets, never one; `summary` stays plain prose with no bold lead. `daemon/voice.py` hard-enforces the bullet count post-hoc, along with the opener, em dash, and task-ref rules; the bold lead itself is a convention it does not force.
 
 A body states which side it read and what it found there. The author cannot act on "this does not match the description" without knowing which sentence and which file.
 
