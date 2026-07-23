@@ -42,6 +42,20 @@ trap 'exit 0' INT TERM
 # drift warning each cycle would bury it (#201).
 warn_env_drift "$REPO_ROOT/.env" "$REPO_ROOT/templates/.env.example"
 
+# Name any watched repo the App is not installed on, once at boot (ADR 0036
+# decision 4). poll.sh skips such a repo every cycle; surfacing the permanent
+# condition here keeps that skip from repeating, the same reason the drift
+# warning is boot-time. Best-effort: discover_missing_installations logs and
+# returns cleanly on a probe failure, so a transient network error never turns a
+# KeepAlive restart into a loop. REPOS is space-separated, so the split is
+# intended.
+app_id="$(resolve_tunable GITHUB_APP_ID "$REPO_ROOT/.env")"
+repos_raw="$(resolve_tunable REPOS "$REPO_ROOT/.env")"
+if [[ -n "$app_id" && -n "$repos_raw" ]]; then
+  # shellcheck disable=SC2086  # deliberate word-split over the space-separated list
+  discover_missing_installations "$app_id" $repos_raw >/dev/null || true
+fi
+
 log_info "polling loop up (pid $$, interval ${poll_interval}s, driver=run.sh per ADR 0009)"
 while true; do
   write_heartbeat || log_err "heartbeat write failed"
