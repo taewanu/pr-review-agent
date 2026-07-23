@@ -1,0 +1,17 @@
+version: 2
+
+updates:
+  # Opens a PR when a watched action ships a newer release: the in-repo signal
+  # to review and bump. Grouped weekly below.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+    # checkout and mise-action are two distinct actions; grouping lands both
+    # in one weekly PR instead of one per action.
+    groups:
+      actions:
+        patterns:
+          - "*"
