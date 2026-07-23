@@ -174,7 +174,7 @@ def test_200_without_an_id_is_exit_2_and_logs(tmp_path):
 
 def test_app_auth_init_sets_the_four_globals(tmp_path):
     key = _app_key(tmp_path)
-    bindir = _stub_curl(tmp_path, '{"id": 148179165, "app_slug": "youshallnotmerge"}')
+    bindir = _stub_curl(tmp_path, '{"id": 148179165, "app_slug": "example-app"}')
     out = _run(
         f"APP_KEY_PATH={key}; app_auth_init example example {APP_ID} && "
         'printf "%s|%s|%s|%s" "$PRA_APP_ID" "$PRA_INSTALLATION_ID" '
@@ -183,7 +183,7 @@ def test_app_auth_init_sets_the_four_globals(tmp_path):
     )
     assert out.returncode == 0, out.stderr
     # The bot login carries the [bot] suffix on REST, bare on GraphQL.
-    assert out.stdout == f"{APP_ID}|148179165|youshallnotmerge[bot]|youshallnotmerge"
+    assert out.stdout == f"{APP_ID}|148179165|example-app[bot]|example-app"
 
 
 def test_app_auth_init_not_installed_is_exit_1(tmp_path):
@@ -210,10 +210,10 @@ def test_app_auth_init_missing_slug_is_exit_2(tmp_path):
 
 def test_app_owner_returns_the_owner_login(tmp_path):
     key = _app_key(tmp_path)
-    bindir = _stub_curl(tmp_path, '{"owner": {"login": "taewanu"}}')
+    bindir = _stub_curl(tmp_path, '{"owner": {"login": "example-owner"}}')
     out = _run(f"APP_KEY_PATH={key}; app_owner {APP_ID}", path_prefix=bindir)
     assert out.returncode == 0, out.stderr
-    assert out.stdout == "taewanu"
+    assert out.stdout == "example-owner"
 
 
 def test_app_owner_without_login_fails(tmp_path):
