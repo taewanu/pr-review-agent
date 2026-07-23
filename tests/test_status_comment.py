@@ -158,14 +158,14 @@ def test_status_sha_link_is_commit_markdown_link():
     out, rc, _ = _run(f"status_sha_link '{_REPO}' '{_HEAD}'")
     assert rc == 0
     # Display = 12-char short SHA, backtick-wrapped; href = full SHA on /commit/.
-    assert out.strip() == f"[`{_HEAD[:12]}`]({_REPO}/commit/{_HEAD})"
+    assert out.strip() == f"[`{_HEAD[:7]}`]({_REPO}/commit/{_HEAD})"
 
 
 def test_status_scope_link_real_range_is_compare_link():
     out, rc, _ = _run(f"status_scope_link '{_REPO}' '{_LAST}' '{_HEAD}'")
     assert rc == 0
     # Display = short..short; href = /compare/<full>...<full> (THREE dots).
-    assert out.strip() == f"[`{_LAST[:12]}..{_HEAD[:12]}`]({_REPO}/compare/{_LAST}...{_HEAD})"
+    assert out.strip() == f"[`{_LAST[:7]}..{_HEAD[:7]}`]({_REPO}/compare/{_LAST}...{_HEAD})"
     assert "..." in out  # three-dot compare ref, not the two-dot display range
 
 
@@ -185,7 +185,7 @@ def test_reviewed_head_line_uses_colon_not_em_dash():
     assert rc == 0
     assert "—" not in out
     assert ": 3 findings" in out
-    assert f"[`{_HEAD[:12]}`]({_REPO}/commit/{_HEAD})" in out
+    assert f"[`{_HEAD[:7]}`]({_REPO}/commit/{_HEAD})" in out
 
 
 def test_render_singular_file_noun():
@@ -460,3 +460,66 @@ def test_short_or_absent_sha_falls_to_the_first_line():
     # dry-run without a head sha: index 0 rather than an arithmetic error.
     first = _footer("youshallnotmerge", "''")
     assert "You shall not merge until every thread is resolved." in first
+
+
+# --- render_status_headline (ADR 0036 4a, themed gate verdict) --------------
+# The canonical slug themes the head-line: a SHA-keyed wizard emoji + the
+# "you shall pass" / "not pass" verdict (binary, count stays in the rollup).
+# Any other slug gets the plain functional head-line. No gh.
+
+_SHA0 = "04b8c1e0000000000000000000000000000000ab"  # 16#04b8c1e % 2 == 0
+_SHA1 = "a1b2c3d0000000000000000000000000000000cd"  # 16#a1b2c3d % 2 == 1
+_LINK = "[`04b8c1e`](https://x/y/commit/x)"
+
+
+def _headline(slug: str, state: str, sha: str) -> str:
+    # Single-quote the link: it carries backticks, which bash would otherwise read
+    # as command substitution.
+    out, rc, _ = _run(f"render_status_headline {slug} {state} '{_LINK}' {sha}")
+    assert rc == 0, out
+    return out
+
+
+def test_canonical_reviewing_is_a_wizard_verb():
+    out = _headline("youshallnotmerge", "reviewing", _SHA0)
+    assert out.startswith("🔮") or out.startswith("🧙")
+    assert "Reviewing" in out and out.endswith("…")
+
+
+def test_canonical_pass_grants_passage():
+    out = _headline("youshallnotmerge", "pass", _SHA0)
+    assert out.startswith("🪄") or out.startswith("✨")
+    assert out.endswith(": you shall pass")
+
+
+def test_canonical_block_holds_the_gate():
+    out = _headline("youshallnotmerge", "block", _SHA0)
+    assert out.startswith("🛑") or out.startswith("🔥")
+    assert out.endswith(": you shall not pass")
+    # Binary verdict, never a count in the head-line (ADR 0020: tally lives in the
+    # rollup, so the head-line duplicates nothing).
+    assert not any(c.isdigit() for c in out.split("]")[-1])
+
+
+def test_other_slug_gets_the_plain_headline():
+    assert _headline("my-fork", "reviewing", _SHA0) == f"👀 Reviewing {_LINK}…"
+    # Plain path is finding-agnostic: pass and block both read "Reviewed".
+    assert _headline("my-fork", "pass", _SHA0) == f"✅ Reviewed {_LINK}"
+    assert _headline("my-fork", "block", _SHA0) == f"✅ Reviewed {_LINK}"
+
+
+def test_emoji_is_sha_keyed_and_stable():
+    # Same SHA always renders the same emoji (the status comment is edited in
+    # place many times per review); two SHAs on opposite sides of the pool differ.
+    assert _headline("youshallnotmerge", "block", _SHA0) == _headline(
+        "youshallnotmerge", "block", _SHA0
+    )
+    assert _headline("youshallnotmerge", "block", _SHA0) != _headline(
+        "youshallnotmerge", "block", _SHA1
+    )
+
+
+def test_short_sha_falls_to_the_first_emoji():
+    # A short or absent sha (dry-run) picks index 0 rather than erroring.
+    out = _headline("youshallnotmerge", "block", "''")
+    assert out.startswith("🛑")
