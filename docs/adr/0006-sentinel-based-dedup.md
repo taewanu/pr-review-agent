@@ -51,7 +51,7 @@ The review body is the only surface GitHub guarantees on every review, including
 Per-tick lookup of the prior-reviewed SHA for a given PR:
 
 1. `gh api repos/{owner}/{repo}/pulls/{n}/reviews` returns all reviews on the PR, including pending reviews authored by the authenticated user.
-2. Filter to `user.login == $GITHUB_USER`.
+2. Filter to `user.login == <app>[bot]`, the daemon's own login. ([ADR 0036](./0036-github-app-identity.md) changed this value from the operator's login to the App bot's; the filter's shape is unchanged.)
 3. Sort descending by `submitted_at`, falling back to `created_at` for pending reviews where `submitted_at` is null.
 4. For each review in order, grep the body for `<!-- pr-review-agent:sha:([0-9a-f]{40}) -->`. The first match is the prior reviewed SHA.
 5. If step 1 failed (network, 5xx, auth break), fall through to `state_read`. Skip the PR-tick if state is also empty: "could not check" is distinct from "no prior review".

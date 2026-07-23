@@ -147,9 +147,7 @@ def _run_poll(
     reviews_fail: set[int] | None = None,
     state_seed: dict[int, str] | None = None,
     review_fail: set[int] | None = None,
-    review_own_prs: bool = True,
     opt_out_label: str = "no-ai-review",
-    github_user: str = "operator",
     max_parallel: int = 1,
     review_sleep: float = 0,
 ) -> PollResult:
@@ -167,9 +165,7 @@ def _run_poll(
 
     (root / ".env").write_text(
         f"REPOS={OWNER_REPO}\n"
-        f"GITHUB_USER={github_user}\n"
         "GITHUB_APP_ID=4361858\n"
-        f"REVIEW_OWN_PRS={'true' if review_own_prs else 'false'}\n"
         f"OPT_OUT_LABEL={opt_out_label}\n"
         f"MAX_PARALLEL={max_parallel}\n"
     )
