@@ -526,7 +526,7 @@ RAW_FILE="$SCRATCH/.pr-review-raw.txt"
 # Parallel arrays, not an associative array, so this stays bash-3.2-safe (ADR
 # 0013's runtime constraint: stock macOS bash has no bash-4 associative arrays).
 LENS_COMMANDS=(/review-pr /review-pr-data-flow /review-pr-perf /review-pr-security /review-pr-tests /review-pr-intent)
-LENS_LABELS=(default data-flow perf security tests intent)
+LENS_LABELS=(general data-flow perf security tests intent)
 # Each path's own filename suffix names its lens; a named variable per lens
 # would only be read once, right here, so the array is written inline.
 LENS_RAW_FILES=(
@@ -543,9 +543,9 @@ LENS_RAW_FILES=(
 INTENT_BASENAME=".pr-review-intent.md"
 INTENT_FILE="$SCRATCH/$INTENT_BASENAME"
 # ADR 0034: restrict the active lens set via REVIEW_LENSES, a space-separated list
-# of labels (e.g. "default" or "default data-flow"). Collapsing to fewer lenses
+# of labels (e.g. "general" or "general data-flow"). Collapsing to fewer lenses
 # cuts review cost proportionally, trading the recall a second independent read
-# buys (ADR 0022/0023). The `default` sweep and the `data-flow` specialist are
+# buys (ADR 0022/0023). The `general` sweep and the `data-flow` specialist are
 # complementary, not redundant: they catch different bug classes, so the union
 # beats either alone (ADR 0037 amended records the measurement). Filtering the
 # parallel arrays together preserves their index alignment; the merge and gate are
@@ -554,7 +554,7 @@ REVIEW_LENSES="$(resolve_tunable REVIEW_LENSES "$SCRIPT_DIR/../.env")"
 # Default set when unset: the base sweep, the data-flow specialist, and intent.
 # The three domain lenses (perf, security, tests) are off by default (#249, ADR
 # 0035). All six stay selectable; this only changes the unset default.
-REVIEW_LENSES="${REVIEW_LENSES:-default data-flow intent}"
+REVIEW_LENSES="${REVIEW_LENSES:-general data-flow intent}"
 if [[ -n "${REVIEW_LENSES:-}" ]]; then
   _sel_cmds=()
   _sel_labels=()
@@ -570,7 +570,7 @@ if [[ -n "${REVIEW_LENSES:-}" ]]; then
     done
   done
   if [[ ${#_sel_labels[@]} -eq 0 ]]; then
-    log_err "REVIEW_LENSES='$REVIEW_LENSES' matched no known lens (default data-flow perf security tests intent)"
+    log_err "REVIEW_LENSES='$REVIEW_LENSES' matched no known lens (general data-flow perf security tests intent)"
     exit 1
   fi
   LENS_COMMANDS=("${_sel_cmds[@]}")
@@ -842,7 +842,7 @@ log_info "model: ${REVIEW_MODEL}"
 # orchestrator-worker shape); `single-agent` runs the lens in the process that
 # already isolates it, dropping the subagent layer that only forwarded its
 # stdout. The two dials are independent: `single-agent` with REVIEW_LENSES unset
-# is the default three lenses (`default data-flow intent`) run single-agent, not one.
+# is the default three lenses (`general data-flow intent`) run single-agent, not one.
 # single-agent is the code default (ADR 0034 amended): it matched subagent recall
 # at 27-39% fewer tokens, so an operator without the key gets the cheaper mode.
 #

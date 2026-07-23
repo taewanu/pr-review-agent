@@ -40,8 +40,8 @@ def test_lens_arrays_stay_index_aligned():
         f"{len(labels)} labels, {len(raws)} raw files"
     )
     for cmd, label in zip(commands, labels, strict=True):
-        # The default lens is `/review-pr`; every other command carries its label.
-        if label != "default":
+        # The general lens is `/review-pr`; every other command carries its label.
+        if label != "general":
             assert cmd.endswith(f"-{label}"), f"{cmd} is not the {label} lens's command"
 
 
@@ -50,7 +50,7 @@ def test_every_lens_label_has_an_agent_and_a_command():
         assert (AGENTS / f"review-agent-{label}.md").is_file(), (
             f"{label} lens has no agent definition"
         )
-        command = "review-pr.md" if label == "default" else f"review-pr-{label}.md"
+        command = "review-pr.md" if label == "general" else f"review-pr-{label}.md"
         assert (COMMANDS / command).is_file(), f"{label} lens has no slash command"
 
 
@@ -165,12 +165,12 @@ def test_a_disabled_intent_lens_builds_nothing():
     # Building the file costs a `gh issue view` per closing reference. Under a
     # REVIEW_LENSES that excludes the lens, nothing would ever read the result,
     # and a per-PR network call is hang surface whether or not it is used.
-    assert _intent_branch(["default"], body_len=500, issue_count=7) == "inactive"
+    assert _intent_branch(["general"], body_len=500, issue_count=7) == "inactive"
 
 
 def test_an_undescribed_pr_drops_the_lens_when_others_remain():
-    assert _intent_branch(["default", "intent"], body_len=0, issue_count=0) == "drop"
-    assert _intent_branch(["default", "intent"], body_len=1, issue_count=0) == "build"
+    assert _intent_branch(["general", "intent"], body_len=0, issue_count=0) == "drop"
+    assert _intent_branch(["general", "intent"], body_len=1, issue_count=0) == "build"
 
 
 def test_intent_agent_forbids_the_other_types():

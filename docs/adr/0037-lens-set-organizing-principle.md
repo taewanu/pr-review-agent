@@ -26,6 +26,21 @@ What this rejects: a lens that reads the same input as the base and hunts the ba
 
 **Naming.** The base lens keeps the name `default`, not `code`. Every lens reads code, so `code` would not distinguish the base from the domain lenses; `default` names it for what it is, the reviewer that runs unless narrowed. This settles the rename #250 asked about: the axes are named by this three-tier principle, not by relabeling `default`.
 
+> **Amended 2026-07-23 (`default` renamed `general`).** The paragraph above kept
+> `default`, reading the name as "the reviewer that runs unless narrowed." That
+> confuses two axes: `default` names the lens's *config role* (it is what
+> `REVIEW_LENSES` falls back to), not its *job*. A name should reveal the job (Beck,
+> intention-revealing names), and this lens's job is the broad generalist read: it
+> hunts every class shallowly where the specialist lenses each go deep on one. So
+> it is renamed `general` (`review-agent-general.md`, `LENS_LABELS[0]`, the unset
+> default `general data-flow intent`). Its plumbing is unchanged and still
+> unprefixed: the command stays `/review-pr`, the raw file stays
+> `.pr-review-raw.txt`, and the ADR 0005 failure categories stay unprefixed, so
+> `general` is the base in role exactly as `default` was. This reopens what #250
+> asked, having found the earlier "principle over relabeling" answer wrong on the
+> base's own name: naming it for its config role hid the job the tier exists to
+> name.
+
 > **Amended 2026-07-23 (data-flow re-added, a fourth tier).** The claim above that
 > `correctness` was pure redundancy is corrected by measurement. A 3-fixture recall
 > run (single-agent, the eval harness) found the base `default` sweep and the

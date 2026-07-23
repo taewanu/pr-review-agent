@@ -34,7 +34,7 @@ def test_copies_operator_agents_into_empty_scratch():
         scratch = Path(tmp)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        assert (scratch / ".claude/agents/review-agent-default.md").exists()
+        assert (scratch / ".claude/agents/review-agent-general.md").exists()
         assert (scratch / ".claude/agents/review-agent-data-flow.md").exists()
         assert (scratch / ".claude/agents/review-agent-perf.md").exists()
         assert (scratch / ".claude/agents/review-agent-security.md").exists()
@@ -55,23 +55,23 @@ def test_copied_content_matches_source():
         scratch = Path(tmp)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        src = (REPO_ROOT / ".claude/agents/review-agent-default.md").read_text()
-        dst = (scratch / ".claude/agents/review-agent-default.md").read_text()
+        src = (REPO_ROOT / ".claude/agents/review-agent-general.md").read_text()
+        dst = (scratch / ".claude/agents/review-agent-general.md").read_text()
         assert src == dst
 
 
 def test_target_repo_file_wins_over_operator():
-    # Pre-stage a customized review-agent-default in the scratch. Bundle must
+    # Pre-stage a customized review-agent-general in the scratch. Bundle must
     # NOT clobber it; target-repo customization is the whole point of the
     # precedence rule.
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         (scratch / ".claude/agents").mkdir(parents=True)
-        custom = "---\nname: review-agent-default\n---\nTARGET CUSTOM\n"
-        (scratch / ".claude/agents/review-agent-default.md").write_text(custom)
+        custom = "---\nname: review-agent-general\n---\nTARGET CUSTOM\n"
+        (scratch / ".claude/agents/review-agent-general.md").write_text(custom)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        assert (scratch / ".claude/agents/review-agent-default.md").read_text() == custom
+        assert (scratch / ".claude/agents/review-agent-general.md").read_text() == custom
         # Sibling that wasn't pre-staged still gets bundled.
         assert (scratch / ".claude/agents/review-agent-reply.md").exists()
 
