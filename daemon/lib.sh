@@ -645,15 +645,6 @@ _mint_installation_token() {
   printf '%s %s' "$token" "$expires_at"
 }
 
-# app_installation_id <owner> <repo> <app-id>
-# Prints the installation id for one repository. Exit codes separate the two
-# outcomes a caller must treat differently:
-#   0: installed (stdout has the id)
-#   1: not installed (GitHub answers 404), the skip-with-a-warning case
-#   2: the call itself failed (network, 5xx), which is evidence of neither
-# The 404 is exactly the missing-installation signal, so the check falls out of a
-# call the daemon already needs to make (ADR 0036 decision 4).
-
 # _app_get <jwt> <url>
 # GETs a JWT-authenticated App endpoint, printing "<body>\n<http_code>". Returns
 # non-zero only on a transport failure (network, DNS, timeout), which it logs
@@ -676,6 +667,14 @@ _app_get() {
   printf '%s' "$response"
 }
 
+# app_installation_id <owner> <repo> <app-id>
+# Prints the installation id for one repository. Exit codes separate the two
+# outcomes a caller must treat differently:
+#   0: installed (stdout has the id)
+#   1: not installed (GitHub answers 404), the skip-with-a-warning case
+#   2: the call itself failed (network, 5xx), which is evidence of neither
+# The 404 is exactly the missing-installation signal, so the check falls out of a
+# call the daemon already needs to make (ADR 0036 decision 4).
 app_installation_id() {
   local owner="$1" repo="$2" app_id="$3" jwt response id http_code
 
