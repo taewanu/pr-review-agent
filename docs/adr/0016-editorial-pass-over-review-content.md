@@ -63,6 +63,44 @@ Add a fresh **Editor agent** (`review-agent-editor`, see CONTEXT.md) as a daemon
 > safe to branch. It is not being asked to trust the author's reading of the PR
 > body, only to do its own.
 
+> **Amended 2026-07-23 (#258).** The fail-closed model is reversed for a
+> deterministic editor-output failure: rather than discard the review, the daemon
+> posts the merged author draft with a bypass note. This adopts the "Degrade to
+> the author's review when the editor fails" option this ADR originally rejected,
+> on evidence that did not exist when it was written.
+>
+> The rejection weighed a robustness gain against "the voice gate runs in two
+> places and the full author path stays alive as a second posting route," and
+> took the simpler model. #258 supplied the missing cost of that simplicity: an
+> editor miscount (17 decisions for a 16-finding draft) failed `apply_edits`'s
+> coverage check and discarded the review whole, posting nothing. The miscount is
+> deterministic, so the same draft loses its review every cycle. The trade the
+> original rejection did not have was "lose robustness" versus "lose the review
+> permanently on a class of editor error," which inverts the call.
+>
+> Both original objections are answered. The author path already runs the gate
+> fail-open (the zero-finding skip, Decision point 4), so the fallback adds no
+> second gate site; it reuses that path. The second posting route is no longer
+> silent: `append_editor_bypass_note` marks the summary "Editorial cleanup did not
+> run on this review," so a degraded review is distinguishable from a clean one.
+>
+> The reversal is scoped to **deterministic** failures, the ones that recur every
+> cycle: a non-covering, unparseable, schema-invalid, or fidelity-corrupt decision
+> set. `edit-fidelity` is included though #220 kept it fail-closed, because the
+> fallback posts the clean author bodies, never the editor's corrupted re-emission,
+> so #220's concern (do not post malformed text) is satisfied by the discard, not
+> violated. **Transient** failures stay fail-closed: an editor timeout or empty
+> output is retried cleanly by the next polling cycle, so losing this cycle costs
+> nothing, and those paths exit before `apply_edits` (ADR 0005 amended).
+>
+> Two limits. The strict coverage check stays exactly as it was: a partial,
+> positional apply of a miscounted decision set would attach a kept body to the
+> wrong finding's `path` and `line`, worse than posting nothing, so recovery is
+> whole-draft-or-discard, never a subset. And the fallback summary is the author's
+> un-reconciled lead, so the severity floor (#148 amendment) does not apply to it;
+> the bypass note discloses that the review is un-edited, which is the honest
+> signal a floor would otherwise enforce.
+
 ## Boundary
 
 This ADR decides the editorial pass over content. It does not touch the severity/type taxonomy (ADR 0002), finding relocation (anchoring), the format layer (ADR 0010 §1 to §3), or the reply path. The voice gate's *scope* is unchanged by ADR 0010 §4; only its pipeline position moves.

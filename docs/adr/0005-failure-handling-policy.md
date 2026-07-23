@@ -36,9 +36,9 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 | Trailing JSON fence missing | system | exit non-zero, no post |
 | JSON parse error | system | exit non-zero, no post |
 | Schema invalid (required missing, enum off) | system | exit non-zero, no post |
-| Reserialization-fidelity corruption in a post-Editor summary or comment body: `edit-fidelity` (HTML-escaped entity or literal `\n`; ADR 0016) | system | exit non-zero, no post |
 | Cosmetic voice miss in a posted payload: `style-violation` (em dash, forbidden opener, task-scoped ref; shared rules in `voice.py` per ADR 0010) | degrade | warn to the daemon log, post anyway |
-| Editor stage failed: timeout, empty output, or an unparseable, schema-invalid, or non-covering decision set (`edit-*`, ADR 0016) | system | exit non-zero, no post |
+| Editor produced no usable output: timeout or empty (`edit-timeout`, `edit-empty`; ADR 0016) | system | exit non-zero, no post (transient, retried next cycle) |
+| Editor decisions unusable: unparseable, schema-invalid, non-covering, or fidelity-corrupt (`edit-no-fence`, `edit-parse-error`, `edit-schema-invalid`, `edit-coverage`, `edit-fidelity`; ADR 0016 amended, #258) | degrade | post the author draft with a bypass note |
 | Forbidden combo (`polish + important`) | per-finding | drop, note in summary, post remaining |
 | `line` outside diff | per-finding | move body to summary's `## Findings outside the diff` section, post remaining |
 | `quote` matches no new-side line (ADR 0018) | per-finding | relocate to `## Findings outside the diff`, post remaining |
@@ -72,11 +72,25 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 
 > **Amended 2026-07-19 (#220).** The post-Editor voice gate splits (the two rows
 > replacing the old single `style-violation` row). A reserialization-fidelity
-> corruption still fails the review (`edit-fidelity`, exit non-zero, no post),
-> but a cosmetic style miss no longer discards a review that found a real bug: it
-> posts with a `voice-warning` forwarded to the daemon log instead (CodeRabbit
-> treats tone as customizable, never a gate that drops findings). This adds a
-> third action, "warn and post", to the system/per-finding pair above.
+> corruption fails the review (`edit-fidelity`, exit non-zero, no post; superseded
+> by the #258 amendment below), but a cosmetic style miss no longer discards a
+> review that found a real bug: it posts with a `voice-warning` forwarded to the
+> daemon log instead (CodeRabbit treats tone as customizable, never a gate that
+> drops findings). This adds a third action, "warn and post", to the
+> system/per-finding pair above.
+
+> **Amended 2026-07-23 (#258).** The `edit-*` rows split by transience, and the
+> deterministic set now degrades rather than failing closed. An editor timeout or
+> empty output stays fail-closed: it is transient, and the next polling cycle
+> retries it cleanly, so losing this cycle costs nothing. An unusable decision set
+> (unparseable, schema-invalid, non-covering, or fidelity-corrupt) is
+> deterministic, so fail-closed loses the review every cycle; instead the daemon
+> posts the merged author draft with a bypass note (ADR 0016 amended). This
+> reverses the #220 line above for `edit-fidelity`: the fallback posts the clean
+> author bodies, never the editor's corrupted re-emission, so #220's concern is
+> satisfied by discarding the corruption, not by discarding the review. The strict
+> coverage check is unchanged; recovery is the whole author draft or nothing, never
+> a positional partial apply of the miscounted decisions.
 
 > **Amended 2026-07-21 (#231).** A subscription quota exhausted mid-review gets
 > its own `session-limit` category and a fourth action, **pause and resume**. The
