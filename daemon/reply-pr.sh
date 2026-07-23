@@ -262,12 +262,12 @@ reply_rc=0
   exit "$rc"
 ) || reply_rc=$?
 if [[ "$reply_rc" -eq "$TIMEOUT_EXIT" ]]; then
-  log_failure "reply-timeout" "$PR_URL" "$HEAD_OID" \
+  log_failure "$FAIL_REPLY_TIMEOUT" "$PR_URL" "$HEAD_OID" \
     "reply agent exceeded ${REPLY_AGENT_TIMEOUT}s"
   exit 1
 fi
 if [[ ! -s "$RAW_FILE" ]]; then
-  log_failure "empty-stdout" "$PR_URL" "$HEAD_OID" "reply agent produced no output"
+  log_failure "$FAIL_EMPTY_STDOUT" "$PR_URL" "$HEAD_OID" "reply agent produced no output"
   exit 1
 fi
 if [[ -s "$RAW_FILE.cost" ]]; then
@@ -287,6 +287,6 @@ if python3 "$SCRIPT_DIR/create_reply.py" \
 else
   cat "$POST_ERR" >&2
   category="$(grep -m1 '^category=' "$POST_ERR" | cut -d= -f2 || true)"
-  log_failure "${category:-post-failed}" "$PR_URL" "$HEAD_OID" "reply posting failed"
+  log_failure "${category:-$FAIL_POST_FAILED}" "$PR_URL" "$HEAD_OID" "reply posting failed"
   exit 1
 fi

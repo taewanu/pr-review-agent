@@ -74,7 +74,7 @@ log_step "loading config"
 if ! CONFIG="$(python3 "$SCRIPT_DIR/load_config.py" "$REPO_ROOT" 2>"$CONFIG_ERR")"; then
   cat "$CONFIG_ERR" >&2
   category="$(grep -m1 '^category=' "$CONFIG_ERR" | cut -d= -f2 || true)"
-  log_failure "${category:-unknown}" "" "" "config load failed"
+  log_failure "${category:-$FAIL_UNKNOWN}" "" "" "config load failed"
   exit 1
 fi
 
@@ -93,7 +93,7 @@ log_step "verifying repo access"
 for repo in "${REPOS[@]}"; do
   if ! gh repo view "$repo" --json viewerPermission >/dev/null 2>&1; then
     log_err "repo not accessible: $repo — check 'gh auth status' or repo access"
-    log_failure "repo-unreachable" "" "" "repo not accessible: $repo"
+    log_failure "$FAIL_REPO_UNREACHABLE" "" "" "repo not accessible: $repo"
     exit 1
   fi
 done

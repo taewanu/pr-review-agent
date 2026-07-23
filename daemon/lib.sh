@@ -74,6 +74,57 @@ log_degradation_warnings() {
   done < <(grep -E '^(merge-skip|finding-skip|confidence-gate|voice-warning)' "$stderr_file" || true)
 }
 
+# Failure categories: the one home for ADR 0005's failure table (#141). A
+# category is the machine-readable slug on a failure. log_failure prints it in
+# the `failure: <category> …` line; a pipeline subprocess instead prints
+# `category=<slug>` on its FIRST stderr line, which extract_category recovers and
+# hands back to log_failure. Keep this set in step with ADR 0005; a slug the
+# daemon doesn't recognize defaults to the loud system-failure path.
+#
+# Emitted directly here in bash, one slug each (the FAIL_* constants below):
+#   repo-unreachable    target repo not accessible
+#   diff-fetch-failed   gh pr diff / compare exited non-zero
+#   diff-fetch-timeout  gh pr diff exceeded its cap
+#   edit-timeout        editor agent exceeded its cap
+#   edit-empty          editor produced no output
+#   reply-timeout       reply agent exceeded its cap
+#   empty-stdout        reply agent produced no output
+#   post-failed         posting the review or reply failed
+#   unknown             unclassified; the extractor's fallback
+# Built dynamically as `<step>-timeout` by run_with_pr_timeout (e.g.
+# review-timeout) from the step label it wraps.
+# Recovered from a subprocess's `category=` line, never authored via log_failure
+# here (a slug may appear under more than one stage):
+#   create-review.sh   pending-conflict, post-failed
+#   create_reply.py    no-fence, parse-error, schema-invalid, style-violation
+#   apply_edits.py     edit-empty, edit-no-fence, edit-parse-error, edit-schema-invalid, edit-coverage, edit-fidelity
+#   merge_findings.py  empty-stdout, all-lenses-failed, session-limit
+#   load_config.py     config-parse-error, config-invalid, config-not-found
+# extract_json.py is the shared parse/gate library, not a routed subprocess: its
+# ExtractError slugs (empty-stdout, no-fence, parse-error, schema-invalid,
+# style-violation, cap-violation) are caught by merge_findings, which logs a
+# single failed lens as a merge-skip warning and rolls a total failure up to
+# all-lenses-failed (or session-limit).
+#
+# shellcheck disable=SC2034  # each is used by a sibling script that re-sources this file
+readonly FAIL_REPO_UNREACHABLE="repo-unreachable"
+# shellcheck disable=SC2034
+readonly FAIL_DIFF_FETCH_FAILED="diff-fetch-failed"
+# shellcheck disable=SC2034
+readonly FAIL_DIFF_FETCH_TIMEOUT="diff-fetch-timeout"
+# shellcheck disable=SC2034
+readonly FAIL_EDIT_TIMEOUT="edit-timeout"
+# shellcheck disable=SC2034
+readonly FAIL_EDIT_EMPTY="edit-empty"
+# shellcheck disable=SC2034
+readonly FAIL_REPLY_TIMEOUT="reply-timeout"
+# shellcheck disable=SC2034
+readonly FAIL_EMPTY_STDOUT="empty-stdout"
+# shellcheck disable=SC2034
+readonly FAIL_POST_FAILED="post-failed"
+# shellcheck disable=SC2034
+readonly FAIL_UNKNOWN="unknown"
+
 # log_failure <category> <pr-url> <head-sha> <reason>
 # Positional fields per ADR 0005 so log scrapers don't re-parse prose.
 log_failure() {
