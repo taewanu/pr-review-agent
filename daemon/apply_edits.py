@@ -113,8 +113,8 @@ def apply_edits(author: dict, edits: EditorPayload) -> dict:
         else:
             survivors.append(comment)
     if dropped:
-        # Surfaced by log_degradation_warnings' `editor-drop` prefix, matching the
-        # confidence gate and the merge cap, so an editor drop leaves a trace in
+        # Surfaced by log_degradation_warnings' `editor-drop` prefix, the same way
+        # the confidence gate's own drops are, so an editor drop leaves a trace in
         # the daemon log rather than vanishing silently (#259).
         print(
             f"editor-drop: dropped {len(dropped)} finding(s) at author index(es) {dropped}",

@@ -103,9 +103,9 @@ Add a fresh **Editor agent** (`review-agent-editor`, see CONTEXT.md) as a daemon
 
 > **Amended 2026-07-23 (#259).** The Editor has no redundancy drop. The prompt had
 > carried a fourth drop reason, "it duplicates another finding," that this ADR
-> never authorized: its three levers (Decision point 2) all mean a Finding should
-> not ship, while an overlap means both Findings are real and merely say some of
-> the same thing. Resolving that overlap needs a merge, and the Editor's only tools
+> never authorized: its other three drop reasons all mean a Finding should not
+> ship, while an overlap means both Findings are real and merely say some of the
+> same thing. Resolving that overlap needs a merge, and the Editor's only tools
 > are drop and rewrite, keyed one decision per index, so it can act on a partial
 > overlap only by discarding one side and losing whatever that side alone said,
 > which is the #259 failure (three lenses on one defect, the survivor's rewrite
@@ -118,10 +118,10 @@ Add a fresh **Editor agent** (`review-agent-editor`, see CONTEXT.md) as a daemon
 > lets two that overlap both stand. merge_findings owns the cross-line overlap ADR
 > 0023 records as a known gap; tightening its dedup (the exact `(path, line)`
 > grouping and character-level similarity that miss cross-line paraphrases, and the
-> keep-max-body merge that is itself lossy) is a separate issue. The drop is also
-> no longer silent: `apply_edits.py` prints the dropped indices under the
-> `editor-drop` prefix, forwarded by `log_degradation_warnings` like the confidence
-> gate and the merge cap.
+> keep-max-body merge that is itself lossy) is a separate issue (#268). The drop is
+> also no longer silent: `apply_edits.py` prints the dropped indices under the
+> `editor-drop` prefix, forwarded by `log_degradation_warnings` the way the
+> confidence gate's own drops are.
 
 ## Boundary
 
