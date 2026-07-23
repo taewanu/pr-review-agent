@@ -62,11 +62,9 @@ class DaemonConfig(BaseModel):
     and are resolved by review-pr.sh, not here."""
 
     repos: list[str]
-    github_user: str
     github_app_id: str
     poll_interval_seconds: int = 300
     max_parallel: int = 1
-    review_own_prs: bool = True
     opt_out_label: str = "no-ai-review"
 
     @field_validator("repos")
@@ -77,13 +75,6 @@ class DaemonConfig(BaseModel):
         for r in v:
             if not REPO_RE.match(r):
                 raise ValueError(f"invalid REPOS entry {r!r} — expected owner/repo")
-        return v
-
-    @field_validator("github_user")
-    @classmethod
-    def _check_user(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("GITHUB_USER is empty")
         return v
 
     @field_validator("github_app_id")
@@ -113,15 +104,6 @@ class DaemonConfig(BaseModel):
                 "each unit is a concurrent claude review"
             )
         return v
-
-
-def _parse_bool(s: str, *, key: str) -> bool:
-    s_low = s.strip().lower()
-    if s_low in ("true", "1", "yes"):
-        return True
-    if s_low in ("false", "0", "no", ""):
-        return False
-    raise ConfigError("config-invalid", f"{key} must be true/false (got {s!r})")
 
 
 def _parse_int(s: str, *, key: str, default: int) -> int:
@@ -157,13 +139,11 @@ def load(checkout_root: Path) -> DaemonConfig:
     repos_raw = env.get("REPOS", "").strip()
     data = {
         "repos": repos_raw.split() if repos_raw else [],
-        "github_user": env.get("GITHUB_USER", "").strip(),
         "github_app_id": env.get("GITHUB_APP_ID", "").strip(),
         "poll_interval_seconds": _parse_int(
             env.get("POLL_INTERVAL_SECONDS", ""), key="POLL_INTERVAL_SECONDS", default=300
         ),
         "max_parallel": _parse_int(env.get("MAX_PARALLEL", ""), key="MAX_PARALLEL", default=1),
-        "review_own_prs": _parse_bool(env.get("REVIEW_OWN_PRS", "true"), key="REVIEW_OWN_PRS"),
         "opt_out_label": env.get("OPT_OUT_LABEL", "").strip() or "no-ai-review",
     }
     try:

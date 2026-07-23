@@ -313,12 +313,7 @@ def _poll_setup(tmp_path: Path) -> tuple[Path, Path, Path]:
     for name in ("poll.sh", "lib.sh", "load_config.py"):
         (daemon / name).write_bytes((DAEMON / name).read_bytes())
     (tmp_path / ".env").write_text(
-        f"REPOS={OWNER_REPO}\n"
-        "GITHUB_USER=operator\n"
-        "GITHUB_APP_ID=4361858\n"
-        "REVIEW_OWN_PRS=true\n"
-        "OPT_OUT_LABEL=no-ai-review\n"
-        "MAX_PARALLEL=1\n"
+        f"REPOS={OWNER_REPO}\nGITHUB_APP_ID=4361858\nOPT_OUT_LABEL=no-ai-review\nMAX_PARALLEL=1\n"
     )
     # A gh that records every invocation, so "no network call during a pause" is
     # asserted on evidence rather than on the absence of an error.
