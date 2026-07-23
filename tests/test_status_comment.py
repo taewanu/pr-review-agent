@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
+APP_STUB = REPO_ROOT / "tests" / "lib_app_stub.sh"
 
 
 def _run(
@@ -44,7 +45,7 @@ def _run(
         if env_extra:
             env.update(env_extra)
         result = subprocess.run(
-            ["bash", "-c", f"source {LIB}; {call}"],
+            ["bash", "-c", f"source {LIB}; source {APP_STUB}; {call}"],
             capture_output=True,
             text=True,
             env=env,
@@ -69,7 +70,7 @@ def _run_with_stub_script(
         if env_extra:
             env.update(env_extra)
         result = subprocess.run(
-            ["bash", "-c", f"source {LIB}; {call}"],
+            ["bash", "-c", f"source {LIB}; source {APP_STUB}; {call}"],
             capture_output=True,
             text=True,
             env=env,
@@ -268,12 +269,6 @@ def test_status_failure_reason_matches_a_hypothetical_future_lens_by_glob():
     assert out == "The review agent timed out."
 
 
-def test_status_failure_reason_pending_conflict_is_surfaced():
-    out, rc, _ = _run("status_failure_reason pending-conflict")
-    assert rc == 0
-    assert out == "An earlier review is still pending on this PR."
-
-
 def test_status_failure_reason_diff_fetch_timeout_is_surfaced():
     out, rc, _ = _run("status_failure_reason diff-fetch-timeout")
     assert rc == 0
@@ -303,7 +298,7 @@ def test_status_failure_reason_internal_hiccups_are_silent():
 def test_status_failure_reason_phrases_are_em_dash_free():
     # The failed head-line is fixed chrome that skips the voice.py gate, so the
     # no-em-dash rule is enforced on these phrases directly.
-    for category in ("review-timeout", "pending-conflict", "diff-fetch-timeout"):
+    for category in ("review-timeout", "session-limit", "diff-fetch-timeout"):
         out, _, _ = _run(f"status_failure_reason {category}")
         assert "—" not in out
 

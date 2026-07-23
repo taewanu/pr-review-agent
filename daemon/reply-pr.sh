@@ -21,24 +21,34 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
-for cmd in gh claude jq git python3; do
+for cmd in gh claude jq git python3 openssl curl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log_err "missing '$cmd' on PATH"
     exit 1
   fi
 done
-if ! gh auth status >/dev/null 2>&1; then
-  log_err "gh not authenticated — run 'gh auth login' first"
+# App identity (ADR 0036): the App key must be readable; no `gh auth login` is
+# required. The reply path renders no footer, so it needs no App-owner probe.
+if [[ ! -r "$APP_KEY_PATH" ]]; then
+  log_err "App private key not readable at $APP_KEY_PATH — place it there or set APP_KEY_PATH (ADR 0036)"
   exit 1
 fi
-derive_project_identity "$SCRIPT_DIR/.."
 
 KEEP_SCRATCH=0
+APP_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --keep-scratch)
       KEEP_SCRATCH=1
       shift
+      ;;
+    --app-id)
+      if [[ $# -lt 2 ]]; then
+        log_err "--app-id requires a value"
+        exit 1
+      fi
+      APP_ID="$2"
+      shift 2
       ;;
     -*)
       log_err "unknown flag: $1"
@@ -87,7 +97,24 @@ fi
 # cleanup releases the lock too.
 trap 'release_pr_lock "${REPLY_LOCK_FILE:-}"' EXIT
 
-GITHUB_USER="$(gh api user --jq '.login')"
+# App identity (ADR 0036): resolve this process's installation and warm its token
+# in the main shell so the wrapped gh calls below reuse one token. app_auth_init
+# also sets PRA_BOT_LOGIN_REST, the bot's REST login the reply gate matches on.
+# --app-id comes from poll.sh; the manual one-shot resolves it from .env.
+[[ -n "$APP_ID" ]] || APP_ID="$(resolve_tunable GITHUB_APP_ID "$SCRIPT_DIR/../.env")"
+if [[ -z "$APP_ID" ]]; then
+  log_err "no GITHUB_APP_ID (pass --app-id or set it in .env) — cannot authenticate as the App (ADR 0036)"
+  exit 1
+fi
+if ! app_auth_init "$OWNER" "$REPO" "$APP_ID"; then
+  log_err "App not installed on ${OWNER}/${REPO}, or the installation probe failed"
+  exit 1
+fi
+app_auth_warm || {
+  log_err "could not mint an App token for ${OWNER}/${REPO}"
+  exit 1
+}
+
 HEAD_OID=""
 
 log_info "checking for unaddressed replies"
@@ -96,14 +123,14 @@ log_info "checking for unaddressed replies"
 # flatten_pages merges its per-page arrays so the jq filter below runs once
 # over one array instead of once per page-document (#195).
 # https://docs.github.com/en/rest/pulls/comments
-COMMENTS_JSON="$(gh api --paginate "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" | flatten_pages)"
+COMMENTS_JSON="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+  gh api --paginate "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" | flatten_pages)"
 
-# Find unaddressed reply threads via the Reply sentinel (#39). Replaces the V2
-# `user.login != $login` filter which was dormant in 1-operator setups (daemon
-# and operator share an identity). Multi-user behavior unchanged. The scan
-# matches both the old `addressed:` wire and the current `reply:` so threads
-# acked before the #79 rename are not re-dispatched during the transition.
-THREADS_JSON="$(jq --arg login "$GITHUB_USER" --arg provenance "$PROVENANCE_TAG" \
+# Select unaddressed reply threads: a non-bot reply (ADR 0036 decision 9) under
+# one of the bot's own Findings, not already acked. detect-replies.jq matches the
+# parent Finding's author against the bot's REST login and excludes bot repliers
+# by user.type, which retires the old body-text provenance self-exclusion (#153).
+THREADS_JSON="$(jq --arg login "$PRA_BOT_LOGIN_REST" \
   -f "$SCRIPT_DIR/detect-replies.jq" <<<"$COMMENTS_JSON")"
 
 THREAD_COUNT="$(jq 'length' <<<"$THREADS_JSON")"
@@ -124,7 +151,8 @@ log_info "$THREAD_COUNT unaddressed reply thread(s)"
 gql_err="$(mktemp -t pr-review-reply-gql.XXXXXX)"
 # $owner/$repo/$pr are GraphQL variables, not shell vars; keep them literal.
 # shellcheck disable=SC2016
-if gql_response="$(gh api graphql \
+if gql_response="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+  gh api graphql \
   -f query='query($owner:String!,$repo:String!,$pr:Int!){
     repository(owner:$owner,name:$repo){
       pullRequest(number:$pr){
@@ -151,7 +179,8 @@ rm -f "$gql_err"
 
 # Scratch clone at HEAD for the agent to verify claims via file reads. Same
 # refs/pull/N/head pattern as review-pr.sh — survives deleted head branch.
-meta="$(gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid)"
+meta="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+  gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid)"
 HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
 HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
@@ -205,7 +234,8 @@ fi
 # Bound the https clone/fetch so a stalled connection aborts cleanly instead of
 # hanging the loop (#121). Backstopped by poll.sh's per-PR watchdog.
 arm_git_stall_timeout
-gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
+run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+  gh repo clone "$HEAD_REPO" "$SCRATCH" -- --quiet --depth=1 --no-tags
 (
   cd "$SCRATCH"
   git fetch --quiet --depth=1 origin "refs/pull/${PR_NUMBER}/head"
@@ -279,7 +309,8 @@ POST_ERR="$(mktemp -t pr-review-reply-post.XXXXXX)"
 # Extract + validate + POST in one Python process (#36); keeps the body bytes
 # intact end to end (see create_reply.py). stderr carries progress, and on
 # failure a `category=` line feeds log_failure.
-if python3 "$SCRIPT_DIR/create_reply.py" \
+if run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+  python3 "$SCRIPT_DIR/create_reply.py" \
   --owner "$OWNER" --repo "$REPO" --number "$PR_NUMBER" \
   --head-sha "$HEAD_OID" --head-owner "$HEAD_REPO_OWNER" --head-repo "$HEAD_REPO_NAME" \
   --raw "$RAW_FILE" --threads "$THREADS_FILE" 2>"$POST_ERR"; then

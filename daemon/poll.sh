@@ -19,14 +19,17 @@ if PAUSE_UNTIL="$(session_pause_active)"; then
   exit 0
 fi
 
-for cmd in gh jq python3; do
+for cmd in gh jq python3 openssl curl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log_err "missing '$cmd' on PATH"
     exit 1
   fi
 done
-if ! gh auth status >/dev/null 2>&1; then
-  log_err "gh not authenticated — run 'gh auth login' first"
+# App identity (ADR 0036): the daemon authenticates as the App, not a gh login,
+# so a machine with no `gh auth login` is a valid deployment. What must exist is
+# the private key; the App id is validated at config load below.
+if [[ ! -r "$APP_KEY_PATH" ]]; then
+  log_err "App private key not readable at $APP_KEY_PATH — place it there or set APP_KEY_PATH (ADR 0036)"
   exit 1
 fi
 
@@ -80,22 +83,34 @@ fi
 
 REPOS=()
 while IFS= read -r r; do REPOS+=("$r"); done < <(jq -r '.repos[]' <<<"$CONFIG")
-GITHUB_USER="$(jq -r '.github_user' <<<"$CONFIG")"
 GITHUB_APP_ID="$(jq -r '.github_app_id' <<<"$CONFIG")"
-REVIEW_OWN_PRS="$(jq -r '.review_own_prs' <<<"$CONFIG")"
 OPT_OUT_LABEL="$(jq -r '.opt_out_label' <<<"$CONFIG")"
 MAX_PARALLEL="$(jq -r '.max_parallel' <<<"$CONFIG")"
 
-log_info "watched: ${REPOS[*]} (own-PRs: $REVIEW_OWN_PRS, user: $GITHUB_USER, app: $GITHUB_APP_ID, opt-out: ${OPT_OUT_LABEL:-disabled}, parallel: $MAX_PARALLEL)"
+log_info "watched: ${REPOS[*]} (app: $GITHUB_APP_ID, opt-out: ${OPT_OUT_LABEL:-disabled}, parallel: $MAX_PARALLEL)"
 
-# Verify access to every watched repo before doing work. Catches typos and
-# missing collaborator access early instead of mid-tick.
-log_step "verifying repo access"
-for repo in "${REPOS[@]}"; do
-  if ! gh repo view "$repo" --json viewerPermission >/dev/null 2>&1; then
-    log_err "repo not accessible: $repo — check 'gh auth status' or repo access"
-    log_failure "repo-unreachable" "" "" "repo not accessible: $repo"
-    exit 1
+# Resolve each repo's App installation before doing work (ADR 0036 decision 4),
+# replacing the pre-App access probe. app_auth_init sets the PRA_* globals and
+# returns the installation id per repo; the bot logins it also sets are constant
+# across repos (one App, one slug). REPO_INSTALL_IDS is parallel to REPOS (macOS
+# bash 3.2 has no associative arrays); an empty slot marks a repo to skip this
+# cycle. rc=1 (not installed) is a permanent per-repo skip with a warning, not a
+# daemon-wide failure; rc=2 (could-not-check) keeps the repo so a transient error
+# doesn't drop it.
+log_step "resolving App installations"
+REPO_INSTALL_IDS=()
+for ri in "${!REPOS[@]}"; do
+  repo="${REPOS[$ri]}"
+  if app_auth_init "${repo%%/*}" "${repo##*/}" "$GITHUB_APP_ID"; then
+    REPO_INSTALL_IDS[ri]="$PRA_INSTALLATION_ID"
+  else
+    init_rc=$?
+    REPO_INSTALL_IDS[ri]=""
+    if [[ "$init_rc" -eq 1 ]]; then
+      log_info "skipped (App not installed): $repo"
+    else
+      log_err "installation probe failed for $repo — skipping this cycle, will retry"
+    fi
   fi
 done
 
@@ -126,10 +141,24 @@ dispatch_review() {
 review_pids=()
 review_head=0
 
-for repo in "${REPOS[@]}"; do
+for ri in "${!REPOS[@]}"; do
+  repo="${REPOS[$ri]}"
+  # Skip a repo with no resolved installation (not installed, or the probe
+  # failed this cycle). Set the per-repo installation into the PRA_* globals the
+  # wrapped gh calls below read, and warm its token once in this main shell so
+  # the substitution-bound calls (gh pr list, discover_sentinel_sha) reuse it.
+  installation_id="${REPO_INSTALL_IDS[$ri]}"
+  [[ -n "$installation_id" ]] || continue
+  PRA_INSTALLATION_ID="$installation_id"
+  app_auth_warm || {
+    log_err "could not mint an App token for $repo — skipping this cycle"
+    continue
+  }
+
   log_step "polling $repo"
-  if ! prs_json="$(gh pr list --repo "$repo" --state open \
-    --json number,headRefOid,isDraft,author,labels,url 2>/dev/null |
+  if ! prs_json="$(run_with_app_token "$GITHUB_APP_ID" "$installation_id" \
+    gh pr list --repo "$repo" --state open \
+    --json number,headRefOid,isDraft,labels,url 2>/dev/null |
     jq 'sort_by(.number)')"; then
     log_err "cannot list PRs for $repo — skipping this repo"
     continue
@@ -148,18 +177,10 @@ for repo in "${REPOS[@]}"; do
     pr_number="$(jq -r '.number' <<<"$pr_obj")"
     head_sha="$(jq -r '.headRefOid' <<<"$pr_obj")"
     is_draft="$(jq -r '.isDraft' <<<"$pr_obj")"
-    author="$(jq -r '.author.login' <<<"$pr_obj")"
     pr_url="$(jq -r '.url' <<<"$pr_obj")"
 
     if [[ "$is_draft" == "true" ]]; then
       log_info "skipped (draft): $pr_url"
-      continue
-    fi
-
-    # ADR 0004: own-PR is reviewed by default; opt out via REVIEW_OWN_PRS=false
-    # (e.g. team setup where a teammate's daemon covers yours).
-    if [[ "$author" == "$GITHUB_USER" && "$REVIEW_OWN_PRS" != "true" ]]; then
-      log_info "skipped (own-PR opt-out): $pr_url"
       continue
     fi
 
@@ -189,14 +210,14 @@ for repo in "${REPOS[@]}"; do
     # resolution leg stamps/resolves). The cheap no-reply case dominates,
     # and a slow reply is bounded by the per-PR watchdog wrapping it here.
     if ! run_with_pr_timeout "reply-dispatch" "$pr_url" "$head_sha" \
-      bash "$SCRIPT_DIR/reply-pr.sh" "$pr_url"; then
+      bash "$SCRIPT_DIR/reply-pr.sh" --app-id "$GITHUB_APP_ID" "$pr_url"; then
       log_err "reply check failed for $pr_url — continuing to review step"
     fi
 
     # Sentinel-first dedup per ADR 0006. State file is the fallback when the
     # reviews API is unavailable.
     last_sha=""
-    if sentinel_sha="$(discover_sentinel_sha "$owner" "$repo_name" "$pr_number" "$GITHUB_USER")"; then
+    if sentinel_sha="$(discover_sentinel_sha "$owner" "$repo_name" "$pr_number" "$PRA_BOT_LOGIN_REST")"; then
       last_sha="$sentinel_sha"
     else
       sentinel_rc=$?
@@ -218,7 +239,7 @@ for repo in "${REPOS[@]}"; do
     # Pass last_sha down so review-pr.sh can scope the diff to changes since
     # the prior review's HEAD. Empty last_sha (first-review) uses the full
     # PR diff.
-    review_args=()
+    review_args=(--app-id "$GITHUB_APP_ID")
     if [[ -n "$last_sha" ]]; then
       review_args+=(--last-sha "$last_sha")
     fi
