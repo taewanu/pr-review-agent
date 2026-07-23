@@ -102,14 +102,24 @@ def apply_edits(author: dict, edits: EditorPayload) -> dict:
         )
     by_index = {d.index: d for d in edits.decisions}
     survivors = []
+    dropped = []
     for i, comment in enumerate(comments):
         decision = by_index[i]
         if decision.action == "drop":
+            dropped.append(i)
             continue
         if decision.action == "rewrite":
             survivors.append({**comment, "body": decision.body})
         else:
             survivors.append(comment)
+    if dropped:
+        # Surfaced by log_degradation_warnings' `editor-drop` prefix, matching the
+        # confidence gate and the merge cap, so an editor drop leaves a trace in
+        # the daemon log rather than vanishing silently (#259).
+        print(
+            f"editor-drop: dropped {len(dropped)} finding(s) at author index(es) {dropped}",
+            file=sys.stderr,
+        )
     return {"summary": edits.summary, "comments": survivors}
 
 

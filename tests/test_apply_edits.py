@@ -127,6 +127,37 @@ def test_drop_omits_and_survivors_keep_order():
     assert [c["body"] for c in final["comments"]] == ["**A.** one", "**C2.** sharper"]
 
 
+def test_drop_prints_editor_drop_line_to_stderr(capsys):
+    # A drop must leave a trace, matching the confidence gate and the merge cap;
+    # log_degradation_warnings surfaces the `editor-drop` prefix to the log (#259).
+    author = _author("**A.** one", "**B.** two", "**C.** three")
+    edits = apply_edits.EditorPayload.model_validate(
+        {
+            "summary": "s",
+            "decisions": [
+                {"index": 0, "action": "keep"},
+                {"index": 1, "action": "drop"},
+                {"index": 2, "action": "drop"},
+            ],
+        }
+    )
+    apply_edits.apply_edits(author, edits)
+    err = capsys.readouterr().err
+    assert "editor-drop: dropped 2 finding(s) at author index(es) [1, 2]" in err
+
+
+def test_no_drop_prints_nothing(capsys):
+    author = _author("**A.** one", "**B.** two")
+    edits = apply_edits.EditorPayload.model_validate(
+        {
+            "summary": "s",
+            "decisions": [{"index": 0, "action": "keep"}, {"index": 1, "action": "keep"}],
+        }
+    )
+    apply_edits.apply_edits(author, edits)
+    assert "editor-drop" not in capsys.readouterr().err
+
+
 # --- coverage and schema -----------------------------------------------------
 
 
