@@ -778,7 +778,8 @@ if [[ $DRY_RUN -eq 0 ]]; then
   # The "Reviewing…" render carries the prior trail unchanged — this tick's SHA is
   # not reviewed yet; the terminal render below folds it in.
   reviewing_body="$(render_status_comment \
-    "👀 Reviewing $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")…" \
+    "$(render_status_headline "$PRA_BOT_LOGIN_GQL" reviewing \
+      "$(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" "$HEAD_OID")" \
     "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "" "$STATUS_TRAIL_PRIOR")"
   if [[ -n "$STATUS_COMMENT_ID" ]]; then
     edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewing_body"
@@ -1227,10 +1228,23 @@ if [[ $DRY_RUN -eq 0 ]]; then
   # so the audit record grows by one row rather than being overwritten.
   status_trail_block="$(printf '%s' "$STATUS_TRAIL_PRIOR" |
     python3 "$SCRIPT_DIR/status_trail.py" \
-      --add-sha "${HEAD_OID:0:8}" --add-time "$(date -u +'%Y-%m-%d %H:%M UTC')" \
+      --add-sha "${HEAD_OID:0:7}" --add-time "$(date -u +'%Y-%m-%d %H:%M UTC')" \
       2>/dev/null || true)"
+  # Gate verdict for the themed head-line (ADR 0036 4a): "you shall not pass" when
+  # any bot finding is still open after this tick's resolution, else "you shall
+  # pass". Binary, not a count — the tally stays in the index rollup (ADR 0020).
+  # Counts prior open threads (from the freshly-fetched index threads) and this
+  # tick's new findings; a failed thread fetch degrades to the new-findings count.
+  open_findings="$(jq --arg op "$PRA_BOT_LOGIN_GQL" \
+    '[.[] | select(.root_author == $op and ((.is_resolved // false) | not))] | length' \
+    "$index_threads_file" 2>/dev/null || printf 0)"
+  review_state="pass"
+  if [[ "${open_findings:-0}" -gt 0 || "${new_findings_total:-0}" -gt 0 ]]; then
+    review_state="block"
+  fi
   reviewed_body="$(render_status_comment \
-    "✅ Reviewed $(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" \
+    "$(render_status_headline "$PRA_BOT_LOGIN_GQL" "$review_state" \
+      "$(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" "$HEAD_OID")" \
     "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block" "$status_trail_block" \
     "$HEAD_OID")"
   edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"

@@ -1568,13 +1568,13 @@ STATUS_COMMENT_MARKER='<!-- pr-review-agent:status -->'
 # status_sha_link <repo-url> <head-oid>
 # Renders the head SHA as a short, backtick-wrapped markdown link to its commit
 # page on the HEAD repo (the same repo the finding blob links target, so fork
-# PRs resolve correctly). Display is the 12-char short SHA; the href uses the
-# full SHA so GitHub resolves it unambiguously.
+# PRs resolve correctly). Display is the 7-char short SHA GitHub itself shows; the
+# href uses the full SHA so GitHub resolves it unambiguously.
 status_sha_link() {
   local repo_url="$1" head_oid="$2"
   # printf format is literal markdown; the values fill the %s (not shell expansion).
   # shellcheck disable=SC2016
-  printf '[`%s`](%s/commit/%s)' "${head_oid:0:12}" "$repo_url" "$head_oid"
+  printf '[`%s`](%s/commit/%s)' "${head_oid:0:7}" "$repo_url" "$head_oid"
 }
 
 # status_scope_link <repo-url> <last-sha> <head-oid>
@@ -1590,8 +1590,43 @@ status_scope_link() {
     # printf format is literal markdown; the values fill the %s (not shell expansion).
     # shellcheck disable=SC2016
     printf '[`%s..%s`](%s/compare/%s...%s)' \
-      "${last_sha:0:12}" "${head_oid:0:12}" "$repo_url" "$last_sha" "$head_oid"
+      "${last_sha:0:7}" "${head_oid:0:7}" "$repo_url" "$last_sha" "$head_oid"
   fi
+}
+
+# render_status_headline <app-slug> <state> <sha-link> [head-sha]
+# The status comment's first line. <state> is reviewing | pass | block. The
+# canonical youshallnotmerge App themes it: a wizard verb over a SHA-keyed emoji,
+# and the gate verdict "you shall pass" / "you shall not pass" (ADR 0036 4a). The
+# verdict is binary, not a count: the finding tally stays in the index rollup
+# below, so the head-line duplicates nothing (ADR 0020). Every other slug gets the
+# plain functional head-line. The emoji rotates by <head-sha> so a commit's line
+# is stable across the status comment's many in-place edits, varying across
+# commits; a short or absent sha falls to index 0.
+render_status_headline() {
+  local slug="$1" state="$2" sha_link="$3" head_sha="${4:-}" idx=0
+  if [[ "$slug" != "youshallnotmerge" ]]; then
+    case "$state" in
+      reviewing) printf '👀 Reviewing %s…' "$sha_link" ;;
+      *) printf '✅ Reviewed %s' "$sha_link" ;;
+    esac
+    return 0
+  fi
+  [[ "$head_sha" =~ ^[0-9a-fA-F]{7} ]] && idx=$((16#${head_sha:0:7} % 2))
+  case "$state" in
+    reviewing)
+      local prog=(🔮 🧙)
+      printf '%s Reviewing %s…' "${prog[$idx]}" "$sha_link"
+      ;;
+    pass)
+      local ok=(🪄 ✨)
+      printf '%s %s: you shall pass' "${ok[$idx]}" "$sha_link"
+      ;;
+    block)
+      local no=(🛑 🔥)
+      printf '%s %s: you shall not pass' "${no[$idx]}" "$sha_link"
+      ;;
+  esac
 }
 
 # render_status_comment <head-line> <scope-label> <file-count> <files> [index-block] [trail-block] [sentinel-sha]
