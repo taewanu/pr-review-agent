@@ -122,6 +122,13 @@ posts. The rule now branches on type (ADR 0016, amended).
   open. It reaches every lens rather than this one, and folding it in here would
   make a naming change ride along with a new axis.
 
+  > **Resolved by ADR 0037 (#250).** The axes are named by principle, not by
+  > relabeling: a lens is base (`default`), a structural addition that reads an
+  > input the base cannot (`intent`), or opt-in domain depth (`perf`/`security`/
+  > `tests`). `default` keeps its name, since every lens reads code and `code`
+  > would not distinguish the base. The `correctness` redundancy the bullet names
+  > was folded into `default` and removed (ADR 0023 amended).
+
 ## Consequences
 
 - A zero-finding `intent` result now means something. The lens either ran and
