@@ -1153,7 +1153,7 @@ elif [[ "$new_findings_total" -gt 0 ]]; then
   # Reviews submit immediately as a COMMENT review under the bot identity (ADR
   # 0036 decision 6): no pending draft, no own-vs-others fork.
   log_step "submitting review"
-  post_args+=(--app-id "$APP_ID" --installation-id "$PRA_INSTALLATION_ID")
+  post_args+=(--app-id "$APP_ID" --installation-id "$PRA_INSTALLATION_ID" --app-slug "$PRA_BOT_LOGIN_GQL")
   if ! bash "$SCRIPT_DIR/create-review.sh" "${post_args[@]}" >"$POST_OUT" 2>"$POST_ERR"; then
     cat "$POST_ERR" >&2
     category="$(extract_category "$POST_ERR")"
