@@ -1,10 +1,10 @@
 """Every lens prompt must spell out the taxonomy it is required to emit.
 
-Under REVIEW_MODE=single-agent (the shipped recommendation, ADR 0034) an agent's
-body is its entire system prompt: review-pr.sh strips the yaml header and appends
-the rest, with no includes and no file resolution. So "identical to
-`review-agent-general`" and "per ADR 0002" both resolve to nothing at runtime,
-and a lens carrying only those pointers has never been shown its legal values.
+An agent's body is its entire system prompt (ADR 0038's direct dispatch):
+review-pr.sh strips the yaml header and appends the rest, with no includes and
+no file resolution. So "identical to `review-agent-code`" and "per ADR 0002"
+both resolve to nothing at runtime, and a role carrying only those pointers has
+never been shown its legal values.
 
 Four lenses carried exactly that. Dogfooding sounds-abroad#294 caught the
 correctness lens emitting `type: "correctness"`, its own label, on all four of
@@ -58,6 +58,6 @@ def test_no_lens_prompt_defers_its_contract_to_another_prompt():
     # sibling lens is fine; deferring the output contract to one is not.
     for label in _lens_labels():
         prompt = (AGENTS / f"review-agent-{label}.md").read_text()
-        assert "contract is identical to `review-agent-general`" not in prompt, (
+        assert "contract is identical to `review-agent-code`" not in prompt, (
             f"{label} lens defers its output contract to a prompt it cannot read"
         )

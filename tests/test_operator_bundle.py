@@ -1,10 +1,9 @@
 """Tests for daemon/lib.sh's `bundle_operator_agents`.
 
-The function copies the operator's `.claude/agents/review-agent-*.md` and
-`.claude/commands/review-pr-*.md` (both globs, so a new lens needs no list
-update for either its agent or its dispatch command) plus an explicit list of
-the non-lens commands (review-pr.md, edit-review.md, reply-pr.md,
-judge-fix.md, which aren't name-prefixed the same way) into a scratch clone so
+The function copies the operator's `.claude/agents/review-agent-*.md` (a glob,
+so a new agent needs no list update) plus an explicit list of the pipeline
+commands (edit-review.md, reply-pr.md, judge-fix.md; the review roles dispatch
+directly per ADR 0038 and have no command files) into a scratch clone so
 `claude -p` can load them without target-repo setup (ADR 0007). Target-repo
 files (if already present) must win, a repo can customize without forcing a
 daemon restart.
@@ -34,20 +33,14 @@ def test_copies_operator_agents_into_empty_scratch():
         scratch = Path(tmp)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        assert (scratch / ".claude/agents/review-agent-general.md").exists()
-        assert (scratch / ".claude/agents/review-agent-data-flow.md").exists()
-        assert (scratch / ".claude/agents/review-agent-perf.md").exists()
-        assert (scratch / ".claude/agents/review-agent-security.md").exists()
-        assert (scratch / ".claude/agents/review-agent-tests.md").exists()
+        assert (scratch / ".claude/agents/review-agent-code.md").exists()
+        assert (scratch / ".claude/agents/review-agent-intent.md").exists()
         assert (scratch / ".claude/agents/review-agent-reply.md").exists()
         assert (scratch / ".claude/agents/review-agent-editor.md").exists()
-        assert (scratch / ".claude/commands/review-pr.md").exists()
-        assert (scratch / ".claude/commands/review-pr-data-flow.md").exists()
-        assert (scratch / ".claude/commands/review-pr-perf.md").exists()
-        assert (scratch / ".claude/commands/review-pr-security.md").exists()
-        assert (scratch / ".claude/commands/review-pr-tests.md").exists()
+        assert (scratch / ".claude/agents/review-agent-fix-check.md").exists()
         assert (scratch / ".claude/commands/edit-review.md").exists()
         assert (scratch / ".claude/commands/reply-pr.md").exists()
+        assert (scratch / ".claude/commands/judge-fix.md").exists()
 
 
 def test_copied_content_matches_source():
@@ -55,23 +48,23 @@ def test_copied_content_matches_source():
         scratch = Path(tmp)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        src = (REPO_ROOT / ".claude/agents/review-agent-general.md").read_text()
-        dst = (scratch / ".claude/agents/review-agent-general.md").read_text()
+        src = (REPO_ROOT / ".claude/agents/review-agent-code.md").read_text()
+        dst = (scratch / ".claude/agents/review-agent-code.md").read_text()
         assert src == dst
 
 
 def test_target_repo_file_wins_over_operator():
-    # Pre-stage a customized review-agent-general in the scratch. Bundle must
+    # Pre-stage a customized review-agent-code in the scratch. Bundle must
     # NOT clobber it; target-repo customization is the whole point of the
     # precedence rule.
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         (scratch / ".claude/agents").mkdir(parents=True)
-        custom = "---\nname: review-agent-general\n---\nTARGET CUSTOM\n"
-        (scratch / ".claude/agents/review-agent-general.md").write_text(custom)
+        custom = "---\nname: review-agent-code\n---\nTARGET CUSTOM\n"
+        (scratch / ".claude/agents/review-agent-code.md").write_text(custom)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        assert (scratch / ".claude/agents/review-agent-general.md").read_text() == custom
+        assert (scratch / ".claude/agents/review-agent-code.md").read_text() == custom
         # Sibling that wasn't pre-staged still gets bundled.
         assert (scratch / ".claude/agents/review-agent-reply.md").exists()
 
@@ -80,29 +73,29 @@ def test_target_repo_command_file_wins_over_operator():
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         (scratch / ".claude/commands").mkdir(parents=True)
-        custom = "---\ndescription: custom review\n---\nTARGET CUSTOM\n"
-        (scratch / ".claude/commands/review-pr.md").write_text(custom)
+        custom = "---\ndescription: custom editor pass\n---\nTARGET CUSTOM\n"
+        (scratch / ".claude/commands/edit-review.md").write_text(custom)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        assert (scratch / ".claude/commands/review-pr.md").read_text() == custom
+        assert (scratch / ".claude/commands/edit-review.md").read_text() == custom
         assert (scratch / ".claude/commands/reply-pr.md").exists()
 
 
-def test_future_lens_command_bundled_by_glob_with_no_code_change():
-    # Proves the review-pr-*.md glob (ADR 0023), not just today's known 4 lens
-    # names: a hypothetical new lens's command, planted transiently in the real
-    # source tree, must be picked up with no change to bundle_operator_agents.
-    fake_command = REPO_ROOT / ".claude/commands/review-pr-zzz-test-lens.md"
-    assert not fake_command.exists(), "fixture collision: pick a different fake name"
-    fake_command.write_text("---\ndescription: fixture only, not a real lens\n---\n")
+def test_future_agent_bundled_by_glob_with_no_code_change():
+    # Proves the review-agent-*.md glob, not just today's known agent names: a
+    # hypothetical new agent, planted transiently in the real source tree, must
+    # be picked up with no change to bundle_operator_agents.
+    fake_agent = REPO_ROOT / ".claude/agents/review-agent-zzz-test.md"
+    assert not fake_agent.exists(), "fixture collision: pick a different fake name"
+    fake_agent.write_text("---\nname: review-agent-zzz-test\n---\nfixture only\n")
     try:
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp)
             rc, _ = _bundle(scratch)
             assert rc == 0
-            assert (scratch / ".claude/commands/review-pr-zzz-test-lens.md").exists()
+            assert (scratch / ".claude/agents/review-agent-zzz-test.md").exists()
     finally:
-        fake_command.unlink()
+        fake_agent.unlink()
 
 
 def test_creates_directories_if_missing():
