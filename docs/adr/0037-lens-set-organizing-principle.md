@@ -1,7 +1,7 @@
 # ADR 0037: A lens earns its place only by what the base reviewer cannot do
 
 Date: 2026-07-23
-Status: Accepted
+Status: Superseded by [ADR 0038](./0038-review-roles-from-contamination-isolation.md), which replaces the lens taxonomy with roles split only on contamination isolation.
 
 ## Context
 
