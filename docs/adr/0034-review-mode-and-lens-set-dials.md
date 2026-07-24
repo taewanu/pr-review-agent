@@ -1,7 +1,7 @@
 # ADR 0034: REVIEW_MODE and REVIEW_LENSES dials for the review leg
 
 Date: 2026-07-20
-Status: Accepted
+Status: Superseded by [ADR 0038](./0038-review-roles-from-contamination-isolation.md), which deletes both dials: the role set is fixed, and the subagent dispatch layer this ADR measured as overhead is removed outright.
 
 ## Context
 

@@ -1,7 +1,7 @@
 # ADR 0035: An intent lens reads the PR's own claims
 
 Date: 2026-07-21
-Status: Accepted
+Status: Accepted; extended by [ADR 0038](./0038-review-roles-from-contamination-isolation.md), which keeps this agent as the `intent` role, adds the stated-rationale and refactor-claim checks, and re-grounds its justification as symmetric input isolation.
 
 ## Context
 
