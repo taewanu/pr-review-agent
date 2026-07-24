@@ -315,7 +315,10 @@ def main() -> int:
     failure category for review-pr.sh's log_failure routing (ADR 0005)."""
     argv = sys.argv[1:]
     probe_text = None
-    if "--session-limit-probe" in argv:
+    # Consume every occurrence (last wins), mirroring parse_no_style_flag's
+    # strip-all behaviour: a duplicated flag must never leak its second copy
+    # into the positional payload paths.
+    while "--session-limit-probe" in argv:
         i = argv.index("--session-limit-probe")
         if i + 1 >= len(argv):
             print("category=unknown", file=sys.stderr)

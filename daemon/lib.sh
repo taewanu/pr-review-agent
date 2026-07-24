@@ -1302,9 +1302,9 @@ acquire_claude_slots() {
     [[ -n "$label" ]] && log_info "${label}: pool size ${pool_size} < ${count} requested, charging ${pool_size}"
     count="$pool_size"
   fi
-  # A zero request returns before the loop: `printf "${claimed[@]}"` on an
-  # empty array is an unbound-variable exit under bash 3.2's set -u, and there
-  # is nothing to claim anyway.
+  # A zero request returns before the loop: `printf '%s\n' "${claimed[@]}"` on
+  # an empty array is an unbound-variable exit under bash 3.2's set -u, and
+  # there is nothing to claim anyway.
   ((count > 0)) || return 0
   start_ts="$(date +%s)"
   while true; do

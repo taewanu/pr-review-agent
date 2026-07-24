@@ -164,9 +164,9 @@ LOCK_FILE=""
 # Sum every claude -p cost sidecar (generation orchestrator, editor, judge-fix)
 # and log the total, on success or failure (ADR 0023 dogfood follow-up): each
 # was only ever visible as one line per call in the live log, so seeing what a
-# review actually cost, or
-# a FAILED review had already burned before it failed, meant hand-summing the
-# log by eye. Must run before cleanup() removes $SCRATCH (the trap order below
+# review actually cost, or a FAILED review had already burned before it failed,
+# meant hand-summing the log by eye.
+# Must run before cleanup() removes $SCRATCH (the trap order below
 # guarantees this: flip_status_failed, which calls this, runs first). `find`,
 # not a `*.cost` glob: every raw file (hence every .cost sidecar) is a dotfile
 # (.pr-review-raw*.txt.cost), which a bare `*` glob silently excludes without
