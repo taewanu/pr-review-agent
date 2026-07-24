@@ -1,6 +1,6 @@
 # pr-review-agent
 
-Automated PR review tool that posts as a self-hosted GitHub App (ADR 0036). Daemon written in bash + Python, run as a foreground polling loop and optionally installed as a background `launchd` job (ADR 0011). Submits reviews via the `gh` CLI under the App's `[bot]` identity. Built on directly-prompted `claude -p` processes (ADR 0038).
+Automated PR review tool that posts as a self-hosted GitHub App (ADR 0036). Daemon written in bash + Python, run as a foreground polling loop and optionally installed as a background `launchd` job (ADR 0011). Submits reviews via the `gh` CLI under the App's `[bot]` identity. Built on `claude -p`: one orchestrator session spawns the generator roles as parallel subagents, and the editor, judge-fix, and reply passes run as directly-prompted processes (ADR 0038 as amended).
 
 ## Run commands
 

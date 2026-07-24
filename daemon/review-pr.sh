@@ -761,7 +761,12 @@ fi
 # to 600s after dogfooding the multi-lens design (ADR 0023): even in isolation
 # several lenses on a real PR took 178-262s, some genuinely exceeded 300s (not
 # stuck, just slow generate-verify-score work), and concurrent slot contention
-# can push this further. Partial output on timeout is discarded, not parsed.
+# can push this further. Under Shape C (#299) this bounds the whole orchestrator
+# session, not one role: the roles run in parallel inside it, so the budget is
+# still sized to the slowest role plus the orchestrator's own dispatch overhead,
+# and the CLI offers no per-subagent cap to restore the per-role bound. A role's
+# payload written before the timeout survives it (see the orchestrator exit
+# handling below).
 REVIEW_AGENT_TIMEOUT="${REVIEW_AGENT_TIMEOUT:-600}"
 
 # Global claude_slot pool size (ADR 0023 revision): resolve from env, then
@@ -783,92 +788,117 @@ REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
 # defect survived weeks of dogfood. The dial is only trustworthy if it says so.
 log_info "model: ${REVIEW_MODEL}"
 
-# ADR 0038: the two roles read in parallel, each unaware of the other's output,
-# each a directly-prompted `claude -p` process. The subagent dispatch layer and
-# the REVIEW_MODE dial died with ADR 0038, on ADR 0034's measurement of the
-# layer as pure forwarding overhead (equal recall, 27-39% more tokens).
-# Dispatch is bounded by the global claude_slot pool
-# (daemon/lib.sh's acquire_claude_slot/release_claude_slot), not by ADR 0013's
-# MAX_PARALLEL: that dial only bounds concurrent review-pr.sh *processes*,
-# while the slot pool bounds concurrent `claude -p` *calls* directly, shared
-# automatically across however many review-pr.sh processes are running (the
-# slot files live on disk, not in one process's memory). A stuck role is still
-# bounded by its own REVIEW_AGENT_TIMEOUT; the slot is released in the same
-# subshell that acquired it, so a killed role's slot is freed immediately
-# rather than waiting for stale-reclaim.
-lens_i=0
-lens_count="${#LENS_LABELS[@]}"
-lens_pids=()
-while [[ "$lens_i" -lt "$lens_count" ]]; do
-  lens_label="${LENS_LABELS[$lens_i]}"
-  lens_raw="${LENS_RAW_FILES[$lens_i]}"
-  log_step "running review agent ($lens_label role) via claude -p"
-  (
-    slot="$(acquire_claude_slot "$lens_label role")"
-    cd "$SCRATCH"
-    rc=0
-    # `claude`'s own stderr (e.g. its non-interactive workspace-trust notice,
-    # expected every run since a fresh scratch clone is never pre-trusted) was
-    # bypassing stream_format.py's labeling and flooding the daemon log
-    # unlabeled; it goes to a per-role sidecar file instead, so nothing is
-    # silently lost but the primary log stays legible.
-    # The agent's own body (yaml frontmatter stripped) is appended to the base
-    # prompt, keeping the investigation scaffolding the verify step needs, and
-    # slash commands are disabled because the prompt below IS the instruction.
-    # One file, no includes: an agent's body is its whole system prompt, so a
-    # pointer at another agent's prompt resolves to nothing at runtime.
-    single_sys="$SCRATCH/.pr-review-single-sys-$lens_label.md"
-    awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
-      ".claude/agents/review-agent-$lens_label.md" >"$single_sys"
+# ADR 0038 amended (#299, Shape C): the roles run as parallel subagents inside
+# ONE orchestrator `claude -p` session, spawned via the Agent tool from the
+# agent definitions the bundle placed in the scratch's .claude/agents/. The
+# roles stay unaware of each other (each subagent gets its own context and its
+# own task prompt), but the process-level fan-out is gone, and with it three
+# things this block used to give per role: its own timeout (REVIEW_AGENT_TIMEOUT
+# now bounds the whole orchestrator; the CLI has no per-subagent cap), its own
+# .cost sidecar (stream-json exposes only the session aggregate), and its own
+# labeled activity stream (one label covers the stage).
+#
+# Each role writes its own fenced payload to its named scratch file, so
+# merge_findings.py keeps reading N raw files exactly as under the process
+# fan-out, and no payload round-trips through the orchestrator's generation
+# (a re-emission would risk truncation or paraphrase on a long review). The
+# orchestrator is told to spawn, wait, and report: never to review, retry, or
+# touch a payload file.
+#
+# Slot accounting: the orchestrator is one process running role_count hidden
+# API sessions, so it charges one slot per role (acquire_claude_slots,
+# all-or-nothing to avoid hold-and-wait deadlock between concurrent
+# orchestrators, clamped to the pool size). MAX_PARALLEL still only bounds
+# review-pr.sh *processes*; the slot pool keeps bounding concurrent sessions.
+role_count="${#LENS_LABELS[@]}"
+
+# Pre-create every role's payload file: a role that never runs (orchestrator
+# timeout, subagent failure) leaves an empty file, the same degraded shape as a
+# timed-out lens under the process fan-out. merge_findings.py tolerates an
+# empty payload (ADR 0024) and the per-role check below logs it.
+for _raw in "${LENS_RAW_FILES[@]}"; do : >"$_raw"; done
+
+ORCH_RAW="$SCRATCH/.pr-review-orchestrator.txt"
+ORCH_PROMPT="$SCRATCH/.pr-review-orchestrator-prompt.txt"
+{
+  printf 'You are a dispatch orchestrator. Spawn one subagent per role listed below with the Agent tool, issuing ALL the Agent calls in a single message so the roles run in parallel. Pass each role its task prompt verbatim, exactly as written between the BEGIN/END markers.\n\n'
+  printf 'Do not review the PR yourself, do not read the diff, and never read, summarize, or write any payload file a role owns.\n\n'
+  role_i=0
+  while [[ "$role_i" -lt "$role_count" ]]; do
+    role_label="${LENS_LABELS[$role_i]}"
+    role_raw_basename="$(basename "${LENS_RAW_FILES[$role_i]}")"
+    # shellcheck disable=SC2016  # the backticks are a markdown code span in the prompt, not a command substitution
+    printf -- '--- Role %d: agent type `review-agent-%s` ---\n' "$((role_i + 1))" "$role_label"
+    printf 'BEGIN TASK PROMPT\n'
+    printf 'Review this PR per your instructions.\n'
+    printf 'The line-numbered diff is at: %s\n' "$NUMBERED_BASENAME"
+    # ADR 0035: the intent role gets the second side of its comparison. The
+    # code role has only the diff, which is the quarantine ADR 0038 names.
+    if [[ "$role_label" == "intent" ]]; then
+      printf 'What the change says it does is at: %s\n' "$INTENT_BASENAME"
+    fi
     # The diff goes by path, not inlined: inlining it and saying "reason over
     # this" made the model treat the context as complete and skip opening the
     # callers, which is the verify step's whole substance (ADR 0022).
-    single_prompt="$SCRATCH/.pr-review-single-prompt-$lens_label.txt"
-    {
-      printf 'Review this PR per your instructions and emit the JSON payload.\n'
-      printf 'The line-numbered diff is at: %s\n' "$NUMBERED_BASENAME"
-      # ADR 0035: the intent role gets the second side of its comparison. The
-      # code role has only the diff, which is the quarantine ADR 0038 names.
-      if [[ "$lens_label" == "intent" ]]; then
-        printf 'What the change says it does is at: %s\n' "$INTENT_BASENAME"
-      fi
-      printf 'Read it, then investigate the surrounding code with your tools '
-      printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
-    } >"$single_prompt"
-    run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-      claude -p --append-system-prompt-file "$single_sys" \
-      --model "$REVIEW_MODEL" \
-      --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
-      --disable-slash-commands \
-      --output-format stream-json --verbose <"$single_prompt" \
-      2>"$lens_raw.stderr" |
-      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
-        --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
-        --cost-out "$lens_raw.cost" ||
-      rc=$?
-    release_claude_slot "$slot"
-    exit "$rc"
-  ) &
-  lens_pids[lens_i]=$!
-  lens_i=$((lens_i + 1))
-done
+    printf 'Read it, then investigate the surrounding code with your tools '
+    printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
+    printf 'Write your complete output, the ```json fenced payload your instructions require, to the file %s (overwrite it). ' "$role_raw_basename"
+    printf 'Your final reply must not restate the payload; one line confirming the write is enough.\n'
+    printf 'END TASK PROMPT\n\n'
+    role_i=$((role_i + 1))
+  done
+  printf 'Wait for every role to complete. A role that errors or writes nothing is tolerated: never retry it, never write its file yourself, and let its siblings finish. When all roles are done, reply with one line per role: <label>: ok or failed.\n'
+} >"$ORCH_PROMPT"
 
-# Wait for every backgrounded lens, in dispatch order, checking each one's
-# outcome. wait "$pid" returns that PID's own exit status, unaffected by which
-# other lenses finish first. Every PID is waited on unconditionally, even when
-# an earlier one timed out or produced nothing: a self-review (pr-review-agent
-# PR #192) caught the prior version exiting immediately on the first bad lens,
-# which left later-dispatched, still-running lenses (a 5-lens/3-slot pool means
-# the last dispatched lenses start their own timeout clock later in wall time,
-# so this is the normal case, not an edge case) as orphaned background jobs
-# racing the EXIT trap's `cleanup()`, which `rm -rf`s $SCRATCH out from under
-# whatever they were still writing to. A timed-out or empty lens is logged and
-# skipped, not fatal to the whole review: merge_findings.py already tolerates
-# a lens payload that fails to parse (ADR 0024), including an empty one, so the
-# other lenses' valid findings still reach the confidence gate. Lives in
-# lib.sh, not inline, so test_lens_wait.py can source it and assert this
-# (ADR 0026, #192 follow-up).
-wait_for_lens_pids
+log_step "running review orchestrator (${LENS_LABELS[*]}) via claude -p"
+orch_rc=0
+(
+  # One slot per hidden role session; released together after the stage.
+  slots="$(acquire_claude_slots "$role_count" "review orchestrator")"
+  cd "$SCRATCH"
+  rc=0
+  # `claude`'s own stderr (e.g. its non-interactive workspace-trust notice,
+  # expected every run since a fresh scratch clone is never pre-trusted) goes
+  # to a sidecar file so the primary log stays legible.
+  # --tools carries the union of what the role agents need plus Agent: a
+  # subagent's effective tool set is the intersection of its frontmatter list
+  # and the parent session's --tools, so a tool missing here is silently
+  # unavailable to every role no matter what the agent file grants.
+  # No --append-system-prompt-file: the roles' system prompts come from the
+  # bundled .claude/agents/ definitions, loaded via --setting-sources project;
+  # the prompt file above is the orchestrator's whole instruction.
+  run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
+    claude -p \
+    --model "$REVIEW_MODEL" \
+    --tools Agent Read Write Bash Grep Glob WebFetch \
+    --strict-mcp-config --setting-sources project \
+    --disable-slash-commands \
+    --output-format stream-json --verbose <"$ORCH_PROMPT" \
+    2>"$ORCH_RAW.stderr" |
+    python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$ORCH_RAW" \
+      --label "${PR_COLOR_START}pr${PR_NUMBER}:review${PR_COLOR_RESET}" \
+      --cost-out "$ORCH_RAW.cost" ||
+    rc=$?
+  release_claude_slots "$slots"
+  exit "$rc"
+) || orch_rc=$?
+
+# A bad orchestrator exit is not fatal by itself: a role that finished writing
+# its payload before a timeout still counts, exactly as a surviving lens did
+# under the process fan-out. The per-role check logs what is missing, and
+# merge_findings.py rolls a total loss up to all-lenses-failed (ADR 0024).
+if [[ "$orch_rc" -eq "$TIMEOUT_EXIT" ]]; then
+  log_info "review orchestrator exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing with whatever payloads landed"
+elif [[ "$orch_rc" -ne 0 ]]; then
+  log_info "review orchestrator exited ${orch_rc}; continuing with whatever payloads landed"
+fi
+role_i=0
+while [[ "$role_i" -lt "$role_count" ]]; do
+  if [[ ! -s "${LENS_RAW_FILES[$role_i]}" ]]; then
+    log_info "${LENS_LABELS[$role_i]} role produced no payload; continuing without it"
+  fi
+  role_i=$((role_i + 1))
+done
 
 # Confidence gate threshold (ADR 0022): resolve from env, then .env, and export
 # so merge_findings.py's os.environ read sees it. The daemon never sources .env
