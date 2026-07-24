@@ -63,7 +63,7 @@ One file at the repo root:
 
 - **`.env`** (required): which repos to watch, the id of the App it posts as, and the daemon's tunables. Copy `templates/.env.example` and edit it; every key is documented there, which is why this list does not repeat them.
 
-Watched repos need nothing checked in. The daemon bundles its own agent and slash-command definitions into each per-PR clone before it reviews ([ADR 0007](docs/adr/0007-operator-bundled-agents.md)); a repo that wants different behaviour can carry its own file at the same path and the bundle leaves it alone.
+Watched repos need nothing checked in. The daemon bundles its own agent definitions into each per-PR clone before it reviews ([ADR 0007](docs/adr/0007-operator-bundled-agents.md)); a repo that wants different behaviour can carry its own file at the same path and the bundle leaves it alone.
 
 ### Skip a single PR
 

@@ -10,10 +10,7 @@ Output is consumed by a deterministic pipeline (`daemon/reply-pr.sh`). Drift fro
 
 ## Inputs
 
-The slash command will pass:
-
-- A PR URL as the first positional arg
-- `--threads <path>` pointing to a JSON file containing the unaddressed reply threads to verify:
+The dispatch prompt names the PR's URL and the path of a JSON file containing the unaddressed reply threads to verify:
 
 ```json
 [

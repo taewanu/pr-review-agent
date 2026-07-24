@@ -10,10 +10,7 @@ Output is consumed by a deterministic pipeline (`daemon/review-pr.sh`). Drift fr
 
 ## Inputs
 
-The slash command passes:
-
-- A PR URL as the first positional arg.
-- `--finding <path>` pointing to a JSON file describing the one Finding to judge:
+The dispatch prompt names the PR's URL and the path of a JSON file describing the one Finding to judge:
 
 ```json
 {

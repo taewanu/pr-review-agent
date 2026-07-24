@@ -1,6 +1,6 @@
 # pr-review-agent
 
-Automated PR review tool that posts as a self-hosted GitHub App (ADR 0036). Daemon written in bash + Python, run as a foreground polling loop and optionally installed as a background `launchd` job (ADR 0011). Submits reviews via the `gh` CLI under the App's `[bot]` identity. Built on Claude Code subagents, skills, and slash commands.
+Automated PR review tool that posts as a self-hosted GitHub App (ADR 0036). Daemon written in bash + Python, run as a foreground polling loop and optionally installed as a background `launchd` job (ADR 0011). Submits reviews via the `gh` CLI under the App's `[bot]` identity. Built on directly-prompted `claude -p` processes (ADR 0038).
 
 ## Run commands
 
@@ -24,7 +24,7 @@ The daemon is the `daemon/run.sh` polling loop (ADR 0009): each cycle drives `da
 
 Prereqs: a registered GitHub App the daemon authenticates as (its id in `GITHUB_APP_ID`, its private key at `~/.pr-review-agent/app.pem`), so no `gh auth login` (ADR 0036); `gh`, `claude`, `openssl`, `curl` on PATH; `jq`; `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing.
 
-The daemon bundles its own agent + slash-command definitions into the scratch clone before invoking `claude -p` (per ADR 0007), so target repos do **not** need to carry `.claude/agents/` or `.claude/commands/`. A target repo can override by carrying its own file at the same path; the bundle's `[[ -e dst ]] || cp` guard preserves the existing file.
+The daemon bundles its own agent definitions into the scratch clone before invoking `claude -p` (per ADR 0007), so target repos do **not** need to carry `.claude/agents/`. A target repo can override by carrying its own file at the same path; the bundle's `[[ -e dst ]] || cp` guard preserves the existing file.
 
 ## Forking
 
