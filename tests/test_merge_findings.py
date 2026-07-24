@@ -258,11 +258,11 @@ def test_one_lens_parse_failure_does_not_sink_the_others(capsys):
     assert "merge-skip: lens 1 payload failed (no-fence)" in capsys.readouterr().err
 
 
-def test_labels_name_the_failed_lens_in_the_skip_message(capsys):
+def test_labels_name_the_failed_role_in_the_skip_message(capsys):
     good = _lens(_finding(confidence=90))
     bad = "no fence here\n"
     merge_findings.merge([good, bad], labels=["code", "intent"])
-    assert "merge-skip: perf payload failed" in capsys.readouterr().err
+    assert "merge-skip: intent payload failed" in capsys.readouterr().err
 
 
 def test_all_lenses_failing_raises_a_distinct_category():
