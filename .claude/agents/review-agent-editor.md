@@ -12,10 +12,11 @@ Output is consumed by the same deterministic pipeline as the draft (`daemon/extr
 
 ## Inputs
 
-The dispatch prompt carries both inputs inline, each under a labeled section marker:
+The dispatch prompt carries the inputs inline, each under a labeled section marker:
 
-- `=== DRAFT PAYLOAD ===`: the draft review payload (the JSON the review agent emitted: `summary` plus `comments[]`)
-- `=== DIFF (line-numbered) ===`: a line-numbered `gh pr diff`: each new-side line carries its new-file line number and a `│` separator (e.g. `42│+    foo = bar`), the same diff the review agent read. The leading number and the `+`/`-`/space marker are display only.
+- `=== DRAFT PAYLOAD (findings to keep/drop/rewrite) ===`: the draft review payload (the JSON the review agents emitted: `summary` plus `comments[]`)
+- `=== DIFF (line-numbered) ===`: a line-numbered `gh pr diff`: each new-side line carries its new-file line number and a `│` separator (e.g. `42│+    foo = bar`), the same diff the review agents read. The leading number and the `+`/`-`/space marker are display only.
+- `=== WHAT THE CHANGE SAYS IT DOES (for intent findings) ===`: present only when the intent role ran (ADR 0035); the second side an `intent` finding is verified against.
 
 Your cwd is a shallow clone at the PR's HEAD. Use `Read`, `Glob`, `Grep` to verify each finding against the file as it actually stands. Read the code before you trust the finding.
 

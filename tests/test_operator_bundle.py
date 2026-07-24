@@ -2,10 +2,10 @@
 
 The function copies the operator's `.claude/agents/review-agent-*.md` (a glob,
 so a new agent needs no list update) into a scratch clone so the daemon's
-directly-prompted dispatch can load them without target-repo setup (ADR 0007).
-Agent files only: every dispatch is directly prompted (ADR 0038, #294), so no
-slash-command files exist to bundle. Target-repo files (if already present)
-must win, a repo can customize without forcing a daemon restart.
+directly-prompted dispatch can load them without target-repo setup (ADR 0007;
+the function's own comment carries the agents-only WHY). Target-repo files (if
+already present) must win, a repo can customize without forcing a daemon
+restart.
 """
 
 from __future__ import annotations

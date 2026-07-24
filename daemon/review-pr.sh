@@ -341,8 +341,9 @@ resolution() {
       jq ".[$i] | {path, line, finding_body}" "$candidates_file" >"$finding_file"
 
       judge_raw="$SCRATCH/.pr-review-judge-${i}.txt"
-      # Keyed by the finding's index like the finding file itself, so the
-      # per-candidate runs never clobber each other's prompt.
+      # Keyed by the finding's index like the finding file itself, so each
+      # candidate's prompt survives the loop as its own post-mortem artifact
+      # (the loop is serial; nothing can clobber).
       judge_prompt="$SCRATCH/.pr-review-judge-prompt-${i}.txt"
       {
         printf 'Judge this Finding per your instructions and emit the verdict JSON.\n'
