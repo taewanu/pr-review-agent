@@ -1,12 +1,11 @@
 """Tests for daemon/lib.sh's `bundle_operator_agents`.
 
 The function copies the operator's `.claude/agents/review-agent-*.md` (a glob,
-so a new agent needs no list update) plus an explicit list of the pipeline
-commands (edit-review.md, reply-pr.md, judge-fix.md; the review roles dispatch
-directly per ADR 0038 and have no command files) into a scratch clone so
-`claude -p` can load them without target-repo setup (ADR 0007). Target-repo
-files (if already present) must win, a repo can customize without forcing a
-daemon restart.
+so a new agent needs no list update) into a scratch clone so the daemon's
+directly-prompted dispatch can load them without target-repo setup (ADR 0007;
+the function's own comment carries the agents-only WHY). Target-repo files (if
+already present) must win, a repo can customize without forcing a daemon
+restart.
 """
 
 from __future__ import annotations
@@ -38,9 +37,6 @@ def test_copies_operator_agents_into_empty_scratch():
         assert (scratch / ".claude/agents/review-agent-reply.md").exists()
         assert (scratch / ".claude/agents/review-agent-editor.md").exists()
         assert (scratch / ".claude/agents/review-agent-fix-check.md").exists()
-        assert (scratch / ".claude/commands/edit-review.md").exists()
-        assert (scratch / ".claude/commands/reply-pr.md").exists()
-        assert (scratch / ".claude/commands/judge-fix.md").exists()
 
 
 def test_copied_content_matches_source():
@@ -69,18 +65,6 @@ def test_target_repo_file_wins_over_operator():
         assert (scratch / ".claude/agents/review-agent-reply.md").exists()
 
 
-def test_target_repo_command_file_wins_over_operator():
-    with tempfile.TemporaryDirectory() as tmp:
-        scratch = Path(tmp)
-        (scratch / ".claude/commands").mkdir(parents=True)
-        custom = "---\ndescription: custom editor pass\n---\nTARGET CUSTOM\n"
-        (scratch / ".claude/commands/edit-review.md").write_text(custom)
-        rc, _ = _bundle(scratch)
-        assert rc == 0
-        assert (scratch / ".claude/commands/edit-review.md").read_text() == custom
-        assert (scratch / ".claude/commands/reply-pr.md").exists()
-
-
 def test_future_agent_bundled_by_glob_with_no_code_change():
     # Proves the review-agent-*.md glob, not just today's known agent names: a
     # hypothetical new agent, planted transiently in the real source tree, must
@@ -98,10 +82,10 @@ def test_future_agent_bundled_by_glob_with_no_code_change():
         fake_agent.unlink()
 
 
-def test_creates_directories_if_missing():
-    # Scratch has nothing relevant. Bundle must create both `.claude/agents`
-    # and `.claude/commands`. Sounds-abroad-style scratch (other `.claude/`
-    # subdirs present but not `agents/commands`) is the realistic case.
+def test_creates_agents_directory_if_missing():
+    # Scratch has nothing relevant. Bundle must create `.claude/agents`.
+    # Sounds-abroad-style scratch (other `.claude/` subdirs present but not
+    # `agents`) is the realistic case.
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         (scratch / ".claude/hooks").mkdir(parents=True)
@@ -109,7 +93,6 @@ def test_creates_directories_if_missing():
         rc, _ = _bundle(scratch)
         assert rc == 0
         assert (scratch / ".claude/agents").is_dir()
-        assert (scratch / ".claude/commands").is_dir()
         # Unrelated existing `.claude/` contents untouched.
         assert (scratch / ".claude/hooks").is_dir()
         assert (scratch / ".claude/settings.json").read_text() == "{}"

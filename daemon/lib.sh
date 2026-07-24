@@ -1461,30 +1461,23 @@ format_clock_time() {
 }
 
 # bundle_operator_agents <scratch-dir>
-# Copies operator's agent + slash-command files from this repo's .claude/ into
-# the scratch clone's .claude/ so claude -p (which loads from cwd) finds them
-# without requiring target-repo setup (ADR 0007). Target-repo files (already
-# present in the scratch from the clone) win via the `[[ -e dst ]] || cp`
-# guard — a repo can ship its own override.
+# Copies operator's agent files from this repo's .claude/agents/ into the
+# scratch clone's .claude/agents/ so the daemon's dispatch (which reads them
+# from cwd) finds them without requiring target-repo setup (ADR 0007). Agent
+# files only: every dispatch is directly prompted (ADR 0038, #294), so no
+# slash-command files exist to bundle. Target-repo files (already present in
+# the scratch from the clone) win via the `[[ -e dst ]] || cp` guard; a repo
+# can ship its own override.
 bundle_operator_agents() {
   local scratch="$1"
   local repo_root
   repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  mkdir -p "$scratch/.claude/agents" "$scratch/.claude/commands"
+  mkdir -p "$scratch/.claude/agents"
   local f base
   for f in "$repo_root/.claude/agents/review-agent-"*.md; do
     [[ -e "$f" ]] || continue
     base="$(basename "$f")"
     [[ -e "$scratch/.claude/agents/$base" ]] || cp "$f" "$scratch/.claude/agents/$base"
-  done
-  # The role prompts dispatch directly (ADR 0038), so no per-role command files
-  # exist; the commands below are the reply/edit/judge pipeline stages.
-  for f in "$repo_root/.claude/commands/edit-review.md" \
-    "$repo_root/.claude/commands/reply-pr.md" \
-    "$repo_root/.claude/commands/judge-fix.md"; do
-    [[ -e "$f" ]] || continue
-    base="$(basename "$f")"
-    [[ -e "$scratch/.claude/commands/$base" ]] || cp "$f" "$scratch/.claude/commands/$base"
   done
 }
 

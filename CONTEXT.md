@@ -37,7 +37,7 @@ A directly-prompted `claude -p` process that reads a PR and emits structured fin
 _Avoid_: agent alone (Claude Code's broader term for parallelization; use the qualified compound), reviewer (ambiguous with GitHub's human-assigned PR reviewers)
 
 **Editor agent**:
-A Claude Code subagent that refines the Review agent's output before it is posted. It re-reads the PR at HEAD independently, on a fresh context, so its judgment is not anchored to the author's reasoning (the bias it exists to remove); against that re-read it drops weak or inaccurate Findings, rewrites the surviving Finding bodies, and reconciles the Review body to match. Defined at `.claude/agents/review-agent-editor.md`. Stateless and does not post. Its levers are cut, reword, and reconcile only: it never changes a Finding's `severity` or `type` (the taxonomy is the daemon's per ADR 0002) or its `path`/`line` (anchoring owns relocation).
+A directly-prompted `claude -p` process that refines the Review agent's output before it is posted. It re-reads the PR at HEAD independently, on a fresh context, so its judgment is not anchored to the author's reasoning (the bias it exists to remove); against that re-read it drops weak or inaccurate Findings, rewrites the surviving Finding bodies, and reconciles the Review body to match. Defined at `.claude/agents/review-agent-editor.md`. Stateless and does not post. Its levers are cut, reword, and reconcile only: it never changes a Finding's `severity` or `type` (the taxonomy is the daemon's per ADR 0002) or its `path`/`line` (anchoring owns relocation).
 _Avoid_: reviewer (the Review agent emits Findings; the Editor refines them), critic (overloaded), persona (a wording profile within an agent, not a separate agent), draft (a posted review is not a draft; see Pending review)
 
 **Persona**:
@@ -89,7 +89,7 @@ A Finding plus its chain of replies; the unit `reply-pr.sh` processes. The same 
 A comment the Operator writes inside a Reply thread, in reply to a Finding.
 
 **Reply agent**:
-The Claude Code subagent `review-agent-reply`. Classifies each Operator reply into a Bucket and verifies a fix_claim against the file at HEAD. Stateless and does not post (the daemon posts). The `review-agent-*` prefix is the product-name namespace, not a "reviewing" claim.
+The directly-prompted `claude -p` process defined at `.claude/agents/review-agent-reply.md`. Classifies each Operator reply into a Bucket and verifies a fix_claim against the file at HEAD. Stateless and does not post (the daemon posts). The `review-agent-*` prefix is the product-name namespace, not a "reviewing" claim.
 _Avoid_: agent alone (see Review agent), "the agent replies" (the daemon posts, not the agent)
 
 **Bucket**:

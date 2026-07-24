@@ -325,7 +325,14 @@ resolution() {
     log_info "judging ${n} candidate thread(s) for commit-driven resolution"
     # Focused single-file judgment, so a shorter backstop than the full review's 300s.
     local fix_check_timeout="${FIX_CHECK_AGENT_TIMEOUT:-180}"
-    local i tid path line verdict fixed rationale rc
+    # Directly prompted like the roles and the editor (ADR 0038): ADR 0034
+    # measured the slash-command wrapper as pure forwarding overhead. The
+    # system prompt is the same for every candidate, so strip it once here;
+    # the per-finding prompt file is built inside the loop.
+    local judge_sys="$SCRATCH/.pr-review-judge-sys.md"
+    awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
+      "$SCRATCH/.claude/agents/review-agent-fix-check.md" >"$judge_sys"
+    local i tid path line verdict fixed rationale rc judge_prompt
     for ((i = 0; i < n; i++)); do
       tid="$(jq -r ".[$i].thread_id" "$candidates_file")"
       path="$(jq -r ".[$i].path" "$candidates_file")"
@@ -334,6 +341,15 @@ resolution() {
       jq ".[$i] | {path, line, finding_body}" "$candidates_file" >"$finding_file"
 
       judge_raw="$SCRATCH/.pr-review-judge-${i}.txt"
+      # Keyed by the finding's index like the finding file itself, so each
+      # candidate's prompt survives the loop as its own post-mortem artifact
+      # (the loop is serial; nothing can clobber).
+      judge_prompt="$SCRATCH/.pr-review-judge-prompt-${i}.txt"
+      {
+        printf 'Judge this Finding per your instructions and emit the verdict JSON.\n'
+        printf 'The PR under review: %s\n' "$PR_URL"
+        printf 'The Finding to judge is at: %s\n' "$(basename "$finding_file")"
+      } >"$judge_prompt"
       rc=0
       (
         # Same shared claude_slot pool as the lenses and editor (ADR 0023
@@ -345,9 +361,11 @@ resolution() {
         # claude's own stderr (workspace-trust notice, etc.) goes to a sidecar
         # file rather than the primary log; see the lens loop above.
         run_with_timeout "$fix_check_timeout" \
-          claude -p "/judge-fix $PR_URL --finding $(basename "$finding_file")" \
+          claude -p --append-system-prompt-file "$judge_sys" \
           --model "$REVIEW_MODEL" \
-          --output-format stream-json --verbose \
+          --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
+          --disable-slash-commands \
+          --output-format stream-json --verbose <"$judge_prompt" \
           2>"$judge_raw.stderr" |
           python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$judge_raw" \
             --label "${PR_COLOR_START}pr${PR_NUMBER}:judge-fix${PR_COLOR_RESET}" \
@@ -506,12 +524,12 @@ run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
   git checkout --quiet --detach "$HEAD_OID"
 )
 
-# Bundle operator's agent + slash-command defs into the scratch so claude -p
-# loads them from cwd without requiring target-repo .claude/ setup (ADR 0007).
+# Bundle operator's agent defs into the scratch so the dispatch below reads
+# them from cwd without requiring target-repo .claude/ setup (ADR 0007).
 bundle_operator_agents "$SCRATCH"
 
 # Bare filenames inside the scratch dir. The claude prompt below references the
-# diff by basename so $TMPDIR containing a space can't split the slash-command args.
+# diff by basename so a $TMPDIR containing a space can't break the named path.
 DIFF_BASENAME=".pr-review-diff.txt"
 DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
 # The agents read a line-numbered copy so they read `line` off the leading number
