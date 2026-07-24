@@ -3,8 +3,9 @@
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command')
 
+# "git push" removed 2026-07-24 (operator granted standing push authorization);
+# force-push stays blocked below.
 DANGEROUS_PATTERNS=(
-  "git push"
   "git reset --hard"
   "git clean -fd"
   "git clean -f"
