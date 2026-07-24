@@ -88,10 +88,9 @@ def test_orchestrator_loads_agents_from_project_settings():
 
 
 def test_orchestrator_auto_approves_payload_writes():
-    # Non-interactive claude auto-denies the Write permission prompt, so
-    # without acceptEdits every role completes its review and then fails to
-    # land its payload: a full-cost run producing an empty review, caught only
-    # by the first live smoke run (#299).
+    # Without acceptEdits every role completes its review and then fails to
+    # land its payload: a full-cost run producing an empty review (#299; the
+    # mechanism is documented at the orchestrator invocation in review-pr.sh).
     body = REVIEW_PR.read_text()
     m = re.search(r"(?ms)--tools Agent.*?--output-format stream-json", body)
     assert m and "--permission-mode acceptEdits" in m.group(0), (

@@ -865,15 +865,12 @@ orch_rc=0
   # subagent's effective tool set is the intersection of its frontmatter list
   # and the parent session's --tools, so a tool missing here is silently
   # unavailable to every role no matter what the agent file grants.
-  # --permission-mode acceptEdits: non-interactive claude auto-DENIES the
-  # Write permission prompt, so without this every role finishes its whole
-  # review and then fails to land its payload file (the first smoke run burned
-  # $2.19 to produce two empty files). acceptEdits auto-approves file writes
-  # inside the session's working directory, which is exactly the scratch.
-  # The payload files are also deliberately NOT pre-created: Write refuses to
-  # overwrite an existing file it has not Read, so a pre-created empty file
-  # adds a pointless read-first hoop for every role; the post-run loop below
-  # restores the empty-file shape for whatever never landed.
+  # --permission-mode acceptEdits: non-interactive claude auto-denies the
+  # Write permission prompt, so without this every role completes its review
+  # and then fails to land its payload file. acceptEdits auto-approves file
+  # writes inside the session's working directory, which is the scratch.
+  # The payload files are deliberately NOT pre-created: Write refuses to
+  # overwrite an existing file it has not Read.
   # No --append-system-prompt-file: the roles' system prompts come from the
   # bundled .claude/agents/ definitions, loaded via --setting-sources project;
   # the prompt file above is the orchestrator's whole instruction.
@@ -897,7 +894,7 @@ orch_rc=0
 # A bad orchestrator exit is not fatal by itself: a role that finished writing
 # its payload before a timeout still counts, exactly as a surviving lens did
 # under the process fan-out. The per-role check logs what is missing, and
-# merge_findings.py rolls a total loss up to all-lenses-failed (ADR 0024).
+# merge_findings.py rolls a total loss up to all-lenses-failed (ADR 0023).
 if [[ "$orch_rc" -eq "$TIMEOUT_EXIT" ]]; then
   log_info "review orchestrator exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing with whatever payloads landed"
 elif [[ "$orch_rc" -ne 0 ]]; then
@@ -907,7 +904,7 @@ role_i=0
 while [[ "$role_i" -lt "$role_count" ]]; do
   # Ensure the file exists before merge reads it: a role that never landed its
   # payload (timeout, subagent failure) leaves nothing, and merge_findings.py
-  # crashes on a missing path where it tolerates an empty one (ADR 0024).
+  # crashes on a missing path where it tolerates an empty one (ADR 0023).
   [[ -e "${LENS_RAW_FILES[$role_i]}" ]] || : >"${LENS_RAW_FILES[$role_i]}"
   if [[ ! -s "${LENS_RAW_FILES[$role_i]}" ]]; then
     log_info "${LENS_LABELS[$role_i]} role produced no payload; continuing without it"
