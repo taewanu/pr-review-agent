@@ -65,8 +65,7 @@ log_ok() {
 # downgraded to warn-and-post, and the indices the editor dropped, #259). Without
 # this a lens silently dropped to four (#196), or a missed voice rule or an editor
 # drop left no signal before cleanup() removed the scratch. Lives in lib.sh, not
-# inline, so test_degradation_warnings.py can source it (same rationale as
-# wait_for_lens_pids, ADR 0026).
+# inline, so test_degradation_warnings.py can source it (ADR 0026).
 log_degradation_warnings() {
   local stderr_file="$1" line
   [[ -r "$stderr_file" ]] || return 0
@@ -1282,29 +1281,75 @@ release_claude_slot() {
   return 0
 }
 
-# wait_for_lens_pids
-# Waits on every backgrounded lens PID in dispatch order, regardless of any
-# earlier lens's outcome (ADR 0026). Reads the caller's lens_count,
-# LENS_LABELS, LENS_RAW_FILES, and lens_pids arrays as globals, matching how
-# review-pr.sh already shares this state; extracted into lib.sh, rather than
-# left inline, so a test can source this file and assert the loop reaches
-# lens_i == lens_count even when an earlier lens times out or writes nothing,
-# the exact case that used to `exit 1` before the later lenses were reaped.
-# shellcheck disable=SC2154  # lens_count/LENS_LABELS/LENS_RAW_FILES/lens_pids set by the caller
-wait_for_lens_pids() {
-  local lens_i=0 lens_label lens_raw lens_rc
-  while [[ "$lens_i" -lt "$lens_count" ]]; do
-    lens_label="${LENS_LABELS[$lens_i]}"
-    lens_raw="${LENS_RAW_FILES[$lens_i]}"
-    lens_rc=0
-    wait "${lens_pids[$lens_i]}" || lens_rc=$?
-    if [[ "$lens_rc" -eq "$TIMEOUT_EXIT" ]]; then
-      log_info "$lens_label lens exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing without it"
-    elif [[ ! -s "$lens_raw" ]]; then
-      log_info "$lens_label lens produced no output; continuing without it"
+# acquire_claude_slots <count> [label]
+# All-or-nothing multi-slot acquire for the orchestrator dispatch (#299, ADR
+# 0038 amended): one process running <count> hidden role sessions charges
+# <count> slots, so the pool keeps bounding concurrent API sessions. Clamped to
+# the pool size so a pool smaller than the role count still runs (undercharged,
+# logged) instead of waiting forever. All-or-nothing because two concurrent
+# orchestrators each holding a partial claim while blocking on the remainder
+# would deadlock the pool; a partial claim is released before the retry sleep.
+# Prints the claimed slot lock paths, newline-separated; release them together
+# with release_claude_slots. Lives in lib.sh so test_claude_slot.py can source
+# it (ADR 0026).
+acquire_claude_slots() {
+  local count="$1" label="${2:-}" pool_size slot_path i p
+  local poll_interval="${CLAUDE_SLOT_POLL_SECONDS:-2}"
+  local claimed=() start_ts polled=0 waited suffix
+  mkdir -p "$(_state_dir)"
+  pool_size="$(_slot_pool_size)"
+  if ((count > pool_size)); then
+    [[ -n "$label" ]] && log_info "${label}: pool size ${pool_size} < ${count} requested, charging ${pool_size}"
+    count="$pool_size"
+  fi
+  # A zero request returns before the loop: `printf '%s\n' "${claimed[@]}"` on
+  # an empty array is an unbound-variable exit under bash 3.2's set -u, and
+  # there is nothing to claim anyway.
+  ((count > 0)) || return 0
+  start_ts="$(date +%s)"
+  while true; do
+    claimed=()
+    i=1
+    while ((i <= pool_size && ${#claimed[@]} < count)); do
+      if slot_path="$(_try_claim_slot "$i")"; then
+        claimed+=("$slot_path")
+      fi
+      i=$((i + 1))
+    done
+    if ((${#claimed[@]} == count)); then
+      if [[ -n "$label" ]]; then
+        suffix=""
+        # Same event-keyed wait reporting as acquire_claude_slot (#228).
+        if ((polled)); then
+          waited=$(($(date +%s) - start_ts))
+          suffix=" (waited ${waited}s)"
+        fi
+        log_info "${label}: acquired ${count}/${pool_size} slots${suffix}"
+      fi
+      printf '%s\n' "${claimed[@]}"
+      return 0
     fi
-    lens_i=$((lens_i + 1))
+    # Partial claim: release before sleeping (never hold-and-wait). The empty
+    # check keeps bash 3.2's set -u from treating an empty array expansion as
+    # an unbound variable.
+    if ((${#claimed[@]})); then
+      for p in "${claimed[@]}"; do rm -f "$p"; done
+    fi
+    polled=1
+    sleep "$poll_interval"
   done
+}
+
+# release_claude_slots <newline-separated-slot-lock-paths>
+# Plural sibling of release_claude_slot: removes every claimed lock. No-op on
+# an empty argument so a cleanup path can call it unconditionally.
+release_claude_slots() {
+  local paths="${1:-}" p
+  [[ -n "$paths" ]] || return 0
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && rm -f "$p"
+  done <<<"$paths"
+  return 0
 }
 
 # emit_dryrun_contract <count>
@@ -1318,8 +1363,7 @@ wait_for_lens_pids() {
 # dryrun_payload is the full edited review object (summary plus comments), so the
 # harness needs no separate summary/anchored/unanchored locators. Reads the
 # run-scoped PAYLOAD_FILE the caller set; extracted into lib.sh, not left inline
-# in review-pr.sh, so a test can source this file and assert the fields (ADR 0026
-# precedent, as wait_for_lens_pids above).
+# in review-pr.sh, so a test can source this file and assert the fields (ADR 0026).
 # shellcheck disable=SC2154  # PAYLOAD_FILE set by the caller
 emit_dryrun_contract() {
   printf 'dryrun_payload=%s\n' "$PAYLOAD_FILE"

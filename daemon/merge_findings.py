@@ -229,7 +229,11 @@ def _dedup(findings: list[Finding]) -> list[Finding]:
 
 
 def merge(
-    raws: list[str], *, validate_style: bool = False, labels: list[str] | None = None
+    raws: list[str],
+    *,
+    validate_style: bool = False,
+    labels: list[str] | None = None,
+    session_limit_probe: str | None = None,
 ) -> ReviewPayload:
     """Parse each lens payload, union and dedup findings, then gate and truncate.
 
@@ -266,6 +270,18 @@ def merge(
                 SESSION_LIMIT_CATEGORY,
                 f"all {len(raws)} lenses hit the session limit, resets {resets[0] or 'unknown'}",
             )
+        # Orchestrator dispatch (#299): the roles write only their payload
+        # files, so a quota hit leaves those empty and the sentinel lands in
+        # the orchestrator's own transcript instead. The probe is that
+        # transcript, consulted only when NO payload parsed, so a mixed run
+        # (a role that landed before the wall) stays a degraded success.
+        if session_limit_probe is not None:
+            probe_reset = session_limit_reset(session_limit_probe)
+            if probe_reset is not None:
+                raise ExtractError(
+                    SESSION_LIMIT_CATEGORY,
+                    f"generation hit the session limit, resets {probe_reset or 'unknown'}",
+                )
         raise ExtractError(
             "all-lenses-failed", f"every one of {len(raws)} lens payload(s) failed to parse"
         )
@@ -297,18 +313,43 @@ def main() -> int:
     Mirrors extract_json.main's contract: each argv entry is a file holding one
     lens's raw ```json-fenced output; the first stderr line is the parseable
     failure category for review-pr.sh's log_failure routing (ADR 0005)."""
-    validate_style, paths = extract_json.parse_no_style_flag(sys.argv[1:])
+    argv = sys.argv[1:]
+    probe_text = None
+    # Consume every occurrence (last wins), mirroring parse_no_style_flag's
+    # strip-all behaviour: a duplicated flag must never leak its second copy
+    # into the positional payload paths.
+    while "--session-limit-probe" in argv:
+        i = argv.index("--session-limit-probe")
+        if i + 1 >= len(argv):
+            print("category=unknown", file=sys.stderr)
+            print("merge_findings: --session-limit-probe requires a path", file=sys.stderr)
+            return 1
+        try:
+            probe_text = Path(argv[i + 1]).read_text()
+        except OSError:
+            # A missing transcript degrades to no probe: classification falls
+            # back to all-lenses-failed, never aborts the merge itself.
+            probe_text = None
+        argv = argv[:i] + argv[i + 2 :]
+    validate_style, paths = extract_json.parse_no_style_flag(argv)
     raws = [Path(p).read_text() for p in paths]
     labels = [_label_from_path(p) for p in paths]
     try:
-        merged = merge(raws, validate_style=validate_style, labels=labels)
+        merged = merge(
+            raws, validate_style=validate_style, labels=labels, session_limit_probe=probe_text
+        )
     except ExtractError as exc:
         print(f"category={exc.category}", file=sys.stderr)
         if exc.category == SESSION_LIMIT_CATEGORY:
             # Second machine-readable line, so review-pr.sh pauses by comparing
             # two integers. Empty value means the sentinel was there but its time
             # was not readable; the caller falls back to a fixed interval.
-            deadline = session_limit_deadline(session_limit_reset(raws[0]) or "", datetime.now())
+            # The reset time lives wherever the sentinel was found: the raws
+            # under per-role dispatch, the orchestrator transcript under #299.
+            reset = session_limit_reset(raws[0]) if raws else None
+            if reset is None and probe_text is not None:
+                reset = session_limit_reset(probe_text)
+            deadline = session_limit_deadline(reset or "", datetime.now())
             print(
                 f"session_limit_deadline={deadline if deadline is not None else ''}",
                 file=sys.stderr,

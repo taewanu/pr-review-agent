@@ -60,7 +60,9 @@ def parse_dryrun_contract(stdout: str) -> dict[str, str]:
 
 
 def sum_cost(scratch_dir: Path) -> float:
-    """Sum the per-agent `.cost` sidecars review-pr.sh leaves in the scratch."""
+    """Sum the `.cost` sidecars review-pr.sh leaves in the scratch, one per
+    claude -p session (the generation orchestrator, the editor, each judge-fix
+    call; per-role costs are not separable under the orchestrator dispatch, #299)."""
     total = 0.0
     for cost_file in Path(scratch_dir).glob("*.cost"):
         text = cost_file.read_text().strip()
@@ -566,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         + (
             " ".join(f"{k}={v}" for k, v in config.items())
             if config
-            else "none set (review-pr.sh defaults: roles `code intent`, direct dispatch)"
+            else "none set (review-pr.sh defaults: roles `code intent`, orchestrator dispatch)"
         ),
         file=sys.stderr,
     )

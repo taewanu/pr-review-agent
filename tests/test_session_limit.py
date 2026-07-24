@@ -125,6 +125,30 @@ def test_one_limited_lens_among_parse_failures_is_not_a_session_limit():
     assert exc.value.category == "all-lenses-failed"
 
 
+def test_empty_payloads_with_a_limited_probe_raise_session_limit():
+    # Orchestrator dispatch (#299): the roles write only their payload files,
+    # so a quota hit leaves them empty and the sentinel lands only in the
+    # orchestrator transcript. The probe carries the classification.
+    with pytest.raises(ExtractError) as exc:
+        merge_findings.merge(["", ""], session_limit_probe=SENTINEL)
+    assert exc.value.category == merge_findings.SESSION_LIMIT_CATEGORY
+
+
+def test_empty_payloads_with_a_sentinel_free_probe_stay_all_lenses_failed():
+    # A real defect that broke every role must never masquerade as a quota
+    # pause just because a probe was supplied.
+    with pytest.raises(ExtractError) as exc:
+        merge_findings.merge(["", ""], session_limit_probe="code: failed\nintent: failed")
+    assert exc.value.category == "all-lenses-failed"
+
+
+def test_a_parsed_payload_wins_over_a_limited_probe():
+    # A role that landed before the wall is a degraded success, not a pause,
+    # matching the mixed-run rule for per-role dispatch above.
+    merged = merge_findings.merge([_lens_with_finding(), ""], session_limit_probe=SENTINEL)
+    assert [c.line for c in merged.comments] == [42]
+
+
 def test_partial_limit_stays_a_degraded_review():
     # Some lenses limited, one produced findings: process what came back rather
     # than pause, since the confidence gate already handles a short lens set.
@@ -164,6 +188,66 @@ def test_unreadable_reset_still_reports_the_category_with_an_empty_deadline(tmp_
     r = _run_merge(tmp_path, "You've hit your session limit")
     assert "category=session-limit" in r.stderr
     assert "session_limit_deadline=\n" in r.stderr
+
+
+def _run_merge_with_probe(
+    tmp_path: Path, probe: str, *, extra_args: list[str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run merge_findings.py the way the orchestrator dispatch does (#299):
+    empty payload files plus --session-limit-probe on the transcript."""
+    paths = []
+    for i in range(2):
+        p = tmp_path / f".pr-review-raw-role{i}.txt"
+        p.write_text("")
+        paths.append(str(p))
+    probe_file = tmp_path / ".pr-review-orchestrator.txt"
+    probe_file.write_text(probe)
+    return subprocess.run(
+        [
+            sys.executable,
+            str(DAEMON / "merge_findings.py"),
+            "--no-style",
+            *(extra_args or []),
+            "--session-limit-probe",
+            str(probe_file),
+            *paths,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_probe_flag_classifies_and_carries_the_probes_reset_time(tmp_path: Path):
+    # The #231 pause contract under #299: empty role payloads plus a limited
+    # transcript must produce both machine-readable stderr lines, with the
+    # deadline read from the probe since the raws have no sentinel to offer.
+    r = _run_merge_with_probe(tmp_path, SENTINEL)
+    assert r.returncode == 1
+    assert "category=session-limit" in r.stderr
+    assert re.search(r"session_limit_deadline=\d+", r.stderr)
+
+
+def test_a_long_transcript_around_the_sentinel_is_not_a_probe_match(tmp_path: Path):
+    # The sentinel test caps its input length so quoted phrases in real text
+    # never classify (the quoted-phrase test above pins that). The probe
+    # inherits the cap: a transcript that grew past it around the sentinel
+    # degrades to all-lenses-failed, the safe direction (a missed pause burns
+    # retries; a false pause silences the daemon).
+    padded = ("orchestrator status line\n" * 20) + SENTINEL
+    r = _run_merge_with_probe(tmp_path, padded)
+    assert r.returncode == 1
+    assert "category=all-lenses-failed" in r.stderr
+
+
+def test_a_duplicated_probe_flag_never_leaks_into_the_payload_paths(tmp_path: Path):
+    # The regression the strip-all loop exists for: a second flag pair must be
+    # consumed as a flag (last wins), not read as two more payload files.
+    decoy = tmp_path / "decoy-transcript.txt"
+    decoy.write_text(PARSE_FAILURE)
+    r = _run_merge_with_probe(tmp_path, SENTINEL, extra_args=["--session-limit-probe", str(decoy)])
+    assert r.returncode == 1
+    assert "category=session-limit" in r.stderr
+    assert re.search(r"session_limit_deadline=\d+", r.stderr)
 
 
 # --- reset time to deadline ------------------------------------------------

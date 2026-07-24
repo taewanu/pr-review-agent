@@ -310,3 +310,119 @@ def test_acquire_with_zero_pool_size_still_acquires(tmp_path: Path):
     out, rc = _acquire(tmp_path, pool_size=0)
     assert rc == 0
     assert out.startswith(str(tmp_path))
+
+
+# --- acquire_claude_slots: all-or-nothing multi-slot acquire (#299) ---
+
+
+def _acquire_slots(state_dir: Path, count: int, *, timeout=10, **kwargs) -> tuple[str, int]:
+    result = subprocess.run(
+        ["bash", "-c", f"source {LIB}; acquire_claude_slots {count}"],
+        capture_output=True,
+        text=True,
+        env=_env(state_dir, **kwargs),
+        timeout=timeout,
+    )
+    return result.stdout.strip(), result.returncode
+
+
+def test_acquire_slots_claims_the_requested_count(tmp_path: Path):
+    out, rc = _acquire_slots(tmp_path, 2, pool_size=3)
+    assert rc == 0
+    paths = out.splitlines()
+    assert len(paths) == 2
+    for p in paths:
+        assert Path(p).exists()
+
+
+def test_acquire_slots_clamps_to_pool_size(tmp_path: Path):
+    # A request above the pool must not wait forever on slots that cannot
+    # exist; it charges the whole pool instead.
+    out, rc = _acquire_slots(tmp_path, 5, pool_size=2)
+    assert rc == 0
+    assert len(out.splitlines()) == 2
+
+
+def test_acquire_slots_releases_a_partial_claim_while_waiting(tmp_path: Path):
+    # The deadlock guard: blocked on a full claim, the acquirer must hold
+    # nothing, so another process can still make progress on the free slot.
+    # Hold slot 1 under a live pid, then start a 2-of-2 acquire with a long
+    # retry sleep; during that sleep a singular acquire must win slot 2.
+    hold = subprocess.run(
+        ["bash", "-c", f"source {LIB}; _try_claim_slot 1"],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path, pool_size=2),
+        timeout=10,
+    )
+    assert hold.returncode == 0
+    # Keep the holder "alive": rewrite the lock with this test process's pid.
+    Path(hold.stdout.strip()).write_text(f"{os.getpid()} {int(time.time())}\n")
+
+    blocked = subprocess.Popen(
+        ["bash", "-c", f"source {LIB}; acquire_claude_slots 2"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_env(tmp_path, pool_size=2, poll=30),
+    )
+    try:
+        time.sleep(2)  # past the first failed claim round, into the retry sleep
+        out, rc = _acquire(tmp_path, pool_size=2, poll=1, timeout=8)
+        assert rc == 0, (
+            "singular acquire starved: the blocked multi-acquire is holding a partial claim"
+        )
+        assert out
+    finally:
+        blocked.kill()
+        blocked.wait(timeout=10)
+
+
+def test_acquire_slots_succeeds_once_contention_clears(tmp_path: Path):
+    held, rc = _try_claim(tmp_path, 1, pool_size=2)
+    assert rc == 0
+    Path(held).write_text(f"{os.getpid()} {int(time.time())}\n")
+
+    waiter = subprocess.Popen(
+        ["bash", "-c", f"source {LIB}; acquire_claude_slots 2"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_env(tmp_path, pool_size=2, poll=1),
+    )
+    try:
+        time.sleep(1.5)
+        Path(held).unlink()  # release the contended slot
+        out, _ = waiter.communicate(timeout=15)
+        assert waiter.returncode == 0
+        assert len(out.strip().splitlines()) == 2
+    finally:
+        if waiter.poll() is None:
+            waiter.kill()
+            waiter.wait(timeout=10)
+
+
+def test_release_slots_removes_every_lock(tmp_path: Path):
+    out, rc = _acquire_slots(tmp_path, 2, pool_size=3)
+    assert rc == 0
+    release = subprocess.run(
+        ["bash", "-c", f'source {LIB}; release_claude_slots "$1"', "_", out],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path),
+        timeout=10,
+    )
+    assert release.returncode == 0
+    for p in out.splitlines():
+        assert not Path(p).exists()
+
+
+def test_release_slots_empty_argument_is_a_noop(tmp_path: Path):
+    release = subprocess.run(
+        ["bash", "-c", f"source {LIB}; release_claude_slots ''"],
+        capture_output=True,
+        text=True,
+        env=_env(tmp_path),
+        timeout=10,
+    )
+    assert release.returncode == 0

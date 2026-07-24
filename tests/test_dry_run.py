@@ -1,9 +1,8 @@
 """Tests for review-pr.sh's --dry-run reporting contract (emit_dryrun_contract, #209 A1a).
 
 emit_dryrun_contract lives in lib.sh, not inline in review-pr.sh, so this test can
-source it and assert the emitted fields, the ADR 0026 pattern used for
-wait_for_lens_pids. The contract itself (the dryrun_*= fields and why) is
-documented at the emitter in lib.sh.
+source it and assert the emitted fields (ADR 0026). The contract itself (the
+dryrun_*= fields and why) is documented at the emitter in lib.sh.
 
 The no-post guards themselves (skipping the status comment, review object, and
 resolution when DRY_RUN=1) are exercised by a manual dry-run smoke against a real
