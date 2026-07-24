@@ -161,9 +161,10 @@ STATUS_PAUSE_UNTIL=""
 # Per-PR lock path (#67); set once acquired, released by cleanup().
 LOCK_FILE=""
 
-# Sum every lens/editor/judge-fix cost sidecar and log the total, on success or
-# failure (ADR 0023 dogfood follow-up): each was only ever visible as one line
-# per claude -p call in the live log, so seeing what a review actually cost, or
+# Sum every claude -p cost sidecar (generation orchestrator, editor, judge-fix)
+# and log the total, on success or failure (ADR 0023 dogfood follow-up): each
+# was only ever visible as one line per call in the live log, so seeing what a
+# review actually cost, or
 # a FAILED review had already burned before it failed, meant hand-summing the
 # log by eye. Must run before cleanup() removes $SCRATCH (the trap order below
 # guarantees this: flip_status_failed, which calls this, runs first). `find`,
@@ -855,7 +856,13 @@ orch_rc=0
 (
   # One slot per hidden role session; released together after the stage.
   slots="$(acquire_claude_slots "$role_count" "review orchestrator")"
-  cd "$SCRATCH"
+  # Explicit exit: the `( ... ) || orch_rc=$?` wrapper suppresses errexit inside
+  # this subshell, so an unguarded failed cd would run claude in the daemon's
+  # own repo and the roles would write payloads there.
+  cd "$SCRATCH" || {
+    release_claude_slots "$slots"
+    exit 1
+  }
   rc=0
   # `claude`'s own stderr (e.g. its non-interactive workspace-trust notice,
   # expected every run since a fresh scratch clone is never pre-trusted) goes
@@ -918,7 +925,11 @@ log_step "merging lens payloads"
 # --no-style: the voice gate moved behind the editor (ADR 0016). This union
 # only schema-validates each lens's draft, dedupes, and shapes the result to
 # hand to the editor; the final gate runs in apply_edits.py, on what is posted.
-if ! python3 "$SCRIPT_DIR/merge_findings.py" --no-style "${LENS_RAW_FILES[@]}" \
+# --session-limit-probe (#299): on a quota hit the roles' payload files stay
+# empty and the sentinel lands in the orchestrator transcript, so merge probes
+# it to keep #231's pause classification working under the orchestrator shape.
+if ! python3 "$SCRIPT_DIR/merge_findings.py" --no-style \
+  --session-limit-probe "$ORCH_RAW" "${LENS_RAW_FILES[@]}" \
   >"$AUTHOR_FILE" 2>"$EXTRACT_ERR"; then
   cat "$EXTRACT_ERR" >&2
   MERGE_CATEGORY="$(extract_category "$EXTRACT_ERR")"

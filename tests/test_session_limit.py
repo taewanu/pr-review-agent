@@ -125,6 +125,30 @@ def test_one_limited_lens_among_parse_failures_is_not_a_session_limit():
     assert exc.value.category == "all-lenses-failed"
 
 
+def test_empty_payloads_with_a_limited_probe_raise_session_limit():
+    # Orchestrator dispatch (#299): the roles write only their payload files,
+    # so a quota hit leaves them empty and the sentinel lands only in the
+    # orchestrator transcript. The probe carries the classification.
+    with pytest.raises(ExtractError) as exc:
+        merge_findings.merge(["", ""], session_limit_probe=SENTINEL)
+    assert exc.value.category == merge_findings.SESSION_LIMIT_CATEGORY
+
+
+def test_empty_payloads_with_a_sentinel_free_probe_stay_all_lenses_failed():
+    # A real defect that broke every role must never masquerade as a quota
+    # pause just because a probe was supplied.
+    with pytest.raises(ExtractError) as exc:
+        merge_findings.merge(["", ""], session_limit_probe="code: failed\nintent: failed")
+    assert exc.value.category == "all-lenses-failed"
+
+
+def test_a_parsed_payload_wins_over_a_limited_probe():
+    # A role that landed before the wall is a degraded success, not a pause,
+    # matching the mixed-run rule for per-role dispatch above.
+    merged = merge_findings.merge([_lens_with_finding(), ""], session_limit_probe=SENTINEL)
+    assert [c.line for c in merged.comments] == [42]
+
+
 def test_partial_limit_stays_a_degraded_review():
     # Some lenses limited, one produced findings: process what came back rather
     # than pause, since the confidence gate already handles a short lens set.
