@@ -40,7 +40,6 @@ Each change ships as its own branch and PR into `main`. `main` is protected: del
 - V2 shipped scope — `phase-5` annotated tag; V2 PRD at issue #21 (closed)
 - Architectural decisions — `docs/adr/`
 - Review agents — `.claude/agents/review-agent-*.md`
-- Orchestrator slash command — `.claude/commands/review-pr.md`
 - Daemon code — `daemon/`
 - Setup scripts — `bin/`
 - Template configs — `templates/`

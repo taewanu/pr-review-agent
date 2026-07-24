@@ -262,7 +262,7 @@ log_step "running reply agent via claude -p"
 REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
 
 # The reply agent re-checks operator fix claims against HEAD, reasoning the review
-# lenses' equal, so it shares their REVIEW_MODEL dial (#209) rather than carrying
+# roles' equal, so it shares their REVIEW_MODEL dial (#209) rather than carrying
 # its own.
 REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
 # Named in the log for the reason review-pr.sh gives: an unnamed model fails silently.
@@ -270,7 +270,7 @@ log_info "model: ${REVIEW_MODEL}"
 
 reply_rc=0
 (
-  # Same shared claude_slot pool as review-pr.sh's lenses/editor/judge-fix
+  # Same shared claude_slot pool as review-pr.sh's roles/editor/judge-fix
   # (ADR 0023 revision): the reply agent ran outside the pool, so with
   # MAX_PARALLEL > 1 the concurrent claude count exceeded it (#197).
   slot="$(acquire_claude_slot reply)"

@@ -30,10 +30,10 @@ TIMEOUT_EXIT = 142
 # The outer per-PR cap must stay above the sum of every sequential *stage*, or
 # a legitimate slow review is killed.
 INNER_AGENT_CAP = 600
-# review-pr.sh's realistic sequential stage count (ADR 0023 revision): the 5
-# lenses now run in parallel against a shared claude_slot pool, so with
-# CLAUDE_SLOT_POOL_SIZE >= 5 a solo PR's lens phase is one wave (~300s), not a
-# 5-call sum; the editor still runs sequentially after. 2 stages total.
+# review-pr.sh's realistic sequential stage count: the two roles run in
+# parallel against a shared claude_slot pool, so a solo PR's generation phase
+# is one wave (~300s), not a per-role sum; the editor still runs sequentially
+# after. 2 stages total.
 REVIEW_PR_SEQUENTIAL_STAGES = 2
 
 

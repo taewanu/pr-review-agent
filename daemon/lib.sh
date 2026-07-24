@@ -1477,17 +1477,9 @@ bundle_operator_agents() {
     base="$(basename "$f")"
     [[ -e "$scratch/.claude/agents/$base" ]] || cp "$f" "$scratch/.claude/agents/$base"
   done
-  # review-pr-*.md (a glob, like the agents above) is every lens's dispatch
-  # command (ADR 0023): adding a lens needs no update here. The non-lens
-  # commands (review-pr.md itself, and the reply/edit/judge pipeline stages)
-  # aren't name-prefixed the same way, so they stay an explicit list.
-  for f in "$repo_root/.claude/commands/review-pr-"*.md; do
-    [[ -e "$f" ]] || continue
-    base="$(basename "$f")"
-    [[ -e "$scratch/.claude/commands/$base" ]] || cp "$f" "$scratch/.claude/commands/$base"
-  done
-  for f in "$repo_root/.claude/commands/review-pr.md" \
-    "$repo_root/.claude/commands/edit-review.md" \
+  # The role prompts dispatch directly (ADR 0038), so no per-role command files
+  # exist; the commands below are the reply/edit/judge pipeline stages.
+  for f in "$repo_root/.claude/commands/edit-review.md" \
     "$repo_root/.claude/commands/reply-pr.md" \
     "$repo_root/.claude/commands/judge-fix.md"; do
     [[ -e "$f" ]] || continue

@@ -1,14 +1,14 @@
-"""Tests for the intent lens's wiring into review-pr.sh (ADR 0035).
+"""Tests for the intent role's wiring into review-pr.sh (ADR 0035, ADR 0038).
 
-The lens itself is a prompt, so what is checkable here is the plumbing around
-it: that its three parallel-array entries stay index-aligned, that it is the only
-lens handed the intent file, and that a PR describing nothing skips it instead of
-paying for a lens with nothing to compare against.
+The role itself is a prompt, so what is checkable here is the plumbing around
+it: that the two parallel arrays stay index-aligned on the fixed role set, that
+intent is the only role handed the intent file, and that a PR describing
+nothing skips it instead of paying for a comparison with nothing on one side.
 
-Array alignment is the one that would fail silently. LENS_COMMANDS, LENS_LABELS
-and LENS_RAW_FILES are matched by index (bash 3.2 has no associative arrays, ADR
-0013), so a lens added to two of the three sends one lens's output to another
-lens's raw file.
+Array alignment is the one that would fail silently. LENS_LABELS and
+LENS_RAW_FILES are matched by index (bash 3.2 has no associative arrays, ADR
+0013), so an entry added to one of the two sends one role's output to the
+other's raw file.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REVIEW_PR = REPO_ROOT / "daemon" / "review-pr.sh"
 AGENTS = REPO_ROOT / ".claude" / "agents"
-COMMANDS = REPO_ROOT / ".claude" / "commands"
 
 
 def _array(name: str) -> list[str]:
@@ -31,30 +30,25 @@ def _array(name: str) -> list[str]:
     return m.group(1).split()
 
 
-def test_lens_arrays_stay_index_aligned():
-    commands = _array("LENS_COMMANDS")
+def test_role_arrays_stay_index_aligned():
     labels = _array("LENS_LABELS")
     raws = _array("LENS_RAW_FILES")
-    assert len(commands) == len(labels) == len(raws), (
-        f"lens arrays diverged: {len(commands)} commands, "
-        f"{len(labels)} labels, {len(raws)} raw files"
+    assert len(labels) == len(raws), (
+        f"role arrays diverged: {len(labels)} labels, {len(raws)} raw files"
     )
-    for cmd, label in zip(commands, labels, strict=True):
-        # The general lens is `/review-pr`; every other command carries its label.
-        if label != "general":
-            assert cmd.endswith(f"-{label}"), f"{cmd} is not the {label} lens's command"
+    # ADR 0038: the set is fixed. A third entry here is a design change that
+    # belongs in an ADR before it belongs in this array.
+    assert labels == ["code", "intent"]
 
 
-def test_every_lens_label_has_an_agent_and_a_command():
+def test_every_role_label_has_an_agent():
     for label in _array("LENS_LABELS"):
         assert (AGENTS / f"review-agent-{label}.md").is_file(), (
-            f"{label} lens has no agent definition"
+            f"{label} role has no agent definition"
         )
-        command = "review-pr.md" if label == "general" else f"review-pr-{label}.md"
-        assert (COMMANDS / command).is_file(), f"{label} lens has no slash command"
 
 
-def test_intent_is_the_only_lens_given_the_intent_file():
+def test_intent_is_the_only_role_given_the_intent_file():
     body = REVIEW_PR.read_text()
     for match in re.finditer(r'INTENT_BASENAME"?\s*$', body, re.M):
         window = body[: match.start()].rsplit("\n", 6)[-6:]
@@ -95,82 +89,36 @@ def _skip_decision(tmp_path: Path, body: str, issue_count: int) -> str:
     return result.stdout.strip()
 
 
-def test_a_described_pr_runs_the_lens(tmp_path):
+def test_a_described_pr_runs_the_role(tmp_path):
     assert _skip_decision(tmp_path, "Moves the voice rules to the editor.", 0) == "run"
 
 
-def test_an_undescribed_pr_skips_the_lens(tmp_path):
+def test_an_undescribed_pr_skips_the_role(tmp_path):
     assert _skip_decision(tmp_path, "", 0) == "skip"
     assert _skip_decision(tmp_path, "   \n\n  ", 0) == "skip"
 
 
-def test_template_boilerplate_alone_skips_the_lens(tmp_path):
+def test_template_boilerplate_alone_skips_the_role(tmp_path):
     # A PR template's HTML comments are text the author never wrote, so counting
-    # them would run the lens on every PR of every templated repo and find
+    # them would run the role on every PR of every templated repo and find
     # nothing to compare the diff against.
     boilerplate = "<!-- Describe your change -->\n\n<!-- Tests? -->"
     assert _skip_decision(tmp_path, boilerplate, 0) == "skip"
 
 
-def test_a_linked_issue_alone_runs_the_lens(tmp_path):
+def test_a_linked_issue_alone_runs_the_role(tmp_path):
     # An empty body still leaves something to check when the PR closes an issue:
     # the issue's own ask against the diff.
     assert _skip_decision(tmp_path, "", 1) == "run"
 
 
-def _intent_branch(active_labels: list[str], body_len: int, issue_count: int) -> str:
-    """Which of the three intent branches review-pr.sh takes, run as bash.
-
-    Lifted rather than sourced: review-pr.sh executes top to bottom against a
-    live PR, so it cannot be sourced for one decision. The shape is kept
-    identical to the script's, and the tests below pin the outcome (build, skip,
-    or neither) rather than the expression, so a rewrite that preserves behaviour
-    does not fail here.
-    """
-    labels = " ".join(active_labels)
-    script = f"""
-    LENS_LABELS=({labels})
-    intent_active=0
-    for _label in "${{LENS_LABELS[@]}}"; do
-      if [[ "$_label" == "intent" ]]; then
-        intent_active=1
-      fi
-    done
-    intent_body_len={body_len}
-    intent_issue_count={issue_count}
-    intent_only=0
-    if [[ "${{#LENS_LABELS[@]}}" -eq 1 && "$intent_active" -eq 1 ]]; then
-      intent_only=1
-    fi
-    if [[ "$intent_active" -eq 0 ]]; then
-      echo inactive
-    elif [[ "$intent_body_len" -gt 0 || "$intent_issue_count" -gt 0 || "$intent_only" -eq 1 ]]; then
-      echo build
-    else
-      echo drop
-    fi
-    """
-    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
-    assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
-
-
-def test_the_skip_never_empties_the_lens_set():
-    # REVIEW_LENSES=intent plus an undescribed PR would otherwise drop the only
-    # lens, leaving the merge step with no payload to read.
-    assert _intent_branch(["intent"], body_len=0, issue_count=0) == "build"
-
-
-def test_a_disabled_intent_lens_builds_nothing():
-    # Building the file costs a `gh issue view` per closing reference. Under a
-    # REVIEW_LENSES that excludes the lens, nothing would ever read the result,
-    # and a per-PR network call is hang surface whether or not it is used.
-    assert _intent_branch(["general"], body_len=500, issue_count=7) == "inactive"
-
-
-def test_an_undescribed_pr_drops_the_lens_when_others_remain():
-    assert _intent_branch(["general", "intent"], body_len=0, issue_count=0) == "drop"
-    assert _intent_branch(["general", "intent"], body_len=1, issue_count=0) == "build"
+def test_the_skip_leaves_the_code_role():
+    # The skip branch collapses the arrays to the code role alone, never to an
+    # empty set: the merge step downstream always has at least one payload.
+    body = REVIEW_PR.read_text()
+    m = re.search(r"(?ms)^else\n\s*LENS_LABELS=\((.*?)\)\n\s*LENS_RAW_FILES=", body)
+    assert m, "the intent-skip branch no longer resets the role arrays"
+    assert m.group(1).split() == ["code"]
 
 
 def test_intent_agent_forbids_the_other_types():
@@ -178,6 +126,16 @@ def test_intent_agent_forbids_the_other_types():
     assert 'type="intent"' in agent, "the intent agent does not pin its type"
     assert 'severity="pre_existing"' in agent, (
         "the intent agent does not forbid pre_existing, which the pipeline drops"
+    )
+
+
+def test_intent_file_carries_the_commit_messages_rung():
+    # ADR 0038: commit messages joined the intent ladder for the refactor-claim
+    # check. The builder must emit the section even when the fetch came back
+    # empty, so the role reads a named gap instead of guessing.
+    body = REVIEW_PR.read_text()
+    assert "## Commit messages" in body, (
+        "build_intent_file no longer writes the commit-messages section"
     )
 
 

@@ -88,15 +88,11 @@ def sum_tokens(scratch_dir: Path) -> int:
     return total
 
 
-# The dials that select which review config runs. REVIEW_MODE and REVIEW_LENSES
-# are orthogonal (ADR 0034): mode sets how each lens runs, the lens set how many.
-# `REVIEW_MODE=single-agent` with REVIEW_LENSES unset is the default three lenses
-# (general data-flow intent), not one, so a results file naming only the
-# mode cannot say what it measured. Recording the resolved dials makes each
-# results JSON self-describing.
+# The dials that select which review config runs. The role set is fixed (ADR
+# 0038: code + intent, no REVIEW_MODE or REVIEW_LENSES), so what remains
+# recordable is the model, the editor skip, and the gates. Recording the
+# resolved dials makes each results JSON self-describing.
 REVIEW_CONFIG_VARS = (
-    "REVIEW_MODE",
-    "REVIEW_LENSES",
     "REVIEW_FANOUT",
     "REVIEW_MODEL",
     "SKIP_EDITOR",
@@ -570,7 +566,7 @@ def main(argv: list[str] | None = None) -> int:
         + (
             " ".join(f"{k}={v}" for k, v in config.items())
             if config
-            else "none set (review-pr.sh defaults: single-agent, lenses `general data-flow intent`)"
+            else "none set (review-pr.sh defaults: roles `code intent`, direct dispatch)"
         ),
         file=sys.stderr,
     )

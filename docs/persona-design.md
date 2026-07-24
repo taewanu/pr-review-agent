@@ -20,7 +20,7 @@ A persona is a review agent's identity profile — its Voice, Tone variation rul
 - **Helpful** — actionable, not preachy
 - **Clear / concise / human** — accessible, brief, real
 
-The "X but never Y" form is load-bearing — it sets both the trait and its guardrail in one phrase. Authoring future review agents (e.g., `review-agent-security`) should follow the same shape.
+The "X but never Y" form is load-bearing — it sets both the trait and its guardrail in one phrase. Authoring future review agents should follow the same shape.
 
 ## Authoring a new review agent
 

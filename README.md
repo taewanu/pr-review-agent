@@ -9,7 +9,7 @@ Automated PR review agent that posts as a self-hosted GitHub App. Run it in your
 1. You run `bash daemon/run.sh` — a loop that drives `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300), printing progress to the terminal ([ADR 0009](docs/adr/0009-explicit-polling-loop.md), [ADR 0011](docs/adr/0011-foreground-first-operating-model.md)). Optionally install it as a `launchd` `KeepAlive` job to run in the background, restarted on crash, logout, and reboot.
 2. The daemon lists open PRs for each watched repo via `gh`.
 3. It skips drafts, PRs labeled `no-ai-review`, and PRs whose HEAD SHA was already reviewed.
-4. For the rest, it runs the review agent (`.claude/agents/review-agent-general.md`) via headless Claude Code (`claude -p`) against the diff, and anchors findings to file/line ranges.
+4. For the rest, it runs two review roles (`.claude/agents/review-agent-code.md` and `review-agent-intent.md`, ADR 0038) via headless Claude Code (`claude -p`) against the diff, and anchors findings to file/line ranges.
 5. It submits the findings as a `COMMENT` review under its App bot identity, in one call ([ADR 0036](docs/adr/0036-github-app-identity.md)).
 6. You open the PR to read them, and edit or dismiss any you disagree with.
 
@@ -18,7 +18,7 @@ Automated PR review agent that posts as a self-hosted GitHub App. Run it in your
 - Review comments post as a dedicated `<app>[bot]`, distinct from your own GitHub identity, so the daemon's work is never confused with yours.
 - Each teammate can install the App on their own repos; multiple independent reviews on the same PR are fine.
 - Runs on your laptop as a self-hosted App: polling, so no webhooks and no hosting bill.
-- MIT-licensed. Retune via `.claude/agents/review-agent-general.md` (prompt) and `.env` tunables (confidence gate, findings cap).
+- MIT-licensed. Retune via `.claude/agents/review-agent-code.md` (prompt) and `.env` tunables (confidence gate, findings cap).
 
 ## Prerequisites
 

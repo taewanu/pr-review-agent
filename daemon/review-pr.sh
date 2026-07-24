@@ -418,7 +418,7 @@ app_auth_warm || {
 }
 
 meta="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
-  gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences)"
+  gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences,commits)"
 HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
 HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
 HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
@@ -520,71 +520,33 @@ DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
 NUMBERED_BASENAME=".pr-review-diff-numbered.txt"
 NUMBERED_FILE="$SCRATCH/$NUMBERED_BASENAME"
 RAW_FILE="$SCRATCH/.pr-review-raw.txt"
-# ADR 0023: parallel independent lenses, each an unaware-of-the-others
-# generator. Their raw outputs are unioned and deduped before the confidence gate
-# (daemon/merge_findings.py), so a bug one lens misses another can still catch.
-# Parallel arrays, not an associative array, so this stays bash-3.2-safe (ADR
-# 0013's runtime constraint: stock macOS bash has no bash-4 associative arrays).
-LENS_COMMANDS=(/review-pr /review-pr-data-flow /review-pr-perf /review-pr-security /review-pr-tests /review-pr-intent)
-LENS_LABELS=(general data-flow perf security tests intent)
-# Each path's own filename suffix names its lens; a named variable per lens
-# would only be read once, right here, so the array is written inline.
+# ADR 0038: two fixed generator roles, each unaware of the other. `code` reads
+# the diff, the surrounding code, and the repo's conventions, quarantined from
+# every author claim; `intent` confronts the claims (description, linked issues,
+# commit messages) with the diff. Their raw outputs are unioned and deduped
+# before the confidence gate (daemon/merge_findings.py). The set is fixed: the
+# REVIEW_LENSES dial died with the lens taxonomy, and only the intent skip below
+# changes what runs. Parallel arrays, not an associative array, so this stays
+# bash-3.2-safe (ADR 0013's runtime constraint).
+LENS_LABELS=(code intent)
 LENS_RAW_FILES=(
   "$RAW_FILE"
-  "$SCRATCH/.pr-review-raw-data-flow.txt"
-  "$SCRATCH/.pr-review-raw-perf.txt"
-  "$SCRATCH/.pr-review-raw-security.txt"
-  "$SCRATCH/.pr-review-raw-tests.txt"
   "$SCRATCH/.pr-review-raw-intent.txt"
 )
-# ADR 0035: the intent lens reads the change's stated intent alongside the diff,
-# so unlike the code lenses it needs an input file. Bare name like the diff,
-# since the lens reads it from the scratch cwd.
+# ADR 0035: the intent role reads the change's stated intent alongside the diff,
+# so unlike the code role it needs an input file. Bare name like the diff,
+# since the role reads it from the scratch cwd.
 INTENT_BASENAME=".pr-review-intent.md"
 INTENT_FILE="$SCRATCH/$INTENT_BASENAME"
-# ADR 0034: restrict the active lens set via REVIEW_LENSES, a space-separated list
-# of labels (e.g. "general" or "general data-flow"). Collapsing to fewer lenses
-# cuts review cost proportionally, trading the recall a second independent read
-# buys (ADR 0022/0023). The `general` sweep and the `data-flow` specialist are
-# complementary, not redundant: they catch different bug classes, so the union
-# beats either alone (ADR 0037 amended records the measurement). Filtering the
-# parallel arrays together preserves their index alignment; the merge and gate are
-# already lens-count-agnostic (ADR 0023 Decision 3).
-REVIEW_LENSES="$(resolve_tunable REVIEW_LENSES "$SCRIPT_DIR/../.env")"
-# Default set when unset: the base sweep, the data-flow specialist, and intent.
-# The three domain lenses (perf, security, tests) are off by default (#249, ADR
-# 0035). All six stay selectable; this only changes the unset default.
-REVIEW_LENSES="${REVIEW_LENSES:-general data-flow intent}"
-if [[ -n "${REVIEW_LENSES:-}" ]]; then
-  _sel_cmds=()
-  _sel_labels=()
-  _sel_raws=()
-  for _i in "${!LENS_LABELS[@]}"; do
-    for _want in $REVIEW_LENSES; do
-      if [[ "${LENS_LABELS[$_i]}" == "$_want" ]]; then
-        _sel_cmds+=("${LENS_COMMANDS[$_i]}")
-        _sel_labels+=("${LENS_LABELS[$_i]}")
-        _sel_raws+=("${LENS_RAW_FILES[$_i]}")
-        break
-      fi
-    done
-  done
-  if [[ ${#_sel_labels[@]} -eq 0 ]]; then
-    log_err "REVIEW_LENSES='$REVIEW_LENSES' matched no known lens (general data-flow perf security tests intent)"
-    exit 1
-  fi
-  LENS_COMMANDS=("${_sel_cmds[@]}")
-  LENS_LABELS=("${_sel_labels[@]}")
-  LENS_RAW_FILES=("${_sel_raws[@]}")
-  log_info "REVIEW_LENSES active: ${LENS_LABELS[*]}"
-fi
 
-# ADR 0035: assemble what the change says it does, for the intent lens to read
-# against the diff. Two rungs. The PR's own title and body come free with the
-# metadata fetch above; the body behind each closing reference costs a call per
-# issue and is only there when the author wrote one. A rung that fails is named
-# in the file rather than left blank, so the lens reads a gap as less evidence
-# instead of as license to guess.
+# ADR 0035, extended by ADR 0038: assemble what the change says it does, for the
+# intent role to read against the diff. Three rungs. The PR's own title, body,
+# and commit messages come free with the metadata fetch above (commit messages
+# joined the ladder for the refactor-claim check: a `refactor:` prefix is a
+# behavior-preservation claim); the body behind each closing reference costs a
+# call per issue and is only there when the author wrote one. A rung that fails
+# is named in the file rather than left blank, so the role reads a gap as less
+# evidence instead of as license to guess.
 build_intent_file() {
   local n owner repo issue_rc
   {
@@ -592,6 +554,11 @@ build_intent_file() {
     printf '## PR title\n\n%s\n\n' "$(jq -r '.title // ""' <<<"$meta")"
     printf '## PR description\n\n'
     jq -r 'if (.body // "") == "" then "(empty)" else .body end' <<<"$meta"
+    printf '\n## Commit messages\n\n'
+    jq -r 'if ((.commits // []) | length) == 0 then "(unavailable)" else
+      .commits[] | "- `\(.oid[0:7])` \(.messageHeadline)"
+        + (if (.messageBody // "") != "" then "\n\n  " + (.messageBody | gsub("\n"; "\n  ")) else "" end)
+      end' <<<"$meta"
     printf '\n'
   } >"$INTENT_FILE"
 
@@ -621,49 +588,23 @@ build_intent_file() {
     "\(.number) \(.repository.owner.login) \(.repository.name)"' <<<"$meta")
 }
 
-# The lens is skipped when the change states nothing to contradict. Title alone
-# does not count: it is too short to contradict a diff, and counting it would run
-# the lens on every PR, which is the cost this branch exists to avoid. HTML
-# comments are stripped first so a PR template's boilerplate does not read as a
-# description the author wrote.
-intent_active=0
-for _label in "${LENS_LABELS[@]}"; do
-  if [[ "$_label" == "intent" ]]; then
-    intent_active=1
-  fi
-done
+# The intent role is skipped when the change states nothing to contradict
+# (ADR 0035), leaving the code role to run alone. Title alone does not count: it
+# is too short to contradict a diff, and counting it would run the role on every
+# PR, which is the cost this branch exists to avoid. Commit messages do not count
+# either: they exist on every PR, so counting them would defeat the skip, and a
+# refactor-claim check with no description to cross-reference rarely beats its
+# cost. HTML comments are stripped first so a PR template's boilerplate does not
+# read as a description the author wrote.
 intent_body_len="$(jq -r '.body // ""' <<<"$meta" |
   python3 -c 'import re,sys; print(len(re.sub(r"<!--.*?-->", "", sys.stdin.read(), flags=re.S).strip()))')"
 intent_issue_count="$(jq '.closingIssuesReferences | length' <<<"$meta")"
-# The skip needs another lens to fall back to. Under REVIEW_LENSES=intent it
-# would otherwise empty the lens set, leaving the merge with no payload at all,
-# so an intent-only config runs the lens and lets it return no findings.
-intent_only=0
-if [[ "${#LENS_LABELS[@]}" -eq 1 && "$intent_active" -eq 1 ]]; then
-  intent_only=1
-fi
-if [[ "$intent_active" -eq 0 ]]; then
-  # REVIEW_LENSES excludes the lens, so nothing will read the file. Building it
-  # anyway costs a `gh issue view` per closing reference every polling cycle, and
-  # a per-PR network call is hang surface whether or not its result is used.
-  :
-elif [[ "$intent_body_len" -gt 0 || "$intent_issue_count" -gt 0 || "$intent_only" -eq 1 ]]; then
+if [[ "$intent_body_len" -gt 0 || "$intent_issue_count" -gt 0 ]]; then
   build_intent_file
 else
-  _kept_cmds=()
-  _kept_labels=()
-  _kept_raws=()
-  for _i in "${!LENS_LABELS[@]}"; do
-    if [[ "${LENS_LABELS[$_i]}" != "intent" ]]; then
-      _kept_cmds+=("${LENS_COMMANDS[$_i]}")
-      _kept_labels+=("${LENS_LABELS[$_i]}")
-      _kept_raws+=("${LENS_RAW_FILES[$_i]}")
-    fi
-  done
-  LENS_COMMANDS=("${_kept_cmds[@]}")
-  LENS_LABELS=("${_kept_labels[@]}")
-  LENS_RAW_FILES=("${_kept_raws[@]}")
-  log_info "intent lens skipped: no description and no linked issue"
+  LENS_LABELS=(code)
+  LENS_RAW_FILES=("$RAW_FILE")
+  log_info "intent role skipped: no description and no linked issue"
 fi
 
 # The editor agent reads the draft from cwd by basename (like the diff), so the
@@ -824,120 +765,69 @@ REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
 # defect survived weeks of dogfood. The dial is only trustworthy if it says so.
 log_info "model: ${REVIEW_MODEL}"
 
-# ADR 0023 (revised): independent lenses read the same diff, each unaware of the
-# others' output, so a bug one misses another can still catch. The intent lens
-# (ADR 0035) is the one that reads more than the diff.
-# Dispatched in parallel, each bounded by the global claude_slot pool
+# ADR 0038: the two roles read in parallel, each unaware of the other's output,
+# each a directly-prompted `claude -p` process. The subagent dispatch layer and
+# the REVIEW_MODE dial died with ADR 0038, on ADR 0034's measurement of the
+# layer as pure forwarding overhead (equal recall, 27-39% more tokens).
+# Dispatch is bounded by the global claude_slot pool
 # (daemon/lib.sh's acquire_claude_slot/release_claude_slot), not by ADR 0013's
-# MAX_PARALLEL: that dial now only bounds concurrent review-pr.sh *processes*,
+# MAX_PARALLEL: that dial only bounds concurrent review-pr.sh *processes*,
 # while the slot pool bounds concurrent `claude -p` *calls* directly, shared
 # automatically across however many review-pr.sh processes are running (the
-# slot files live on disk, not in one process's memory). A stuck lens is still
+# slot files live on disk, not in one process's memory). A stuck role is still
 # bounded by its own REVIEW_AGENT_TIMEOUT; the slot is released in the same
-# subshell that acquired it, so a killed lens's slot is freed immediately
+# subshell that acquired it, so a killed role's slot is freed immediately
 # rather than waiting for stale-reclaim.
-# ADR 0034: REVIEW_MODE picks how each lens runs, orthogonally to REVIEW_LENSES
-# picking how many. `subagent` dispatches a subagent per lens (Anthropic's
-# orchestrator-worker shape); `single-agent` runs the lens in the process that
-# already isolates it, dropping the subagent layer that only forwarded its
-# stdout. The two dials are independent: `single-agent` with REVIEW_LENSES unset
-# is the default three lenses (`general data-flow intent`) run single-agent, not one.
-# single-agent is the code default (ADR 0034 amended): it matched subagent recall
-# at 27-39% fewer tokens, so an operator without the key gets the cheaper mode.
-#
-# The mode deliberately touches nothing else. An earlier draft also lowered
-# CONFIDENCE_THRESHOLD here, which silently overrode the operator's own .env
-# value and made two modes incomparable in measurement: the cheaper mode was
-# scored behind a looser gate than the one it was being compared against.
-REVIEW_MODE="$(resolve_tunable REVIEW_MODE "$SCRIPT_DIR/../.env")"
-case "${REVIEW_MODE:-single-agent}" in
-  single-agent)
-    SINGLE_AGENT_REVIEW=1
-    ;;
-  subagent | "")
-    SINGLE_AGENT_REVIEW=0
-    ;;
-  *)
-    log_err "REVIEW_MODE='$REVIEW_MODE' is not a known mode (subagent single-agent)"
-    exit 1
-    ;;
-esac
-export SINGLE_AGENT_REVIEW
-[[ -n "${REVIEW_MODE:-}" ]] && log_info "review mode: ${REVIEW_MODE}"
-
 lens_i=0
-lens_count="${#LENS_COMMANDS[@]}"
+lens_count="${#LENS_LABELS[@]}"
 lens_pids=()
 while [[ "$lens_i" -lt "$lens_count" ]]; do
-  lens_cmd="${LENS_COMMANDS[$lens_i]}"
   lens_label="${LENS_LABELS[$lens_i]}"
   lens_raw="${LENS_RAW_FILES[$lens_i]}"
-  log_step "running review agent ($lens_label lens) via claude -p"
+  log_step "running review agent ($lens_label role) via claude -p"
   (
-    slot="$(acquire_claude_slot "$lens_label lens")"
+    slot="$(acquire_claude_slot "$lens_label role")"
     cd "$SCRATCH"
     rc=0
     # `claude`'s own stderr (e.g. its non-interactive workspace-trust notice,
     # expected every run since a fresh scratch clone is never pre-trusted) was
     # bypassing stream_format.py's labeling and flooding the daemon log
-    # unlabeled; it goes to a per-lens sidecar file instead, so nothing is
+    # unlabeled; it goes to a per-role sidecar file instead, so nothing is
     # silently lost but the primary log stays legible.
-    if [[ "${SINGLE_AGENT_REVIEW:-0}" -eq 1 ]]; then
-      # ADR 0034: run the lens in this process instead of through a subagent. The
-      # slash command a subagent-mode lens invokes does nothing but dispatch one
-      # subagent and forward its stdout, so the parent's harness load buys no
-      # isolation the separate process does not already give. The agent's own body
-      # (yaml frontmatter stripped) is appended to the base prompt, keeping the
-      # investigation scaffolding the verify step needs, and slash commands are
-      # disabled because the prompt below IS the instruction: a dispatch command
-      # would re-enter the subagent path this mode exists to skip.
-      # One file, no includes: an agent's body is its whole system prompt, so a
-      # pointer at another agent's prompt resolves to nothing at runtime.
-      single_sys="$SCRATCH/.pr-review-single-sys-$lens_label.md"
-      awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
-        ".claude/agents/review-agent-$lens_label.md" >"$single_sys"
-      # The diff goes by path, not inlined: inlining it and saying "reason over
-      # this" made the model treat the context as complete and skip opening the
-      # callers, which is the verify step's whole substance (ADR 0022).
-      single_prompt="$SCRATCH/.pr-review-single-prompt-$lens_label.txt"
-      {
-        printf 'Review this PR per your instructions and emit the JSON payload.\n'
-        printf 'The line-numbered diff is at: %s\n' "$NUMBERED_BASENAME"
-        # ADR 0035: the intent lens gets the second side of its comparison. Every
-        # other lens has only the diff, which is the whole reason it exists.
-        if [[ "$lens_label" == "intent" ]]; then
-          printf 'What the change says it does is at: %s\n' "$INTENT_BASENAME"
-        fi
-        printf 'Read it, then investigate the surrounding code with your tools '
-        printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
-      } >"$single_prompt"
-      run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-        claude -p --append-system-prompt-file "$single_sys" \
-        --model "$REVIEW_MODEL" \
-        --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
-        --disable-slash-commands \
-        --output-format stream-json --verbose <"$single_prompt" \
-        2>"$lens_raw.stderr" |
-        python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
-          --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
-          --cost-out "$lens_raw.cost" ||
-        rc=$?
-    else
-      lens_args="$lens_cmd $PR_URL --diff $NUMBERED_BASENAME"
-      # ADR 0035, as above: only the intent lens takes a second input.
+    # The agent's own body (yaml frontmatter stripped) is appended to the base
+    # prompt, keeping the investigation scaffolding the verify step needs, and
+    # slash commands are disabled because the prompt below IS the instruction.
+    # One file, no includes: an agent's body is its whole system prompt, so a
+    # pointer at another agent's prompt resolves to nothing at runtime.
+    single_sys="$SCRATCH/.pr-review-single-sys-$lens_label.md"
+    awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
+      ".claude/agents/review-agent-$lens_label.md" >"$single_sys"
+    # The diff goes by path, not inlined: inlining it and saying "reason over
+    # this" made the model treat the context as complete and skip opening the
+    # callers, which is the verify step's whole substance (ADR 0022).
+    single_prompt="$SCRATCH/.pr-review-single-prompt-$lens_label.txt"
+    {
+      printf 'Review this PR per your instructions and emit the JSON payload.\n'
+      printf 'The line-numbered diff is at: %s\n' "$NUMBERED_BASENAME"
+      # ADR 0035: the intent role gets the second side of its comparison. The
+      # code role has only the diff, which is the quarantine ADR 0038 names.
       if [[ "$lens_label" == "intent" ]]; then
-        lens_args="$lens_args --intent $INTENT_BASENAME"
+        printf 'What the change says it does is at: %s\n' "$INTENT_BASENAME"
       fi
-      run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-        claude -p "$lens_args" \
-        --model "$REVIEW_MODEL" \
-        --output-format stream-json --verbose \
-        2>"$lens_raw.stderr" |
-        python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
-          --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
-          --cost-out "$lens_raw.cost" ||
-        rc=$?
-    fi
+      printf 'Read it, then investigate the surrounding code with your tools '
+      printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
+    } >"$single_prompt"
+    run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
+      claude -p --append-system-prompt-file "$single_sys" \
+      --model "$REVIEW_MODEL" \
+      --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
+      --disable-slash-commands \
+      --output-format stream-json --verbose <"$single_prompt" \
+      2>"$lens_raw.stderr" |
+      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$lens_raw" \
+        --label "${PR_COLOR_START}pr${PR_NUMBER}:${lens_label}${PR_COLOR_RESET}" \
+        --cost-out "$lens_raw.cost" ||
+      rc=$?
     release_claude_slot "$slot"
     exit "$rc"
   ) &
@@ -1039,58 +929,41 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
     rc=0
     # See the lens loop above: claude's own stderr goes to a sidecar file, not
     # the primary log.
-    if [[ "${SINGLE_AGENT_REVIEW:-0}" -eq 1 ]]; then
-      # The editor runs in the same shape as the lenses under this mode, and for
-      # the same reason: its slash command only dispatches the editor subagent.
-      # It keeps its tools because ADR 0016's verify-at-HEAD step needs them, and
-      # because a tools-free editor could not reliably emit its decisions JSON on
-      # a complex draft.
-      editor_sys="$SCRATCH/.pr-review-single-sys-editor.md"
-      awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
-        ".claude/agents/review-agent-editor.md" >"$editor_sys"
-      editor_prompt="$SCRATCH/.pr-review-single-editor-prompt.txt"
-      {
-        printf 'Edit this draft review and emit your decisions JSON per your instructions.\n\n'
-        printf '=== DRAFT PAYLOAD (findings to keep/drop/rewrite) ===\n'
-        cat "$AUTHOR_INDEXED_BASENAME"
-        printf '\n\n=== DIFF (line-numbered) ===\n'
-        cat "$NUMBERED_BASENAME"
-        # ADR 0035: an intent finding is verified against the change's stated
-        # intent, not against the code, so the editor needs that side too. The
-        # file exists only when the lens ran, and only that lens emits a finding
-        # needing it, so an empty test covers both.
-        if [[ -s "$INTENT_FILE" ]]; then
-          printf '\n\n=== WHAT THE CHANGE SAYS IT DOES (for intent findings) ===\n'
-          cat "$INTENT_BASENAME"
-        fi
-      } >"$editor_prompt"
-      run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
-        claude -p --append-system-prompt-file "$editor_sys" \
-        --model "$REVIEW_MODEL" \
-        --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
-        --disable-slash-commands \
-        --output-format stream-json --verbose <"$editor_prompt" \
-        2>"$EDIT_RAW_FILE.stderr" |
-        python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
-          --label "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" \
-          --cost-out "$EDIT_RAW_FILE.cost" ||
-        rc=$?
-    else
-      # ADR 0035, as in the single-agent branch above.
-      editor_args="/edit-review $PR_URL --diff $NUMBERED_BASENAME --payload $AUTHOR_INDEXED_BASENAME"
+    # The editor runs in the same directly-prompted shape as the roles, for the
+    # same reason (ADR 0034's measurement: its slash command only dispatched the
+    # editor subagent). It keeps its tools because ADR 0016's verify-at-HEAD
+    # step needs them, and because a tools-free editor could not reliably emit
+    # its decisions JSON on a complex draft.
+    editor_sys="$SCRATCH/.pr-review-single-sys-editor.md"
+    awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
+      ".claude/agents/review-agent-editor.md" >"$editor_sys"
+    editor_prompt="$SCRATCH/.pr-review-single-editor-prompt.txt"
+    {
+      printf 'Edit this draft review and emit your decisions JSON per your instructions.\n\n'
+      printf '=== DRAFT PAYLOAD (findings to keep/drop/rewrite) ===\n'
+      cat "$AUTHOR_INDEXED_BASENAME"
+      printf '\n\n=== DIFF (line-numbered) ===\n'
+      cat "$NUMBERED_BASENAME"
+      # ADR 0035: an intent finding is verified against the change's stated
+      # intent, not against the code, so the editor needs that side too. The
+      # file exists only when the role ran, and only that role emits a finding
+      # needing it, so an empty test covers both.
       if [[ -s "$INTENT_FILE" ]]; then
-        editor_args="$editor_args --intent $INTENT_BASENAME"
+        printf '\n\n=== WHAT THE CHANGE SAYS IT DOES (for intent findings) ===\n'
+        cat "$INTENT_BASENAME"
       fi
-      run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
-        claude -p "$editor_args" \
-        --model "$REVIEW_MODEL" \
-        --output-format stream-json --verbose \
-        2>"$EDIT_RAW_FILE.stderr" |
-        python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
-          --label "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" \
-          --cost-out "$EDIT_RAW_FILE.cost" ||
-        rc=$?
-    fi
+    } >"$editor_prompt"
+    run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
+      claude -p --append-system-prompt-file "$editor_sys" \
+      --model "$REVIEW_MODEL" \
+      --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
+      --disable-slash-commands \
+      --output-format stream-json --verbose <"$editor_prompt" \
+      2>"$EDIT_RAW_FILE.stderr" |
+      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
+        --label "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" \
+        --cost-out "$EDIT_RAW_FILE.cost" ||
+      rc=$?
     release_claude_slot "$slot"
     exit "$rc"
   ) || edit_rc=$?
