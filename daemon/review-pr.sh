@@ -813,12 +813,6 @@ log_info "model: ${REVIEW_MODEL}"
 # review-pr.sh *processes*; the slot pool keeps bounding concurrent sessions.
 role_count="${#LENS_LABELS[@]}"
 
-# Pre-create every role's payload file: a role that never runs (orchestrator
-# timeout, subagent failure) leaves an empty file, the same degraded shape as a
-# timed-out lens under the process fan-out. merge_findings.py tolerates an
-# empty payload (ADR 0024) and the per-role check below logs it.
-for _raw in "${LENS_RAW_FILES[@]}"; do : >"$_raw"; done
-
 ORCH_RAW="$SCRATCH/.pr-review-orchestrator.txt"
 ORCH_PROMPT="$SCRATCH/.pr-review-orchestrator-prompt.txt"
 {
@@ -843,7 +837,7 @@ ORCH_PROMPT="$SCRATCH/.pr-review-orchestrator-prompt.txt"
     # callers, which is the verify step's whole substance (ADR 0022).
     printf 'Read it, then investigate the surrounding code with your tools '
     printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
-    printf 'Write your complete output, the ```json fenced payload your instructions require, to the file %s (overwrite it). ' "$role_raw_basename"
+    printf 'Write your complete output, the ```json fenced payload your instructions require, to a new file named %s. ' "$role_raw_basename"
     printf 'Your final reply must not restate the payload; one line confirming the write is enough.\n'
     printf 'END TASK PROMPT\n\n'
     role_i=$((role_i + 1))
@@ -871,6 +865,15 @@ orch_rc=0
   # subagent's effective tool set is the intersection of its frontmatter list
   # and the parent session's --tools, so a tool missing here is silently
   # unavailable to every role no matter what the agent file grants.
+  # --permission-mode acceptEdits: non-interactive claude auto-DENIES the
+  # Write permission prompt, so without this every role finishes its whole
+  # review and then fails to land its payload file (the first smoke run burned
+  # $2.19 to produce two empty files). acceptEdits auto-approves file writes
+  # inside the session's working directory, which is exactly the scratch.
+  # The payload files are also deliberately NOT pre-created: Write refuses to
+  # overwrite an existing file it has not Read, so a pre-created empty file
+  # adds a pointless read-first hoop for every role; the post-run loop below
+  # restores the empty-file shape for whatever never landed.
   # No --append-system-prompt-file: the roles' system prompts come from the
   # bundled .claude/agents/ definitions, loaded via --setting-sources project;
   # the prompt file above is the orchestrator's whole instruction.
@@ -878,6 +881,7 @@ orch_rc=0
     claude -p \
     --model "$REVIEW_MODEL" \
     --tools Agent Read Write Bash Grep Glob WebFetch \
+    --permission-mode acceptEdits \
     --strict-mcp-config --setting-sources project \
     --disable-slash-commands \
     --output-format stream-json --verbose <"$ORCH_PROMPT" \
@@ -901,6 +905,10 @@ elif [[ "$orch_rc" -ne 0 ]]; then
 fi
 role_i=0
 while [[ "$role_i" -lt "$role_count" ]]; do
+  # Ensure the file exists before merge reads it: a role that never landed its
+  # payload (timeout, subagent failure) leaves nothing, and merge_findings.py
+  # crashes on a missing path where it tolerates an empty one (ADR 0024).
+  [[ -e "${LENS_RAW_FILES[$role_i]}" ]] || : >"${LENS_RAW_FILES[$role_i]}"
   if [[ ! -s "${LENS_RAW_FILES[$role_i]}" ]]; then
     log_info "${LENS_LABELS[$role_i]} role produced no payload; continuing without it"
   fi

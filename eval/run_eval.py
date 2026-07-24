@@ -568,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         + (
             " ".join(f"{k}={v}" for k, v in config.items())
             if config
-            else "none set (review-pr.sh defaults: roles `code intent`, direct dispatch)"
+            else "none set (review-pr.sh defaults: roles `code intent`, orchestrator dispatch)"
         ),
         file=sys.stderr,
     )

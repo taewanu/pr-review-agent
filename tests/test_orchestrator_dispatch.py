@@ -64,7 +64,7 @@ def test_task_prompt_tells_each_role_to_write_its_payload_file():
     body = REVIEW_PR.read_text()
     # The instruction and the per-role file name must live in the same prompt
     # block: the write target is the payload contract with merge_findings.py.
-    assert "fenced payload" in body and "to the file %s" in body, (
+    assert "fenced payload" in body and "to a new file named %s" in body, (
         "the role task prompt no longer instructs writing the payload to the per-role file"
     )
 
@@ -84,4 +84,16 @@ def test_orchestrator_loads_agents_from_project_settings():
     assert "--setting-sources project" in m.group(0), (
         "without --setting-sources project the bundled .claude/agents/ "
         "definitions never load and the Agent tool has no role types to spawn"
+    )
+
+
+def test_orchestrator_auto_approves_payload_writes():
+    # Non-interactive claude auto-denies the Write permission prompt, so
+    # without acceptEdits every role completes its review and then fails to
+    # land its payload: a full-cost run producing an empty review, caught only
+    # by the first live smoke run (#299).
+    body = REVIEW_PR.read_text()
+    m = re.search(r"(?ms)--tools Agent.*?--output-format stream-json", body)
+    assert m and "--permission-mode acceptEdits" in m.group(0), (
+        "orchestrator invocation must carry --permission-mode acceptEdits"
     )
