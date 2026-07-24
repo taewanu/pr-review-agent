@@ -281,13 +281,13 @@ def merge(
 def _label_from_path(path: str) -> str:
     """Derive a readable lens name from its raw-output filename, e.g.
     `.pr-review-raw-perf.txt` -> "perf", `.pr-review-raw.txt`
-    (the general lens) -> "general". Best-effort for stderr diagnostics only;
+    (the code role) -> "code". Best-effort for stderr diagnostics only;
     an unrecognized name just prints as-is."""
     name = Path(path).name
     prefix, suffix = ".pr-review-raw", ".txt"
     if name.startswith(prefix) and name.endswith(suffix):
         middle = name[len(prefix) : -len(suffix)]
-        return middle.lstrip("-") or "general"
+        return middle.lstrip("-") or "code"
     return name
 
 

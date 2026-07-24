@@ -1,4 +1,4 @@
-"""Every lens prompt must spell out the taxonomy it is required to emit.
+"""Every role prompt must spell out the taxonomy it is required to emit.
 
 An agent's body is its entire system prompt (ADR 0038's direct dispatch):
 review-pr.sh strips the yaml header and appends the rest, with no includes and

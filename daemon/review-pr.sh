@@ -767,8 +767,8 @@ log_info "model: ${REVIEW_MODEL}"
 
 # ADR 0038: the two roles read in parallel, each unaware of the other's output,
 # each a directly-prompted `claude -p` process. The subagent dispatch layer and
-# the REVIEW_MODE dial died with ADR 0034 (it measured the layer as pure
-# forwarding overhead: equal recall, 27-39% more tokens).
+# the REVIEW_MODE dial died with ADR 0038, on ADR 0034's measurement of the
+# layer as pure forwarding overhead (equal recall, 27-39% more tokens).
 # Dispatch is bounded by the global claude_slot pool
 # (daemon/lib.sh's acquire_claude_slot/release_claude_slot), not by ADR 0013's
 # MAX_PARALLEL: that dial only bounds concurrent review-pr.sh *processes*,

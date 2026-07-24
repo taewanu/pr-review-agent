@@ -261,7 +261,7 @@ def test_one_lens_parse_failure_does_not_sink_the_others(capsys):
 def test_labels_name_the_failed_lens_in_the_skip_message(capsys):
     good = _lens(_finding(confidence=90))
     bad = "no fence here\n"
-    merge_findings.merge([good, bad], labels=["general", "perf"])
+    merge_findings.merge([good, bad], labels=["code", "intent"])
     assert "merge-skip: perf payload failed" in capsys.readouterr().err
 
 
@@ -283,8 +283,8 @@ def test_summary_is_first_nonempty_lens_summary():
 # --- _label_from_path ---------------------------------------------------
 
 
-def test_label_from_path_general_lens():
-    assert merge_findings._label_from_path("/scratch/.pr-review-raw.txt") == "general"
+def test_label_from_path_base_role():
+    assert merge_findings._label_from_path("/scratch/.pr-review-raw.txt") == "code"
 
 
 def test_label_from_path_named_lens():
