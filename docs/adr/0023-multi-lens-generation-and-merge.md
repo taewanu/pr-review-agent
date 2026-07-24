@@ -1,7 +1,7 @@
 # ADR 0023: Multi-lens generation and merge
 
 Date: 2026-07-03
-Status: Lens-set decisions superseded by [ADR 0038](./0038-review-roles-from-contamination-isolation.md) (two fixed roles replace the lens taxonomy); the merge/dedup/gate pipeline this ADR built is unchanged and remains authoritative.
+Status: Accepted. The lens-set decisions are superseded by [ADR 0038](./0038-review-roles-from-contamination-isolation.md), whose two fixed roles replace the lens taxonomy; the merge/dedup/gate pipeline this ADR built is unchanged and remains authoritative.
 
 ## Context
 
