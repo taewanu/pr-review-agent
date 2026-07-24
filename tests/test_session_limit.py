@@ -190,10 +190,11 @@ def test_unreadable_reset_still_reports_the_category_with_an_empty_deadline(tmp_
     assert "session_limit_deadline=\n" in r.stderr
 
 
-def _run_merge_with_probe(tmp_path: Path, probe: str) -> subprocess.CompletedProcess[str]:
+def _run_merge_with_probe(
+    tmp_path: Path, probe: str, *, extra_args: list[str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run merge_findings.py the way the orchestrator dispatch does (#299):
     empty payload files plus --session-limit-probe on the transcript."""
-    tmp_path.mkdir(parents=True, exist_ok=True)
     paths = []
     for i in range(2):
         p = tmp_path / f".pr-review-raw-role{i}.txt"
@@ -206,6 +207,7 @@ def _run_merge_with_probe(tmp_path: Path, probe: str) -> subprocess.CompletedPro
             sys.executable,
             str(DAEMON / "merge_findings.py"),
             "--no-style",
+            *(extra_args or []),
             "--session-limit-probe",
             str(probe_file),
             *paths,
@@ -227,14 +229,25 @@ def test_probe_flag_classifies_and_carries_the_probes_reset_time(tmp_path: Path)
 
 def test_a_long_transcript_around_the_sentinel_is_not_a_probe_match(tmp_path: Path):
     # The sentinel test caps its input length so quoted phrases in real text
-    # never classify (see test_the_phrase_quoted_inside_a_long_review_is_not_a
-    # _sentinel). The probe inherits that cap: a transcript that grew past it
-    # around the sentinel degrades to all-lenses-failed, the safe direction
-    # (a missed pause burns retries; a false pause silences the daemon).
+    # never classify (the quoted-phrase test above pins that). The probe
+    # inherits the cap: a transcript that grew past it around the sentinel
+    # degrades to all-lenses-failed, the safe direction (a missed pause burns
+    # retries; a false pause silences the daemon).
     padded = ("orchestrator status line\n" * 20) + SENTINEL
     r = _run_merge_with_probe(tmp_path, padded)
     assert r.returncode == 1
     assert "category=all-lenses-failed" in r.stderr
+
+
+def test_a_duplicated_probe_flag_never_leaks_into_the_payload_paths(tmp_path: Path):
+    # The regression the strip-all loop exists for: a second flag pair must be
+    # consumed as a flag (last wins), not read as two more payload files.
+    decoy = tmp_path / "decoy-transcript.txt"
+    decoy.write_text(PARSE_FAILURE)
+    r = _run_merge_with_probe(tmp_path, SENTINEL, extra_args=["--session-limit-probe", str(decoy)])
+    assert r.returncode == 1
+    assert "category=session-limit" in r.stderr
+    assert re.search(r"session_limit_deadline=\d+", r.stderr)
 
 
 # --- reset time to deadline ------------------------------------------------
