@@ -182,8 +182,8 @@ def _truncate_to_cap(payload: ReviewPayload) -> None:
     lens behaved correctly, so hard-failing here would discard every already-
     completed lens's output over a byproduct of merging, not a real defect.
 
-    Ranks by severity (important > nit > pre_existing, the same order
-    review-agent-code.md's own single-payload truncation convention uses) then
+    Ranks by severity (important > nit > pre_existing, the same order the
+    generator agents' own single-payload truncation convention uses) then
     by confidence descending. An unscored (None) finding ranks after every
     scored finding at the same severity: a demonstrated high score is a
     stronger signal for a forced truncation choice than an absent one, though

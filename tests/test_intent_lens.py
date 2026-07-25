@@ -36,9 +36,9 @@ def test_role_arrays_stay_index_aligned():
     assert len(labels) == len(raws), (
         f"role arrays diverged: {len(labels)} labels, {len(raws)} raw files"
     )
-    # ADR 0038: the set is fixed. A third entry here is a design change that
-    # belongs in an ADR before it belongs in this array.
-    assert labels == ["code", "intent"]
+    # ADR 0038 as split by #293: the set is fixed. A new entry here is a
+    # design change that belongs in an ADR before it belongs in this array.
+    assert labels == ["code-defects", "code-quality", "intent"]
 
 
 def test_every_role_label_has_an_agent():
@@ -112,13 +112,13 @@ def test_a_linked_issue_alone_runs_the_role(tmp_path):
     assert _skip_decision(tmp_path, "", 1) == "run"
 
 
-def test_the_skip_leaves_the_code_role():
-    # The skip branch collapses the arrays to the code role alone, never to an
+def test_the_skip_leaves_the_code_roles():
+    # The skip branch collapses the arrays to the code roles alone, never to an
     # empty set: the merge step downstream always has at least one payload.
     body = REVIEW_PR.read_text()
     m = re.search(r"(?ms)^else\n\s*LENS_LABELS=\((.*?)\)\n\s*LENS_RAW_FILES=", body)
     assert m, "the intent-skip branch no longer resets the role arrays"
-    assert m.group(1).split() == ["code"]
+    assert m.group(1).split() == ["code-defects", "code-quality"]
 
 
 def test_intent_agent_forbids_the_other_types():

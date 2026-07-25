@@ -538,18 +538,20 @@ DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
 # pipeline's input (anchor_findings split, commit-driven resolution).
 NUMBERED_BASENAME=".pr-review-diff-numbered.txt"
 NUMBERED_FILE="$SCRATCH/$NUMBERED_BASENAME"
-RAW_FILE="$SCRATCH/.pr-review-raw.txt"
-# ADR 0038: two fixed generator roles, each unaware of the other. `code` reads
-# the diff, the surrounding code, and the repo's conventions, quarantined from
-# every author claim; `intent` confronts the claims (description, linked issues,
-# commit messages) with the diff. Their raw outputs are unioned and deduped
-# before the confidence gate (daemon/merge_findings.py). The set is fixed: the
-# REVIEW_LENSES dial died with the lens taxonomy, and only the intent skip below
-# changes what runs. Parallel arrays, not an associative array, so this stays
-# bash-3.2-safe (ADR 0013's runtime constraint).
-LENS_LABELS=(code intent)
+# ADR 0038, split per #293: three fixed generator roles, each unaware of the
+# others. `code-defects` hunts traced breakage (real bug, the four data-flow
+# classes, pre-existing) on the code alone; `code-quality` judges conventions,
+# task-refs, and the judgment classes against the repo's documented standards;
+# `intent` confronts the author's claims (description, linked issues, commit
+# messages) with the diff. Both code roles stay quarantined from every author
+# claim. Raw outputs are unioned and deduped before the confidence gate
+# (daemon/merge_findings.py). Only the intent skip below changes what runs.
+# Parallel arrays, not an associative array, so this stays bash-3.2-safe (ADR
+# 0013's runtime constraint).
+LENS_LABELS=(code-defects code-quality intent)
 LENS_RAW_FILES=(
-  "$RAW_FILE"
+  "$SCRATCH/.pr-review-raw-code-defects.txt"
+  "$SCRATCH/.pr-review-raw-code-quality.txt"
   "$SCRATCH/.pr-review-raw-intent.txt"
 )
 # ADR 0035: the intent role reads the change's stated intent alongside the diff,
@@ -621,8 +623,11 @@ intent_issue_count="$(jq '.closingIssuesReferences | length' <<<"$meta")"
 if [[ "$intent_body_len" -gt 0 || "$intent_issue_count" -gt 0 ]]; then
   build_intent_file
 else
-  LENS_LABELS=(code)
-  LENS_RAW_FILES=("$RAW_FILE")
+  LENS_LABELS=(code-defects code-quality)
+  LENS_RAW_FILES=(
+    "$SCRATCH/.pr-review-raw-code-defects.txt"
+    "$SCRATCH/.pr-review-raw-code-quality.txt"
+  )
   log_info "intent role skipped: no description and no linked issue"
 fi
 

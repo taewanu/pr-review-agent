@@ -32,7 +32,8 @@ def test_copies_operator_agents_into_empty_scratch():
         scratch = Path(tmp)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        assert (scratch / ".claude/agents/review-agent-code.md").exists()
+        assert (scratch / ".claude/agents/review-agent-code-defects.md").exists()
+        assert (scratch / ".claude/agents/review-agent-code-quality.md").exists()
         assert (scratch / ".claude/agents/review-agent-intent.md").exists()
         assert (scratch / ".claude/agents/review-agent-reply.md").exists()
         assert (scratch / ".claude/agents/review-agent-editor.md").exists()
@@ -44,8 +45,8 @@ def test_copied_content_matches_source():
         scratch = Path(tmp)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        src = (REPO_ROOT / ".claude/agents/review-agent-code.md").read_text()
-        dst = (scratch / ".claude/agents/review-agent-code.md").read_text()
+        src = (REPO_ROOT / ".claude/agents/review-agent-code-defects.md").read_text()
+        dst = (scratch / ".claude/agents/review-agent-code-defects.md").read_text()
         assert src == dst
 
 
@@ -57,10 +58,10 @@ def test_target_repo_file_wins_over_operator():
         scratch = Path(tmp)
         (scratch / ".claude/agents").mkdir(parents=True)
         custom = "---\nname: review-agent-code\n---\nTARGET CUSTOM\n"
-        (scratch / ".claude/agents/review-agent-code.md").write_text(custom)
+        (scratch / ".claude/agents/review-agent-code-defects.md").write_text(custom)
         rc, _ = _bundle(scratch)
         assert rc == 0
-        assert (scratch / ".claude/agents/review-agent-code.md").read_text() == custom
+        assert (scratch / ".claude/agents/review-agent-code-defects.md").read_text() == custom
         # Sibling that wasn't pre-staged still gets bundled.
         assert (scratch / ".claude/agents/review-agent-reply.md").exists()
 
