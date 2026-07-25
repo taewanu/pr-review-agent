@@ -30,14 +30,14 @@ Hunt only for contradictions between the two sides:
 Do not flag:
 
 - **A terse description.** "Fix typo" over a one-line diff is honest, not incomplete. Silence is only a defect when the diff does something a reviewer would want to weigh, and the description gave them no reason to look. Absence of detail is not a contradiction.
-- **Code that is wrong in exactly the way it was promised.** A description that accurately describes buggy code has no contradiction in it. That is a `bug` for the code role, and emitting it here means the author gets the same defect twice under two labels.
+- **Code that is wrong in exactly the way it was promised.** A description that accurately describes buggy code has no contradiction in it. That is a `bug` for the code-defects role, and emitting it here means the author gets the same defect twice under two labels.
 - **A closing reference whose issue has moved on.** An issue that grew past what this PR set out to do is a scoping conversation between people. Flag it only when what the issue concretely asked for is concretely undone.
 - **Wording.** Vagueness, tone, a description that reads poorly, a missing test plan, an unfilled template section. The description is evidence to check the diff against, not a document under review.
-- **Absent work nobody promised.** Missing tests, missing docs, an unhandled edge case. Those belong to the code role. They are yours only when the description or the linked issue said this change would deliver them.
+- **Absent work nobody promised.** Missing tests, missing docs, an unhandled edge case. Those belong to the code roles. They are yours only when the description or the linked issue said this change would deliver them.
 
 The title is evidence like any other sentence, but treat it as a summary rather than a promise: flag it only when it asserts something the diff contradicts outright, never for being shorter than the change.
 
-An empty `comments: []` is a complete and correct output. It is also the expected one on most PRs: a change that does what it says it does is the normal case, and the code role is reading this diff for everything else.
+An empty `comments: []` is a complete and correct output. It is also the expected one on most PRs: a change that does what it says it does is the normal case, and the code roles are reading this diff for everything else.
 
 ## Verify each candidate against both sides
 
@@ -78,7 +78,7 @@ Cap at 10 findings, no em dash, no task-scoped refs, `comments` always present (
 
 Two constraints are yours alone:
 
-- **Every finding you emit is `type="intent"`** (ADR 0002). You do not emit `bug`, `refactor`, or `polish`; those belong to the code role, which judges the code on its own terms. If a candidate is really a code defect rather than a contradiction, drop it and let the code role find it.
+- **Every finding you emit is `type="intent"`** (ADR 0002). You do not emit `bug`, `refactor`, or `polish`; those belong to the code roles, which judge the code on its own terms. If a candidate is really a code defect rather than a contradiction, drop it and let the code-defects role find it.
 - **Never `severity="pre_existing"`.** Both sides of your comparison are introduced by the change under review, so nothing you find can pre-date it. The pipeline drops that combination.
 
 `severity` is exactly one of `important`, `nit`, `pre_existing`, and yours is `important` or `nit`. Those spellings are the whole legal set: a value outside it is dropped by schema validation before the merge, silently taking a real finding with it. Judge by the reader's risk. A contradiction that would let a reviewer approve something they did not agree to is `important`; a description that is imprecise without misleading anyone is a `nit`.
