@@ -548,10 +548,12 @@ NUMBERED_FILE="$SCRATCH/$NUMBERED_BASENAME"
 # (daemon/merge_findings.py). Only the intent skip below changes what runs.
 # Parallel arrays, not an associative array, so this stays bash-3.2-safe (ADR
 # 0013's runtime constraint).
+CODE_DEFECTS_RAW="$SCRATCH/.pr-review-raw-code-defects.txt"
+CODE_QUALITY_RAW="$SCRATCH/.pr-review-raw-code-quality.txt"
 LENS_LABELS=(code-defects code-quality intent)
 LENS_RAW_FILES=(
-  "$SCRATCH/.pr-review-raw-code-defects.txt"
-  "$SCRATCH/.pr-review-raw-code-quality.txt"
+  "$CODE_DEFECTS_RAW"
+  "$CODE_QUALITY_RAW"
   "$SCRATCH/.pr-review-raw-intent.txt"
 )
 # ADR 0035: the intent role reads the change's stated intent alongside the diff,
@@ -624,10 +626,7 @@ if [[ "$intent_body_len" -gt 0 || "$intent_issue_count" -gt 0 ]]; then
   build_intent_file
 else
   LENS_LABELS=(code-defects code-quality)
-  LENS_RAW_FILES=(
-    "$SCRATCH/.pr-review-raw-code-defects.txt"
-    "$SCRATCH/.pr-review-raw-code-quality.txt"
-  )
+  LENS_RAW_FILES=("$CODE_DEFECTS_RAW" "$CODE_QUALITY_RAW")
   log_info "intent role skipped: no description and no linked issue"
 fi
 

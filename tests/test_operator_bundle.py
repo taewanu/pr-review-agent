@@ -51,13 +51,13 @@ def test_copied_content_matches_source():
 
 
 def test_target_repo_file_wins_over_operator():
-    # Pre-stage a customized review-agent-code in the scratch. Bundle must
-    # NOT clobber it; target-repo customization is the whole point of the
+    # Pre-stage a customized review-agent-code-defects in the scratch. Bundle
+    # must NOT clobber it; target-repo customization is the whole point of the
     # precedence rule.
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         (scratch / ".claude/agents").mkdir(parents=True)
-        custom = "---\nname: review-agent-code\n---\nTARGET CUSTOM\n"
+        custom = "---\nname: review-agent-code-defects\n---\nTARGET CUSTOM\n"
         (scratch / ".claude/agents/review-agent-code-defects.md").write_text(custom)
         rc, _ = _bundle(scratch)
         assert rc == 0

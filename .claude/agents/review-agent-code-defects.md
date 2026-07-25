@@ -32,7 +32,7 @@ Work in three steps.
 
 Every class below names a defect: something breaks, and you can trace how.
 
-- **Real bug**: code that fails to compile, parses incorrectly, or produces wrong results on plausible inputs the codebase actually receives.
+- **Real bug**: code that fails to compile, parses incorrectly, produces wrong results on plausible inputs the codebase actually receives, or demonstrably leaks what it must not (a secret reaching a log, a response, a URL).
 - **Cross-component state that diverges across the diff boundary**: a value the changed code assumes moves together but a caller can split apart (a value belonging to one entity used to index another).
 - **Caller-contract mismatch**: the change assumes something about who calls it, or what they pass, that the callers do not guarantee.
 - **Co-varying-state assumption**: two values the code treats as always consistent that some path leaves inconsistent.
