@@ -915,7 +915,7 @@ done
 # Confidence gate threshold (ADR 0022): resolve from env, then .env, and export
 # so merge_findings.py's os.environ read sees it. The daemon never sources .env
 # wholesale, so without this the operator's .env dial would silently no-op and
-# the gate would sit at the Python default (80). An unset value stays unexported
+# the gate would sit at extract_json.py's default. An unset value stays unexported
 # so Python keeps its default.
 CONFIDENCE_THRESHOLD="$(resolve_tunable CONFIDENCE_THRESHOLD "$SCRIPT_DIR/../.env")"
 [[ -n "$CONFIDENCE_THRESHOLD" ]] && export CONFIDENCE_THRESHOLD
