@@ -45,7 +45,15 @@ def _lens(*findings: dict, summary: str = "lens summary") -> str:
 
 @pytest.fixture(autouse=True)
 def _default_threshold(monkeypatch):
-    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)  # gate default 80
+    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)  # gate runs at its default
+
+
+def _below_gate() -> int:
+    return merge_findings.extract_json.DEFAULT_CONFIDENCE_THRESHOLD - 10
+
+
+def _above_gate() -> int:
+    return merge_findings.extract_json.DEFAULT_CONFIDENCE_THRESHOLD + 10
 
 
 def test_union_distinct_locations_keeps_all():
@@ -137,18 +145,21 @@ def test_five_lens_union_keeps_max_across_all_of_them():
 
 
 def test_overlap_survives_gate_when_one_lens_is_confident():
-    # The recall win: a location one lens scored below the gate (70) but another
-    # scored above it (88) is kept, because the max clears the threshold.
-    a = _lens(_finding(line=10, confidence=70))
-    b = _lens(_finding(line=10, confidence=88))
+    # The recall win: a location one lens scored below the gate but another
+    # scored above it is kept, because the max clears the threshold. Both scores
+    # are placed relative to the gate so moving its default cannot quietly turn
+    # this into two passing scores testing nothing.
+    below, above = _below_gate(), _above_gate()
+    a = _lens(_finding(line=10, confidence=below))
+    b = _lens(_finding(line=10, confidence=above))
     merged = merge_findings.merge([a, b])
     assert len(merged.comments) == 1
-    assert merged.comments[0].confidence == 88
+    assert merged.comments[0].confidence == above
 
 
 def test_lone_low_confidence_finding_is_gated():
     # A single lens, single low score, no overlap to lift it: the gate drops it.
-    merged = merge_findings.merge([_lens(_finding(line=10, confidence=70))])
+    merged = merge_findings.merge([_lens(_finding(line=10, confidence=_below_gate()))])
     assert merged.comments == []
 
 

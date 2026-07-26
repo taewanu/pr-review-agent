@@ -20,10 +20,10 @@ FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 # max_findings() so review-pr.sh's export lands the same way as
 # CONFIDENCE_THRESHOLD's.
 DEFAULT_MAX_FINDINGS = 10
-# ADR 0022. The precision floor for the confidence gate; env CONFIDENCE_THRESHOLD
-# overrides. 80 follows the Anthropic code-review plugin default, a dogfood
-# starting point, not a settled value.
-DEFAULT_CONFIDENCE_THRESHOLD = 80
+# ADR 0022 as amended. The precision floor for the confidence gate; env
+# CONFIDENCE_THRESHOLD overrides. The value is a boundary in the roles' scoring
+# rubric, not a tuned number; ADR 0022's Consequences holds the reasoning.
+DEFAULT_CONFIDENCE_THRESHOLD = 60
 
 
 class ExtractError(Exception):

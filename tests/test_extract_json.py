@@ -589,19 +589,27 @@ def test_confidence_out_of_range_drops_that_finding_only(bad):
     assert payload.comments[0].line == 99
 
 
+def test_default_threshold_is_pinned():
+    # The one place the default's value is asserted, so moving it stays a
+    # deliberate act rather than a side effect; ADR 0022 as amended holds why
+    # this value and not another.
+    assert extract_json.DEFAULT_CONFIDENCE_THRESHOLD == 60
+
+
 def test_gate_drops_below_threshold(monkeypatch):
-    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)  # default 80
-    f = _minimal_finding(confidence=79)
+    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)
+    f = _minimal_finding(confidence=extract_json.DEFAULT_CONFIDENCE_THRESHOLD - 1)
     payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
     assert payload.comments == []
 
 
 def test_gate_keeps_at_or_above_threshold(monkeypatch):
-    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)  # default 80
-    at = _minimal_finding(line=1, confidence=80)
-    above = _minimal_finding(line=2, confidence=95)
+    monkeypatch.delenv("CONFIDENCE_THRESHOLD", raising=False)
+    default = extract_json.DEFAULT_CONFIDENCE_THRESHOLD
+    at = _minimal_finding(line=1, confidence=default)
+    above = _minimal_finding(line=2, confidence=default + 15)
     payload = extract_json.extract(_wrap({"summary": "x", "comments": [at, above]}))
-    assert [c.confidence for c in payload.comments] == [80, 95]
+    assert [c.confidence for c in payload.comments] == [default, default + 15]
 
 
 def test_gate_keeps_unscored_none(monkeypatch):
@@ -615,12 +623,13 @@ def test_gate_keeps_unscored_none(monkeypatch):
 
 
 def test_gate_respects_env_override(monkeypatch):
-    # A finding the default (80) would drop survives when the operator lowers
-    # the threshold: the gate reads the env at call time.
-    monkeypatch.setenv("CONFIDENCE_THRESHOLD", "50")
-    f = _minimal_finding(confidence=60)
+    # A finding the default would drop survives when the operator lowers the
+    # threshold: the gate reads the env at call time.
+    below_default = extract_json.DEFAULT_CONFIDENCE_THRESHOLD - 10
+    monkeypatch.setenv("CONFIDENCE_THRESHOLD", str(below_default - 5))
+    f = _minimal_finding(confidence=below_default)
     payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
-    assert payload.comments[0].confidence == 60
+    assert payload.comments[0].confidence == below_default
 
 
 def test_gate_drops_before_cap(monkeypatch):
@@ -644,12 +653,13 @@ def test_gate_runs_under_no_style(monkeypatch):
 @pytest.mark.parametrize("garbage", ["", "high", "80.5", "  "])
 def test_malformed_threshold_falls_back_to_default(monkeypatch, garbage):
     # A non-integer env value must not escape as an uncaught crash; it falls
-    # back to the 80 default so one operator typo doesn't break every tick.
+    # back to the default so one operator typo doesn't break every tick.
+    default = extract_json.DEFAULT_CONFIDENCE_THRESHOLD
     monkeypatch.setenv("CONFIDENCE_THRESHOLD", garbage)
-    below = _minimal_finding(line=1, confidence=50)
-    at = _minimal_finding(line=2, confidence=80)
+    below = _minimal_finding(line=1, confidence=default - 10)
+    at = _minimal_finding(line=2, confidence=default)
     payload = extract_json.extract(_wrap({"summary": "x", "comments": [below, at]}))
-    assert [c.confidence for c in payload.comments] == [80]  # default 80 applied
+    assert [c.confidence for c in payload.comments] == [default]
 
 
 def test_out_of_range_threshold_is_honored(monkeypatch):
