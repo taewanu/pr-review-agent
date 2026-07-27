@@ -178,17 +178,12 @@ fi
 rm -f "$gql_err"
 
 # Scratch clone at HEAD for the agent to verify claims via file reads. Same
-# refs/pull/N/head pattern as review-pr.sh — survives deleted head branch.
-meta="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
-  gh pr view "$PR_URL" --json headRepository,headRepositoryOwner,headRefName,headRefOid)"
-HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
-HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
-HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
-HEAD_OID="$(jq -r '.headRefOid // empty' <<<"$meta")"
-if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HEAD_OID" ]]; then
-  log_err "gh pr view returned incomplete metadata for $PR_URL"
-  exit 1
-fi
+# refs/pull/N/head pattern as review-pr.sh, which survives a deleted head branch.
+meta="$(derive_pr_metadata "$PR_URL")" || exit 1
+HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login' <<<"$meta")"
+HEAD_REPO_NAME="$(jq -r '.headRepository.name' <<<"$meta")"
+HEAD_REF="$(jq -r '.headRefName' <<<"$meta")"
+HEAD_OID="$(jq -r '.headRefOid' <<<"$meta")"
 HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 log_info "head: ${HEAD_REPO}@${HEAD_REF} (${HEAD_OID:0:12})"
 
