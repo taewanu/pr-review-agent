@@ -139,3 +139,54 @@ def test_a_deleted_file_yields_its_path(tmp_path):
     out, rc = _cli(tmp_path, diff)
     assert rc == 0
     assert out.splitlines() == ["daemon/gone.py"]
+
+
+# --- renames: one file, two names -------------------------------------------
+#
+# The two shapes below are verbatim `git diff` output. They are why the file
+# list and the routing classifier need different answers: a list a human reads
+# wants one entry under the surviving name, while a classifier asking what the
+# diff touched has to see both, since a rename from .py to .md removed code.
+
+_RENAME_WITH_EDITS = (
+    "diff --git a/old.py b/new.py\n"
+    "similarity index 50%\n"
+    "rename from old.py\n"
+    "rename to new.py\n"
+    "index de98044..70540de 100644\n"
+    "--- a/old.py\n"
+    "+++ b/new.py\n"
+    "@@ -1,3 +1,3 @@\n a\n b\n-c\n+ZZZ\n"
+)
+
+_PURE_RENAME = "diff --git a/n.py b/f.py\nsimilarity index 100%\nrename from n.py\nrename to f.py\n"
+
+
+def test_changed_files_counts_a_renamed_file_once():
+    assert diff_paths.changed_files(_RENAME_WITH_EDITS) == ["new.py"]
+
+
+def test_changed_files_keeps_a_pure_rename():
+    # No `---`/`+++` pair exists here, so a parser reading only those loses the
+    # file entirely and reports a count of zero.
+    assert diff_paths.changed_files(_PURE_RENAME) == ["f.py"]
+
+
+def test_changed_files_names_a_deletion_by_its_only_name():
+    diff = (
+        "diff --git a/daemon/gone.py b/daemon/gone.py\n"
+        "deleted file mode 100644\n"
+        "--- a/daemon/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n"
+    )
+    assert diff_paths.changed_files(diff) == ["daemon/gone.py"]
+
+
+def test_paths_in_diff_keeps_both_names_of_a_rename():
+    assert diff_paths.paths_in_diff(_RENAME_WITH_EDITS) == ["old.py", "new.py"]
+    assert diff_paths.paths_in_diff(_PURE_RENAME) == ["n.py", "f.py"]
+
+
+def test_cli_counts_a_renamed_file_once(tmp_path):
+    out, rc = _cli(tmp_path, _RENAME_WITH_EDITS + _PURE_RENAME)
+    assert rc == 0
+    assert out.splitlines() == ["new.py", "f.py"]
