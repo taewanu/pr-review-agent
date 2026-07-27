@@ -5,7 +5,7 @@ Whether routing the `code` role away from prose-only diffs is worth building is
 undecided, and the log against real PRs is what decides it.
 
 Written in Python rather than in `lib.sh` so it reads paths through
-`diff_paths.parse_diff_path`, the one parser that handles a quoted or
+`diff_paths.paths_in_diff`, the one parser that handles a quoted or
 space-bearing path. Reading the `diff --git a/OLD b/NEW` header instead, as a
 shell one-liner would, drops a non-ASCII path silently, and a dropped path here
 reads as prose that is not there.
@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from diff_paths import parse_diff_path  # noqa: E402
+from diff_paths import paths_in_diff  # noqa: E402
 
 # An allowlist of prose, not a denylist of code: a file type nobody classified
 # has to fall through to behaviour so it still reaches the code role. `.txt` is
@@ -49,28 +49,13 @@ def path_is_prose(path: str) -> bool:
     return path.endswith(PROSE_SUFFIXES)
 
 
-def diff_paths(text: str) -> list[str]:
-    """Every path the diff touches, deduped, in first-seen order.
-
-    Reads both header sides so a delete (whose `+++` is `/dev/null`) still
-    yields its path.
-    """
-    seen: dict[str, None] = {}
-    for line in text.splitlines():
-        for marker in ("a/", "b/"):
-            path = parse_diff_path(line, marker)
-            if path is not None:
-                seen.setdefault(path, None)
-    return list(seen)
-
-
 def has_executable_change(text: str) -> bool:
     """True unless every path the diff touches is prose.
 
     An empty or unparseable diff is behaviour: nothing to be confident about
     means nothing to skip on.
     """
-    paths = diff_paths(text)
+    paths = paths_in_diff(text)
     if not paths:
         return True
     return not all(path_is_prose(path) for path in paths)

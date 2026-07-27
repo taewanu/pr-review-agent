@@ -5,10 +5,18 @@ substring ` b/`: git does not quote a plain space there, so `a/(.+) b/(.+)`
 splits at the wrong ` b/`. The `---`/`+++` lines carry the path as the sole
 field, tab-terminated when it holds a space and C-quoted in double quotes when
 it holds a byte git escapes (non-ASCII, control, `"`, `\\`). That single-path
-form has no split to get wrong, so both diff parsers read the path from here.
+form has no split to get wrong, so every reader of a diff path goes through here.
+
+Run as `python3 diff_paths.py <unified-diff-file>` to print one path per line.
+That entry point exists so shell callers have somewhere correct to go: an
+earlier `diff_paths` helper in `lib.sh` matched the `diff --git` line and
+dropped exactly the paths this module was written to keep (#306).
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 # git C-style escapes inside a quoted path. Octal `\ooo` bytes are handled
 # separately; these are the named single-character escapes.
@@ -80,3 +88,36 @@ def parse_diff_path(line: str, marker: str) -> str | None:
     if not path.startswith(marker):
         return None  # /dev/null, or a prefix git did not tag
     return path[len(marker) :]
+
+
+def paths_in_diff(text: str) -> list[str]:
+    """Every path the diff touches, deduped, in first-seen order.
+
+    Reads both header sides, so a file whose `+++` is `/dev/null` still yields
+    the path from its `---`, and an addition still yields the path from its
+    `+++`.
+    """
+    seen: dict[str, None] = {}
+    for line in text.splitlines():
+        for marker in ("a/", "b/"):
+            path = parse_diff_path(line, marker)
+            if path is not None:
+                seen.setdefault(path, None)
+    return list(seen)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 1:
+        print("usage: diff_paths.py <unified-diff-file>", file=sys.stderr)
+        return 2
+    try:
+        text = Path(argv[0]).read_text(errors="replace")
+    except OSError:
+        return 0  # an unreadable diff prints nothing, matching the shell caller
+    for path in paths_in_diff(text):
+        print(path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

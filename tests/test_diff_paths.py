@@ -9,6 +9,7 @@ holding a byte git escapes wrapped in double quotes with C-style escapes
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 DIFF_PATHS = Path(__file__).resolve().parent.parent / "daemon" / "diff_paths.py"
@@ -73,3 +74,68 @@ def test_malformed_octal_escape_is_none_not_raise():
     # and must degrade to None rather than raise out of the parser.
     assert parse_diff_path(r'+++ "b/a\7"', "b/") is None
     assert parse_diff_path(r'+++ "b/a\777b.py"', "b/") is None
+
+
+# --- paths_in_diff and the CLI (#306) --------------------------------------
+#
+# These replace two tests that exercised a `diff_paths` helper in lib.sh. That
+# helper matched the `diff --git` header and so dropped exactly the paths this
+# module exists to keep; the cases below carry the old coverage plus the one
+# that broke it.
+
+
+def _cli(tmp_path, text: str) -> tuple[str, int]:
+    diff_file = tmp_path / "d.diff"
+    diff_file.write_text(text)
+    result = subprocess.run(
+        ["python3", str(DIFF_PATHS), str(diff_file)], capture_output=True, text=True
+    )
+    return result.stdout, result.returncode
+
+
+def test_paths_in_diff_lists_every_file_in_order(tmp_path):
+    diff = (
+        "diff --git a/daemon/poll.sh b/daemon/poll.sh\n"
+        "index 111..222 100644\n"
+        "--- a/daemon/poll.sh\n+++ b/daemon/poll.sh\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/README.md b/README.md\n"
+        "--- a/README.md\n+++ b/README.md\n"
+    )
+    out, rc = _cli(tmp_path, diff)
+    assert rc == 0
+    assert out.splitlines() == ["daemon/poll.sh", "README.md"]
+
+
+def test_cli_prints_nothing_for_a_missing_file(tmp_path):
+    result = subprocess.run(
+        ["python3", str(DIFF_PATHS), str(tmp_path / "nope")], capture_output=True, text=True
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_a_quoted_path_survives(tmp_path):
+    # The case the shell helper dropped: git C-quotes a non-ASCII path, and a
+    # pattern anchored on `diff --git a/… b/…` matches nothing.
+    diff = (
+        'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\n'
+        '--- "a/caf\\303\\251.py"\n+++ "b/caf\\303\\251.py"\n'
+        "@@ -1 +1 @@\n-a\n+b\n"
+        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n"
+    )
+    out, rc = _cli(tmp_path, diff)
+    assert rc == 0
+    assert out.splitlines() == ["café.py", "README.md"]
+
+
+def test_a_deleted_file_yields_its_path(tmp_path):
+    diff = (
+        "diff --git a/daemon/gone.py b/daemon/gone.py\n"
+        "deleted file mode 100644\n"
+        "--- a/daemon/gone.py\n+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n-old\n"
+    )
+    out, rc = _cli(tmp_path, diff)
+    assert rc == 0
+    assert out.splitlines() == ["daemon/gone.py"]

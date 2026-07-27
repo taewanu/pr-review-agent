@@ -102,18 +102,19 @@ def test_quoted_non_ascii_path_is_seen():
         '+++ "b/caf\\303\\251.py"\n'
         "@@ -1 +1 @@\n-a\n+b\n"
     ) + _diff("README.md")
-    assert "café.py" in route_diff.diff_paths(diff)
     assert route_diff.has_executable_change(diff) is True
 
 
-def test_space_bearing_path_is_seen():
+def test_space_bearing_path_is_classified_by_its_suffix():
+    # The path holds a literal " b/", which is what makes the `diff --git`
+    # header ambiguous. Its suffix is what decides, not where it lives.
     diff = (
         "diff --git a/docs/my notes b/x.py b/docs/my notes b/x.py\n"
         "--- a/docs/my notes b/x.py\t\n"
         "+++ b/docs/my notes b/x.py\t\n"
         "@@ -1 +1 @@\n-a\n+b\n"
     )
-    assert route_diff.diff_paths(diff) == ["docs/my notes b/x.py"]
+    assert route_diff.has_executable_change(diff) is True
 
 
 def test_deletion_yields_its_path_from_the_old_side():
@@ -126,7 +127,6 @@ def test_deletion_yields_its_path_from_the_old_side():
         "+++ /dev/null\n"
         "@@ -1 +0,0 @@\n-old\n"
     )
-    assert route_diff.diff_paths(diff) == ["daemon/gone.py"]
     assert route_diff.has_executable_change(diff) is True
 
 
