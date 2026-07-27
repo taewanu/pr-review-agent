@@ -43,6 +43,7 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 | `line` outside diff | per-finding | move body to summary's `## Findings outside the diff` section, post remaining |
 | `quote` matches no new-side line (ADR 0018) | per-finding | relocate to `## Findings outside the diff`, post remaining |
 | `quote` matches several new-side lines and the emitted `line` corroborates none (ADR 0018) | per-finding | relocate to `## Findings outside the diff`, post remaining |
+| Any exit that leaves the checks row's run open: system failure, watchdog TERM, Ctrl-C (ADR 0039) | system | conclude the run `neutral`, then flip the status comment; exit code unchanged |
 
 - The summary's `## Findings outside the diff` section is the canonical relocation
   surface for findings the daemon could not anchor inline. Pattern mirrors
@@ -108,3 +109,17 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 > pipeline defect suppress polling for hours and hide itself, which is the failure
 > this ADR's loud-by-default rule exists to prevent. A sentinel-free all-lenses
 > failure keeps `all-lenses-failed` and its loud, retry-next-cycle behaviour.
+
+> **Amended 2026-07-27 (#308, [ADR 0039](./0039-review-state-on-the-checks-row.md)).**
+> The review now opens a check run before it starts, and a failure that leaves it
+> `in_progress` is worse than the frozen `👀 Reviewing…` comment the #180
+> amendment addressed: a stale comment misinforms, while a stuck check run can
+> hold a merge back on a PR whose review is long dead. So the failure path
+> concludes the run, and does it before the status-comment flip, since both
+> handlers may be racing the per-PR watchdog's escalation from TERM to KILL. It
+> fires on every exit that left a run open, not only a non-zero one, because the
+> property worth holding is that no run of the script leaves one behind.
+> `neutral` is the conclusion: no verdict was reached, and a daemon-side failure
+> must not gate a merge the author cannot unblock. `review-pr.sh` also traps TERM
+> and INT, which otherwise kill the shell with the EXIT trap unrun. What a
+> `SIGKILL` still leaves behind is in ADR 0039's consequences.
