@@ -102,6 +102,35 @@ A second dogfood round (same workload, after Decisions 9-11 landed) surfaced thr
 > Decision split minus the misnomer and minus the domain lenses (off by default,
 > #249). Default set: `default data-flow intent`.
 
+> **Amended 2026-07-27 (#268): the exact `(path, line)` dedup key stays, and the
+> similarity heuristic is not tightened.** Two roles reporting one defect at
+> different lines of one file both post, by decision now rather than by omission.
+> The duplicates are real: over the 30 open-gate two-role runs behind ADR 0038's
+> split test (3 fixtures, N=10 each), 6 runs produce two findings for one defect
+> that both clear the gate at its default of 60, typically the `code` role's
+> defect statement beside the `intent` role's report that a commit claims a fix
+> the diff does not contain. What the same corpus rules out is fixing them by
+> ratio. Character similarity between a true duplicate pair measures 0.024 to
+> 0.154 against this ADR's 0.5 threshold, and every proposed replacement metric
+> puts true duplicates and genuinely distinct findings in one overlapping band:
+> word-set overlap runs 0.179 to 0.286 for duplicates against 0.081 to 0.204 for
+> distinct pairs, and `autojunk=False` character similarity runs 0.181 to 0.251
+> against 0.160 to 0.291. Any threshold catching every observed duplicate also
+> merges at least one pair of different defects, and `_merge_cluster` keeps a
+> single body, so a wrong merge deletes a true finding with no trace. That is the
+> content-losing failure #259 removed from the editor, and it is the worse of the
+> two errors: the redundant comment is at least true, and the judge graded every
+> duplicate in the batch as true and actionable. The discriminator these pairs
+> actually need is semantic, since one is a defect report and the other is a
+> claim-mismatch report about the same defect, which no body-text ratio can see.
+> Two facts bound how much is at stake. `_dedup` merged nothing in any of the 6
+> runs whose per-role payloads were archived, so the clustering path is inert on
+> real output and Decision 3's confidence-raising overlap does not currently
+> happen; and 7 PRs reviewed in production under the two-role pipeline produced 2
+> inline findings in total, with no pair among them. This answers the two
+> Consequences bullets below that left the 0.5 threshold to dogfooding and the
+> `(path, line)` key unaddressed.
+
 ## Boundary
 
 This ADR ships exactly five lenses (default plus four domain lenses). It does not add a dedicated adversarial verify pass, and does not make the lens set configurable via `.env`, the five lenses are fixed in `review-pr.sh` for this cut. It does not change the confidence rubric, the severity/type taxonomy (ADR 0002), the format layer (ADR 0010), or the editor's subtract-only contract (ADR 0016): the editor still sees one merged draft and cannot add findings.

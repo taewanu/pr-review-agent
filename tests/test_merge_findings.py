@@ -2,9 +2,9 @@
 
 Covers: union across an arbitrary number of lens payloads, same-(path, line)
 dedup via body-similarity clustering (a same-defect merge keeps the max scored
-confidence; a distinct-defect pair both survive), the post-merge confidence
-gate, and cap truncation (by severity then confidence) in place of a
-single-payload hard-fail."""
+confidence; a distinct-defect pair both survive, as does one defect reported at
+two lines of one file), the post-merge confidence gate, and cap truncation (by
+severity then confidence) in place of a single-payload hard-fail."""
 
 from __future__ import annotations
 
@@ -126,6 +126,40 @@ def test_paraphrased_same_defect_at_same_line_still_merges():
     merged = merge_findings.merge([a, b])
     assert len(merged.comments) == 1
     assert merged.comments[0].confidence == 88
+
+
+def test_same_defect_at_different_lines_of_one_file_both_survive():
+    # Pinned by decision, not by omission (ADR 0023 as amended by #268): no
+    # body-text ratio separates a cross-role duplicate from two distinct
+    # defects, and merging keeps one body, so a wrong merge would delete a
+    # true finding silently.
+    defect_report = _lens(
+        _finding(
+            line=10,
+            confidence=80,
+            body=(
+                "**The handler crashes on a missing cache entry.** "
+                "The lookup result is dereferenced with no null check."
+            ),
+        )
+    )
+    claim_mismatch = _lens(
+        _finding(
+            line=14,
+            confidence=88,
+            body=(
+                "**The commit message promises a null guard the diff never adds.** "
+                "It says the missing-entry case is handled, and the lookup is "
+                "still dereferenced unchecked."
+            ),
+        )
+    )
+    merged = merge_findings.merge([defect_report, claim_mismatch])
+    assert len(merged.comments) == 2
+    assert {(c.path, c.line) for c in merged.comments} == {
+        ("src/main.py", 10),
+        ("src/main.py", 14),
+    }
 
 
 def test_five_lens_union_keeps_max_across_all_of_them():
