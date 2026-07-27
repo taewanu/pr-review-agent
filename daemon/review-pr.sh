@@ -181,6 +181,16 @@ log_total_review_cost() {
   if [[ "$total_cost" != "0" ]]; then
     log_info "total review cost: \$${total_cost}"
   fi
+  # The routing ledger wants the verdict and the cost together, and this is the
+  # only point that holds both (#219). Two runs are excluded rather than
+  # recorded: one that died before the diff was classified, whose record would
+  # carry no verdict, and any dry run, because the ledger measures what the
+  # daemon actually reviews. The eval harness drives `--at-sha`, which is a dry
+  # run, so recording those would fill the ledger with the same few fixtures
+  # reviewed dozens of times and drown the real PRs it exists to count.
+  if [[ -n "${ROUTE_VERDICT:-}" && $DRY_RUN -eq 0 ]]; then
+    record_route_observation "$PR_URL" "$HEAD_OID" "$ROUTE_VERDICT" "$total_cost"
+  fi
 }
 
 # Single EXIT path for the run-scoped artifacts: the per-PR lock (#67) and the
@@ -698,6 +708,20 @@ if [[ -z "$AT_SHA" && $diff_scoped -eq 0 ]]; then
     log_failure "$FAIL_DIFF_FETCH_FAILED" "$PR_URL" "$HEAD_OID" "gh pr diff exited $diff_rc"
     exit 1
   fi
+fi
+
+# Observation only, no behaviour change (#219). Whether routing the code role
+# away from prose-only diffs is worth building is undecided: the roles run in
+# parallel inside one orchestrator, so dropping one saves tokens but almost no
+# wall-clock, and on the eval corpus only one of five deliberately-trivial PRs
+# even qualifies. Recording the classification against real PRs is what decides
+# it, and it costs nothing to record. Read the count of these lines against the
+# per-review cost logged below before acting on them.
+if python3 "$SCRIPT_DIR/route_diff.py" "$DIFF_FILE"; then
+  ROUTE_VERDICT="behaviour"
+else
+  ROUTE_VERDICT="prose-only"
+  log_info "prose-only diff: the code role would be skippable here (#219, not skipped)"
 fi
 
 # Line-numbered diff for the agents (ADR 0018, layer A).

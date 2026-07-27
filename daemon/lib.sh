@@ -576,6 +576,53 @@ _state_dir() {
   printf '%s' "${PR_REVIEW_STATE_DIR:-$HOME/.pr-review-agent}"
 }
 
+# log_route_ledger_rollup
+# One line summarising the routing ledger, printed when the daemon starts
+# (#219). The ledger answers whether routing the code role is worth building,
+# and an answer nobody reads is the same as no answer: a foreground run leaves
+# no file to grep, and remembering to check a path is not a plan. Startup is the
+# one moment the operator is already looking at this output.
+#
+# Silent until the ledger exists, so a fresh install prints nothing.
+log_route_ledger_rollup() {
+  local ledger total prose spent
+  ledger="$(_state_dir)/route-observations.jsonl"
+  [[ -r "$ledger" ]] || return 0
+  total="$(grep -c . "$ledger" 2>/dev/null || printf 0)"
+  [[ "$total" -gt 0 ]] || return 0
+  prose="$(grep -c '"verdict":"prose-only"' "$ledger" 2>/dev/null || printf 0)"
+  spent="$(awk -F'"cost_usd":' '/"verdict":"prose-only"/ { sum += $2 + 0 } END { printf "%.2f", sum }' "$ledger")"
+  log_info "routing ledger (#219): ${prose}/${total} reviews were prose-only, \$${spent} spent on them"
+}
+
+# record_route_observation <pr-url> <sha> <verdict> <cost>
+# Append one line to the routing ledger (#219). A terminal log line answers the
+# routing question only for whoever is watching that terminal, and the daemon's
+# foreground mode has no file to grep afterward, so the observation goes
+# somewhere durable instead. Best-effort: an unwritable ledger must never fail a
+# review that otherwise succeeded.
+#
+# Read it with:
+#   jq -r '[.verdict, (.cost_usd|tostring)] | @tsv' ~/.pr-review-agent/route-observations.jsonl
+record_route_observation() {
+  local pr="$1" sha="$2" verdict="$3" cost="$4" dir ledger
+  dir="$(_state_dir)"
+  [[ -d "$dir" ]] || return 0
+  ledger="$dir/route-observations.jsonl"
+  # One record per commit reviewed. A failed tick logs its cost on the way out
+  # and the next tick retries the same sha, so appending unconditionally would
+  # count that commit twice and bend the prose-only share the ledger exists to
+  # measure. First write wins, which means a failure's partial cost is what
+  # survives for a commit that later succeeded: the share stays honest and the
+  # spend reads low, the cheaper of the two errors here.
+  if [[ -r "$ledger" ]] && grep -q "\"sha\":\"${sha}\"" "$ledger" 2>/dev/null; then
+    return 0
+  fi
+  printf '{"ts":"%s","pr":"%s","sha":"%s","verdict":"%s","cost_usd":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pr" "$sha" "$verdict" "${cost:-0}" \
+    >>"$ledger" 2>/dev/null || true
+}
+
 _state_path() {
   printf '%s/%s-%s-%s.json' "$(_state_dir)" "$1" "$2" "$3"
 }

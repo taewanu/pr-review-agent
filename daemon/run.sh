@@ -57,6 +57,7 @@ if [[ -n "$app_id" && -n "$repos_raw" ]]; then
 fi
 
 log_info "polling loop up (pid $$, interval ${poll_interval}s, driver=run.sh per ADR 0009)"
+log_route_ledger_rollup
 while true; do
   write_heartbeat || log_err "heartbeat write failed"
   bash "$SCRIPT_DIR/poll.sh" || log_err "poll cycle exited non-zero — continuing"
