@@ -148,11 +148,18 @@ def test_refuses_when_the_response_is_not_json():
     assert "incomplete metadata" in stderr
 
 
+def _without_comments(text: str) -> str:
+    """The script with comment lines dropped, so prose naming a command cannot
+    be mistaken for the command."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
 def test_callers_reach_pr_metadata_through_the_seam():
-    # Both entry points must read metadata from one place. Asserting the
-    # absence of a `gh pr view` string instead would fail on a comment that
-    # merely names it, and would miss a caller refetching through some other
-    # transport, so it pins the prose rather than where the data comes from.
+    # The duplication this seam replaced was two `gh pr view` calls drifting
+    # apart, so a caller re-adding its own is the regression worth catching.
+    # Comments are stripped first: an earlier version of this test matched the
+    # raw source and forced a comment reword that changed no behaviour.
     for script in ("review-pr.sh", "reply-pr.sh"):
         text = (REPO_ROOT / "daemon" / script).read_text()
         assert "derive_pr_metadata" in text, script
+        assert "gh pr view" not in _without_comments(text), script
