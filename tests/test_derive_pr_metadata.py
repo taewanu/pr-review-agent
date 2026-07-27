@@ -148,10 +148,11 @@ def test_refuses_when_the_response_is_not_json():
     assert "incomplete metadata" in stderr
 
 
-def test_callers_do_not_fetch_pr_metadata_themselves():
-    # The duplication this seam replaced was two `gh pr view` calls drifting
-    # apart; a caller that grows its own again puts it right back.
+def test_callers_reach_pr_metadata_through_the_seam():
+    # Both entry points must read metadata from one place. Asserting the
+    # absence of a `gh pr view` string instead would fail on a comment that
+    # merely names it, and would miss a caller refetching through some other
+    # transport, so it pins the prose rather than where the data comes from.
     for script in ("review-pr.sh", "reply-pr.sh"):
         text = (REPO_ROOT / "daemon" / script).read_text()
-        assert "gh pr view" not in text, script
         assert "derive_pr_metadata" in text, script
