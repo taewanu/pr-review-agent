@@ -1080,6 +1080,38 @@ flatten_pages() {
   jq -s 'add // []'
 }
 
+# The PR fields the daemon reads, as one list so a new field is requested in one
+# place. It is the union of what the two entry points read off the blob, and the
+# reply path pays for the extra fields it does not read: one wider response beats
+# two `--json` lists that drift apart.
+readonly PR_METADATA_FIELDS="id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences,commits"
+
+# derive_pr_metadata <pr-url>
+# Prints one PR's metadata as the JSON gh returns, with gh's own field names, so
+# callers read it with the same jq filters they would write against `gh pr view`.
+# Returns 1 without printing when the fetch fails or the blob is unusable.
+#
+# The guard is here rather than in each caller because both need the same four
+# head fields to clone and anchor at HEAD, and the case that breaks them is one
+# gh reports as success: a closed PR whose fork is deleted answers 200 with the
+# head fields empty. Callers keep their own exit path; this returns, never exits.
+derive_pr_metadata() {
+  local pr_url="$1" meta
+  if ! meta="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh pr view "$pr_url" --json "$PR_METADATA_FIELDS")"; then
+    log_err "gh pr view failed for $pr_url"
+    return 1
+  fi
+  if ! jq -e '(.headRepositoryOwner.login // "") != ""
+    and (.headRepository.name // "") != ""
+    and (.headRefName // "") != ""
+    and (.headRefOid // "") != ""' <<<"$meta" >/dev/null 2>&1; then
+    log_err "gh pr view returned incomplete metadata for $pr_url (closed PR with deleted fork?)"
+    return 1
+  fi
+  printf '%s\n' "$meta"
+}
+
 # discover_sentinel_sha <owner> <repo> <pr-number> <login>
 # Reads the prior reviewed SHA from the most recent operator-authored review or
 # PR comment carrying the ADR 0006 sentinel. Comments are scanned too so the SHA

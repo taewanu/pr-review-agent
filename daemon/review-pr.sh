@@ -131,8 +131,8 @@ log_set_pr_context "$BASE_REPO" "$PR_NUMBER"
 PR_COLOR_START="$(_sgr "${_LOG_PR_PALETTE[$(pr_color_index "${BASE_REPO}#${PR_NUMBER}")]}")"
 PR_COLOR_RESET="$(_sgr 0)"
 
-# Set after `gh pr view`; leave blank so log_failure pre-view still has the
-# placeholder field populated.
+# Set after derive_pr_metadata; leave blank so a log_failure before it still has
+# the placeholder field populated.
 HEAD_OID=""
 
 # Durable edit-in-place status comment id (#60); set once posted/reused, edited
@@ -446,17 +446,12 @@ app_auth_warm || {
   exit 1
 }
 
-meta="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
-  gh pr view "$PR_URL" --json id,headRepository,headRepositoryOwner,headRefName,headRefOid,baseRefName,title,body,closingIssuesReferences,commits)"
-HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")"
-HEAD_REPO_NAME="$(jq -r '.headRepository.name // empty' <<<"$meta")"
-HEAD_REF="$(jq -r '.headRefName // empty' <<<"$meta")"
-HEAD_OID="$(jq -r '.headRefOid // empty' <<<"$meta")"
+meta="$(derive_pr_metadata "$PR_URL")" || exit 1
+HEAD_REPO_OWNER="$(jq -r '.headRepositoryOwner.login' <<<"$meta")"
+HEAD_REPO_NAME="$(jq -r '.headRepository.name' <<<"$meta")"
+HEAD_REF="$(jq -r '.headRefName' <<<"$meta")"
+HEAD_OID="$(jq -r '.headRefOid' <<<"$meta")"
 BASE_REF="$(jq -r '.baseRefName // empty' <<<"$meta")"
-if [[ -z "$HEAD_REPO_OWNER" || -z "$HEAD_REPO_NAME" || -z "$HEAD_REF" || -z "$HEAD_OID" ]]; then
-  log_err "gh pr view returned incomplete metadata for $PR_URL (closed PR with deleted fork?)"
-  exit 1
-fi
 HEAD_REPO="${HEAD_REPO_OWNER}/${HEAD_REPO_NAME}"
 # Base URL for status-comment SHA/scope links (#102). Target the HEAD repo where
 # HEAD_OID lives so links resolve on fork PRs, the same rule the finding blob
