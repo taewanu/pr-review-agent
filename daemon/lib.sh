@@ -605,12 +605,22 @@ log_route_ledger_rollup() {
 # Read it with:
 #   jq -r '[.verdict, (.cost_usd|tostring)] | @tsv' ~/.pr-review-agent/route-observations.jsonl
 record_route_observation() {
-  local pr="$1" sha="$2" verdict="$3" cost="$4" dir
+  local pr="$1" sha="$2" verdict="$3" cost="$4" dir ledger
   dir="$(_state_dir)"
   [[ -d "$dir" ]] || return 0
+  ledger="$dir/route-observations.jsonl"
+  # One record per commit reviewed. A failed tick logs its cost on the way out
+  # and the next tick retries the same sha, so appending unconditionally would
+  # count that commit twice and bend the prose-only share the ledger exists to
+  # measure. First write wins, which means a failure's partial cost is what
+  # survives for a commit that later succeeded: the share stays honest and the
+  # spend reads low, the cheaper of the two errors here.
+  if [[ -r "$ledger" ]] && grep -q "\"sha\":\"${sha}\"" "$ledger" 2>/dev/null; then
+    return 0
+  fi
   printf '{"ts":"%s","pr":"%s","sha":"%s","verdict":"%s","cost_usd":%s}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pr" "$sha" "$verdict" "${cost:-0}" \
-    >>"$dir/route-observations.jsonl" 2>/dev/null || true
+    >>"$ledger" 2>/dev/null || true
 }
 
 _state_path() {

@@ -182,9 +182,13 @@ log_total_review_cost() {
     log_info "total review cost: \$${total_cost}"
   fi
   # The routing ledger wants the verdict and the cost together, and this is the
-  # only point that holds both (#219). Skipped when the run died before the diff
-  # was classified, since a record with no verdict answers nothing.
-  if [[ -n "${ROUTE_VERDICT:-}" ]]; then
+  # only point that holds both (#219). Two runs are excluded rather than
+  # recorded: one that died before the diff was classified, whose record would
+  # carry no verdict, and any dry run, because the ledger measures what the
+  # daemon actually reviews. The eval harness drives `--at-sha`, which is a dry
+  # run, so recording those would fill the ledger with the same few fixtures
+  # reviewed dozens of times and drown the real PRs it exists to count.
+  if [[ -n "${ROUTE_VERDICT:-}" && $DRY_RUN -eq 0 ]]; then
     record_route_observation "$PR_URL" "$HEAD_OID" "$ROUTE_VERDICT" "$total_cost"
   fi
 }

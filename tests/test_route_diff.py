@@ -212,3 +212,26 @@ def test_rollup_counts_prose_reviews_and_their_spend(tmp_path):
 
 def test_rollup_is_silent_without_a_ledger(tmp_path):
     assert "routing ledger" not in _rollup(tmp_path)
+
+
+def test_ledger_records_a_commit_once(tmp_path):
+    # A failed tick logs its cost on the way out and the next tick retries the
+    # same sha; counting that commit twice would bend the prose-only share.
+    lib = REPO_ROOT / "daemon" / "lib.sh"
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"set -euo pipefail; export PR_REVIEW_STATE_DIR={tmp_path}; source {lib}; "
+            "record_route_observation 'https://example/pull/1' abc123 prose-only 0.10; "
+            "record_route_observation 'https://example/pull/1' abc123 prose-only 0.42; "
+            "record_route_observation 'https://example/pull/1' def456 behaviour 1.90",
+        ],
+        check=True,
+    )
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "route-observations.jsonl").read_text().splitlines()
+    ]
+    assert [r["sha"] for r in records] == ["abc123", "def456"]
+    assert records[0]["cost_usd"] == 0.10  # first write wins
