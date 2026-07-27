@@ -23,12 +23,46 @@ Automated PR review agent that posts as a self-hosted GitHub App. Run it in your
 ## Prerequisites
 
 - macOS (Claude Code runs here; the optional background install uses `launchd`).
-- A GitHub App you register and own: its App id in `GITHUB_APP_ID` and its private key at `~/.pr-review-agent/app.pem`. The daemon authenticates as the App, so no `gh auth login` is needed ([ADR 0036](docs/adr/0036-github-app-identity.md)); registration steps are still being written up.
+- A GitHub App you register and own: its App id in `GITHUB_APP_ID` and its private key at `~/.pr-review-agent/app.pem`. The daemon authenticates as the App, so no `gh auth login` is needed ([ADR 0036](docs/adr/0036-github-app-identity.md)). [Register the GitHub App](#register-the-github-app) below walks it end to end.
 - [`gh`](https://cli.github.com/) on `PATH` (the daemon drives it with the App token), plus `openssl` and `curl` for the token mint.
 - [`claude`](https://claude.com/claude-code) on `PATH`.
 - `git`, `jq`, `python3` 3.13+.
 
 Install however you prefer (brew, asdf, mise, pyenv, system package manager). This repo uses [mise](https://mise.jdx.dev/) to pin dev tool versions for contributors; not required to run the daemon.
+
+## Register the GitHub App
+
+Do this once, before the first run: the daemon has no identity of its own until you give it one. It is roughly ten minutes of form-filling on github.com, with no hosting to arrange and no webhook endpoint to expose, and each step below is a field on a page GitHub walks you through.
+
+**1. Open the form.** Go to **Settings → Developer settings → GitHub Apps → New GitHub App** on your personal account ([github.com/settings/apps/new](https://github.com/settings/apps/new)). Name it whatever you like. The name is what the `[bot]` suffix hangs off, and it carries tone rather than function, so attribution rides in the review footer instead ([ADR 0036](docs/adr/0036-github-app-identity.md)). The canonical instance is named `youshallnotmerge`. GitHub requires a homepage URL and never uses it for anything here; your fork's URL will do.
+
+**2. Turn the webhook off.** Uncheck **Webhook → Active** and subscribe to no events. The daemon polls GitHub on a timer ([ADR 0009](docs/adr/0009-explicit-polling-loop.md)), so it needs no public URL for GitHub to call back to, which is what keeps it runnable from a laptop.
+
+**3. Grant four repository permissions.** Under **Repository permissions**, set Contents to *Read and write*, Issues to *Read and write*, Pull requests to *Read and write*, and leave Metadata at *Read-only* (GitHub selects Metadata for you). Everything else stays *No access*.
+
+Pull requests carries the review and its inline findings. Issues carries the Status comment, which is an issue comment on the PR. Metadata is GitHub's mandatory baseline.
+
+Contents is the one worth pausing on, because *write* access to your code is a lot to hand a tool that only reads it. It buys exactly one thing: closing a review thread. GitHub's `resolveReviewThread` mutation rejects an App holding only `pull_requests: write` with `Resource not accessible by integration`, and the coupling appears nowhere in the permission docs ([community discussion 44650](https://github.com/orgs/community/discussions/44650)). Narrowing this back to *read* on least-privilege grounds is a tempting mistake and a quiet one: reviews keep posting, and threads simply stop closing until someone notices days later. CodeRabbit asks for the same read-and-write entry ([its docs](https://docs.coderabbit.ai/platforms/github-com) list read-and-write on "Code, commit statuses, issues, and pull requests"), so this is the category's floor rather than an unusual demand.
+
+What the permission does not buy is any write to your repository. The daemon makes no commits, no branches, and no file edits, and the installation token is attached to one `gh` call at a time rather than exported, so the review agents Claude Code spawns never inherit it ([ADR 0036](docs/adr/0036-github-app-identity.md) decision 5).
+
+If you ever change permissions on an App that is already installed, GitHub holds the change until you approve it at [github.com/settings/installations](https://github.com/settings/installations). Until you do, the App's settings page shows the new permission while its tokens still carry the old set.
+
+**4. Restrict where it can be installed.** Pick **Only on this account**, then create the App.
+
+**5. Download the private key.** On the App's settings page, under **Private keys**, click **Generate a private key**. GitHub downloads a `.pem` file and never shows it again; if you lose it, generate another and delete the old one. Put it where the daemon looks:
+
+```bash
+mkdir -p ~/.pr-review-agent
+mv ~/Downloads/<downloaded>.private-key.pem ~/.pr-review-agent/app.pem
+chmod 600 ~/.pr-review-agent/app.pem
+```
+
+Set `APP_KEY_PATH` in the environment to keep it somewhere else.
+
+**6. Install the App on each repo you want reviewed.** Open the **Install App** tab, install it on your account, and choose **Only select repositories**. There is no installation id to copy down: the daemon asks GitHub which installation covers each watched repo ([ADR 0036](docs/adr/0036-github-app-identity.md) decision 4). A watched repo the App is not installed on is named in a warning when `daemon/run.sh` starts and then skipped. That probe runs at startup rather than every cycle, so installing on a new repo mid-run needs a restart to take effect.
+
+**7. Copy the App id into your config.** The **App ID** is on the App's General settings page, a number. It goes in `.env` as `GITHUB_APP_ID`, which the next section covers.
 
 ## Install
 
@@ -98,7 +132,7 @@ The reaction lands on your comment from the `<app>[bot]`, so a "bot 👀" is pla
 
 Reviews post under your own GitHub App, so a fork attributes to whoever runs it with no shared identity. The footer links to the App's page (`github.com/apps/<slug>`), and the slug comes from the App you register and install ([ADR 0036](docs/adr/0036-github-app-identity.md)), not from the clone's git remote.
 
-To run a fork: register your own App, then set its id in `GITHUB_APP_ID` and drop its private key at `~/.pr-review-agent/app.pem` (see [Prerequisites](#prerequisites)).
+To run a fork: register your own App, then set its id in `GITHUB_APP_ID` and drop its private key at `~/.pr-review-agent/app.pem` (see [Register the GitHub App](#register-the-github-app)).
 
 ## License
 
