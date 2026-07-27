@@ -102,6 +102,27 @@ A second dogfood round (same workload, after Decisions 9-11 landed) surfaced thr
 > Decision split minus the misnomer and minus the domain lenses (off by default,
 > #249). Default set: `default data-flow intent`.
 
+> **Amended 2026-07-27 (#268): the exact `(path, line)` dedup key stays, and the
+> similarity heuristic is not tightened.** Two roles reporting one defect at
+> different lines of one file both post, by decision now rather than by omission.
+>
+> The duplicates are real: 6 of 30 open-gate two-role runs post two findings for
+> one defect that both clear the gate, typically the `code` role's defect
+> statement beside the `intent` role's report that a commit claims a fix the diff
+> does not contain. What the same corpus rules out is fixing them by ratio. True
+> duplicate pairs and genuinely distinct pairs occupy one overlapping band under
+> every metric measured, so any threshold catching all the duplicates also merges
+> different defects, and `_merge_cluster` keeps one body. A wrong merge therefore
+> deletes a true finding with no trace, which is the content-losing failure #259
+> removed from the editor; the redundant comment it would replace is at least
+> true. The discriminator these pairs need is semantic, since one is a defect
+> report and the other a claim-mismatch report about the same defect, and no
+> body-text ratio can see that.
+>
+> This answers the two Consequences bullets below that left the 0.5 threshold to
+> dogfooding and the `(path, line)` key unaddressed. The bands, the counts, and
+> the note that `_dedup` has never merged anything on real output are on #268.
+
 ## Boundary
 
 This ADR ships exactly five lenses (default plus four domain lenses). It does not add a dedicated adversarial verify pass, and does not make the lens set configurable via `.env`, the five lenses are fixed in `review-pr.sh` for this cut. It does not change the confidence rubric, the severity/type taxonomy (ADR 0002), the format layer (ADR 0010), or the editor's subtract-only contract (ADR 0016): the editor still sees one merged draft and cannot add findings.
