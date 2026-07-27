@@ -102,18 +102,19 @@ def test_quoted_non_ascii_path_is_seen():
         '+++ "b/caf\\303\\251.py"\n'
         "@@ -1 +1 @@\n-a\n+b\n"
     ) + _diff("README.md")
-    assert "café.py" in route_diff.diff_paths(diff)
     assert route_diff.has_executable_change(diff) is True
 
 
-def test_space_bearing_path_is_seen():
+def test_space_bearing_path_is_classified_by_its_suffix():
+    # The path holds a literal " b/", which is what makes the `diff --git`
+    # header ambiguous. Its suffix is what decides, not where it lives.
     diff = (
         "diff --git a/docs/my notes b/x.py b/docs/my notes b/x.py\n"
         "--- a/docs/my notes b/x.py\t\n"
         "+++ b/docs/my notes b/x.py\t\n"
         "@@ -1 +1 @@\n-a\n+b\n"
     )
-    assert route_diff.diff_paths(diff) == ["docs/my notes b/x.py"]
+    assert route_diff.has_executable_change(diff) is True
 
 
 def test_deletion_yields_its_path_from_the_old_side():
@@ -126,7 +127,6 @@ def test_deletion_yields_its_path_from_the_old_side():
         "+++ /dev/null\n"
         "@@ -1 +0,0 @@\n-old\n"
     )
-    assert route_diff.diff_paths(diff) == ["daemon/gone.py"]
     assert route_diff.has_executable_change(diff) is True
 
 
@@ -235,3 +235,19 @@ def test_ledger_records_a_commit_once(tmp_path):
     ]
     assert [r["sha"] for r in records] == ["abc123", "def456"]
     assert records[0]["cost_usd"] == 0.10  # first write wins
+
+
+def test_a_rename_out_of_a_code_suffix_is_behaviour():
+    # `foo.py` becomes `foo.md`: the surviving name reads as prose, but code
+    # was removed, so the classifier has to see the side that is gone.
+    diff = (
+        "diff --git a/foo.py b/foo.md\n"
+        "similarity index 90%\nrename from foo.py\nrename to foo.md\n"
+        "--- a/foo.py\n+++ b/foo.md\n@@ -1 +1 @@\n-a\n+b\n"
+    )
+    assert route_diff.has_executable_change(diff) is True
+
+
+def test_a_pure_rename_between_prose_names_stays_prose():
+    diff = "diff --git a/a.md b/b.md\nsimilarity index 100%\nrename from a.md\nrename to b.md\n"
+    assert route_diff.has_executable_change(diff) is False

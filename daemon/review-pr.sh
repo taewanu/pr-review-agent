@@ -731,7 +731,7 @@ python3 "$SCRIPT_DIR/anchor_findings.py" number "$DIFF_FILE" >"$NUMBERED_FILE"
 # the operator sees the PR is being looked at and the scope being read (#60).
 # Scope comes from the same diff: file list plus commit range (full PR first,
 # <last-sha>..HEAD on re-review). One comment per PR, reused across ticks.
-STATUS_FILES="$(diff_paths "$DIFF_FILE")"
+STATUS_FILES="$(python3 "$SCRIPT_DIR/diff_paths.py" "$DIFF_FILE")"
 STATUS_FILE_COUNT="$(printf '%s' "$STATUS_FILES" | grep -c . || true)"
 # Scope names the commit range this review covered (#102): base..HEAD on a first
 # review, the compare link <last>..HEAD on a re-review. Pass LAST_SHA only when

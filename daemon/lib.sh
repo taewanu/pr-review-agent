@@ -1846,15 +1846,6 @@ status_failure_reason() {
   esac
 }
 
-# diff_paths <unified-diff-file>
-# Prints the `b/` path of each `diff --git` header, one per line — the file
-# list for the status-comment scope.
-diff_paths() {
-  local diff_file="$1"
-  [[ -r "$diff_file" ]] || return 0
-  sed -n 's|^diff --git a/.* b/||p' "$diff_file"
-}
-
 # find_status_comment <owner> <repo> <pr-number> <operator>
 # Prints the id of the operator's status comment (the one carrying
 # STATUS_COMMENT_MARKER) so a re-review edits it rather than posting a second

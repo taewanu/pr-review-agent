@@ -3,7 +3,8 @@
 One durable status comment per PR: posted at review start (`👀 Reviewing`),
 edited in place when the review lands (`✅ Reviewed … N findings`), and reused
 across ticks rather than re-posted. `render_status_comment` builds the body
-(scope only — never the review findings), `diff_paths` derives the file list
+(scope only, never the review findings); the file list it renders comes from
+`daemon/diff_paths.py`, covered in test_diff_paths.py
 from the diff, and `find_status_comment` / `post_status_comment` /
 `edit_status_comment` are the gh-backed post/find/edit operations — all
 best-effort so a flaky status comment never aborts a review. `gh` is stubbed via
@@ -79,7 +80,7 @@ def _run_with_stub_script(
         return result.stdout, result.returncode, calls
 
 
-# --- render_status_comment / diff_paths (no gh) ---------------------------
+# --- render_status_comment (no gh) -----------------------------------------
 
 
 def test_render_carries_header_scope_and_marker():
@@ -214,30 +215,6 @@ def test_render_inserts_body_block_between_scope_and_files():
     assert "> The review agent timed out." in out
     assert out.index("_Scope: full PR_") < out.index("> The review agent timed out.")
     assert out.index("> The review agent timed out.") < out.index("<summary>1 file</summary>")
-
-
-def test_diff_paths_extracts_post_image_paths():
-    with tempfile.TemporaryDirectory() as tmp:
-        diff = Path(tmp) / "d.txt"
-        diff.write_text(
-            "diff --git a/daemon/poll.sh b/daemon/poll.sh\n"
-            "index 111..222 100644\n"
-            "--- a/daemon/poll.sh\n"
-            "+++ b/daemon/poll.sh\n"
-            "@@ -1 +1 @@\n"
-            "-old\n+new\n"
-            "diff --git a/README.md b/README.md\n"
-            "--- a/README.md\n+++ b/README.md\n"
-        )
-        out, rc, _ = _run(f"diff_paths {diff}")
-        assert rc == 0
-        assert out.splitlines() == ["daemon/poll.sh", "README.md"]
-
-
-def test_diff_paths_empty_on_missing_file():
-    out, rc, _ = _run("diff_paths /nonexistent/diff.txt")
-    assert rc == 0
-    assert out.strip() == ""
 
 
 # --- status_failure_reason (#180) -----------------------------------------
