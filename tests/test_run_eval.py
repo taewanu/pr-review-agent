@@ -216,3 +216,16 @@ def test_summarize_finding_tolerates_a_finding_with_no_reason():
     summary = run_eval.summarize_finding({"path": "a.py", "line": 1, "confidence": 88})
     assert summary["verification_gap"] is None
     assert summary["claim"] == ""
+
+
+@pytest.mark.parametrize("raw", [True, False, None, "1", 1.0, -1, 3])
+def test_matched_index_rejects_anything_that_is_not_an_index(raw):
+    # One normalisation feeds both the recording guard and the `others` filter,
+    # so a reply that records nothing cannot also drop a finding from grading.
+    # `bool` is an `int` here, which is how `true` came to select findings[1].
+    assert run_eval.matched_index(raw, 3) is None
+
+
+@pytest.mark.parametrize("raw", [0, 1, 2])
+def test_matched_index_passes_a_real_index_through(raw):
+    assert run_eval.matched_index(raw, 3) == raw
