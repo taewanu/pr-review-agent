@@ -359,54 +359,74 @@ def test_anchored_range_equal_endpoints_treated_as_single_line():
     assert not d.is_anchored("src/foo.py", 9, end_line=9)
 
 
-# ---------- resolve_finding (content anchoring, ADR 0018) ----------
+# ---------- resolve_finding (surface routing, ADR 0018 + ADR 0040) ----------
+
+
+def _surface(finding, d):
+    return anchor_findings.resolve_finding(finding, d)[0]
 
 
 def test_resolve_corrects_wrong_line_on_unique_quote_match():
     d = _quote_fixture()  # "keep this" is uniquely new-side line 4
     finding = {"path": "src/foo.py", "line": 1, "quote": "keep this", "body": "x"}
-    resolved = anchor_findings.resolve_finding(finding, d)
-    assert resolved is not None
+    surface, resolved = anchor_findings.resolve_finding(finding, d)
+    assert surface == anchor_findings.INLINE
     assert resolved["line"] == 4
 
 
-def test_resolve_relocates_on_no_quote_match():
+def test_resolve_no_quote_match_falls_to_file_level_when_path_is_in_the_diff():
     d = _quote_fixture()
     finding = {"path": "src/foo.py", "line": 2, "quote": "not in this diff", "body": "x"}
-    assert anchor_findings.resolve_finding(finding, d) is None
+    assert _surface(finding, d) == anchor_findings.FILE_LEVEL
+
+
+def test_resolve_falls_to_the_body_when_the_path_is_not_in_the_diff():
+    d = _quote_fixture()
+    finding = {"path": "src/untouched.py", "line": 2, "quote": "keep this", "body": "x"}
+    assert _surface(finding, d) == anchor_findings.BODY
 
 
 def test_resolve_multi_match_corroborated_by_emitted_line():
     d = _quote_fixture()  # `log(x)` matches new-side lines 2 and 5
     finding = {"path": "src/foo.py", "line": 5, "quote": "log(x)", "body": "x"}
-    resolved = anchor_findings.resolve_finding(finding, d)
-    assert resolved is not None
+    surface, resolved = anchor_findings.resolve_finding(finding, d)
+    assert surface == anchor_findings.INLINE
     assert resolved["line"] == 5
 
 
-def test_resolve_multi_match_without_corroboration_relocates():
+def test_resolve_multi_match_without_corroboration_falls_to_file_level():
     d = _quote_fixture()  # `log(x)` matches 2 and 5; emitted line is neither
     finding = {"path": "src/foo.py", "line": 9, "quote": "log(x)", "body": "x"}
-    assert anchor_findings.resolve_finding(finding, d) is None
+    assert _surface(finding, d) == anchor_findings.FILE_LEVEL
 
 
 def test_resolve_quote_absent_falls_back_to_range_check():
     d = _quote_fixture()  # hunk covers new-side lines 1..5
     in_hunk = {"path": "src/foo.py", "line": 3, "body": "no quote, in hunk"}
-    resolved = anchor_findings.resolve_finding(in_hunk, d)
-    assert resolved is not None
+    surface, resolved = anchor_findings.resolve_finding(in_hunk, d)
+    assert surface == anchor_findings.INLINE
     assert resolved["line"] == 3
     out_of_hunk = {"path": "src/foo.py", "line": 99, "body": "no quote, outside"}
-    assert anchor_findings.resolve_finding(out_of_hunk, d) is None
+    assert _surface(out_of_hunk, d) == anchor_findings.FILE_LEVEL
 
 
 def test_resolve_quote_absent_range_finding_uses_range_check():
     d = _quote_fixture()
     rng = {"path": "src/foo.py", "line": 2, "end_line": 4, "body": "block, no quote"}
-    resolved = anchor_findings.resolve_finding(rng, d)
-    assert resolved is not None
+    surface, resolved = anchor_findings.resolve_finding(rng, d)
+    assert surface == anchor_findings.INLINE
     assert resolved["line"] == 2
     assert resolved["end_line"] == 4
+
+
+def test_file_level_finding_keeps_its_emitted_line_unverified():
+    # ADR 0040: the file-level comment carries no line, so the router neither
+    # corrects nor drops the emitted one. It hands the finding back untouched.
+    d = _quote_fixture()
+    finding = {"path": "src/foo.py", "line": 99, "quote": "nowhere", "body": "x"}
+    surface, resolved = anchor_findings.resolve_finding(finding, d)
+    assert surface == anchor_findings.FILE_LEVEL
+    assert resolved == finding
 
 
 def _block_fixture():
@@ -434,17 +454,17 @@ def test_resolve_range_quote_shifts_end_line_by_delta():
     # Agent miscounts the block as lines 1..3; the quote pins the start at 3, so
     # the span shifts by +2 to 3..5.
     finding = {"path": "src/x.py", "line": 1, "end_line": 3, "quote": "charlie", "body": "x"}
-    resolved = anchor_findings.resolve_finding(finding, d)
-    assert resolved is not None
+    surface, resolved = anchor_findings.resolve_finding(finding, d)
+    assert surface == anchor_findings.INLINE
     assert resolved["line"] == 3
     assert resolved["end_line"] == 5
 
 
-def test_resolve_range_quote_relocates_when_shift_exits_hunk():
+def test_resolve_range_quote_falls_to_file_level_when_shift_exits_hunk():
     d = _block_fixture()  # hunk covers 1..7; `foxtrot` is uniquely line 6
-    # Shift (+2) pushes end_line to 11, outside the hunk: relocate, don't anchor.
+    # Shift (+2) pushes end_line to 11, outside the hunk: no inline anchor.
     finding = {"path": "src/x.py", "line": 4, "end_line": 9, "quote": "foxtrot", "body": "x"}
-    assert anchor_findings.resolve_finding(finding, d) is None
+    assert _surface(finding, d) == anchor_findings.FILE_LEVEL
 
 
 def test_resolve_range_quote_shifts_up_on_negative_delta():
@@ -452,8 +472,8 @@ def test_resolve_range_quote_shifts_up_on_negative_delta():
     # Agent miscounts the block as lines 10..12; the quote pins the start at 3, so
     # the span shifts by -7 to 3..5 (delta is negative).
     finding = {"path": "src/x.py", "line": 10, "end_line": 12, "quote": "charlie", "body": "x"}
-    resolved = anchor_findings.resolve_finding(finding, d)
-    assert resolved is not None
+    surface, resolved = anchor_findings.resolve_finding(finding, d)
+    assert surface == anchor_findings.INLINE
     assert resolved["line"] == 3
     assert resolved["end_line"] == 5
 
@@ -461,23 +481,22 @@ def test_resolve_range_quote_shifts_up_on_negative_delta():
 # ---------- split_findings ----------
 
 
-def test_split_empty_payload_yields_two_empty_lists():
+def test_split_empty_payload_yields_three_empty_lists():
     d = _hunks_fixture()
-    anchored, unanchored = anchor_findings.split_findings([], d)
-    assert anchored == []
-    assert unanchored == []
+    assert anchor_findings.split_findings([], d) == ([], [], [])
 
 
 def test_split_uses_content_anchoring_and_corrects_line():
     d = _quote_fixture()  # `keep this` is uniquely new-side line 4
     findings = [
         {"path": "src/foo.py", "line": 1, "quote": "keep this", "body": "corrected"},
-        {"path": "src/foo.py", "line": 2, "quote": "not present", "body": "relocated"},
+        {"path": "src/foo.py", "line": 2, "quote": "not present", "body": "file-level"},
     ]
-    anchored, unanchored = anchor_findings.split_findings(findings, d)
+    anchored, file_level, body = anchor_findings.split_findings(findings, d)
     assert [f["body"] for f in anchored] == ["corrected"]
     assert anchored[0]["line"] == 4
-    assert [f["body"] for f in unanchored] == ["relocated"]
+    assert [f["body"] for f in file_level] == ["file-level"]
+    assert body == []
 
 
 def test_split_routes_findings_per_anchor_status():
@@ -489,13 +508,26 @@ def test_split_routes_findings_per_anchor_status():
         {"path": "src/foo.py", "line": 10, "end_line": 14, "body": "range-in-hunk"},
         {"path": "src/foo.py", "line": 12, "end_line": 51, "body": "range-across-hunks"},
     ]
-    anchored, unanchored = anchor_findings.split_findings(findings, d)
+    anchored, file_level, body = anchor_findings.split_findings(findings, d)
     assert [f["body"] for f in anchored] == ["in-hunk", "range-in-hunk"]
-    assert [f["body"] for f in unanchored] == [
-        "out-of-hunk",
-        "path-not-in-diff",
-        "range-across-hunks",
+    assert [f["body"] for f in file_level] == ["out-of-hunk", "range-across-hunks"]
+    assert [f["body"] for f in body] == ["path-not-in-diff"]
+
+
+# ---------- count_quote_misses (#191 relocation-cause observation) ----------
+
+
+def test_quote_miss_count_separates_a_wrong_citation_from_a_region_level_finding():
+    # A file-level finding that named a quote cited a line the diff does not
+    # contain, which is a generation defect. One that named none had no line to
+    # verify in the first place. The ratio is the open question, so the count has
+    # to tell them apart.
+    file_level = [
+        {"path": "a.py", "line": 1, "quote": "not in the diff", "body": "wrong citation"},
+        {"path": "a.py", "line": 2, "body": "region-level"},
+        {"path": "a.py", "line": 3, "quote": "   ", "body": "blank quote is no quote"},
     ]
+    assert anchor_findings.count_quote_misses(file_level) == 1
 
 
 # ---------- drop_forbidden_combos ----------

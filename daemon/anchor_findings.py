@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Split a review payload into anchored (in-diff) and unanchored findings.
+"""Route each review finding to the surface its anchor confidence justifies.
 
 Parses `gh pr diff` output for the new-file hunks (GitHub's PR Review API
 anchors comments to new-file lines, so old-file ranges aren't used). A finding
 is anchored when its `path` is in the diff AND its `line` (and optional
 `end_line`) falls inside a hunk on the new side. Range findings must have both
-endpoints in the same hunk — GitHub rejects cross-hunk ranges with 422.
+endpoints in the same hunk: GitHub rejects cross-hunk ranges with 422.
+
+A finding the line gate rejects lands on one of two lesser surfaces (ADR 0040).
+When the PR touches its file, it becomes a file-level comment, which is a real
+thread and claims exactly what a failed line check justifies. When the PR does
+not touch the file, GitHub accepts no comment there at all and the finding stays
+in the review body as advice.
 
 Per ADR 0005, findings whose (severity, type) combo is forbidden are dropped
 before splitting and the count is emitted to stdout so the orchestrator can
@@ -166,29 +172,43 @@ def drop_forbidden_combos(findings: list[dict]) -> tuple[list[dict], int]:
     return kept, dropped
 
 
+# The three surfaces a finding can land on, in descending order of what the
+# anchor evidence justifies (ADR 0040): an inline comment on a verified line, a
+# file-level comment when the PR touches the file but no line verified, and the
+# review body when the PR never touched the file, where GitHub accepts no comment.
+INLINE = "inline"
+FILE_LEVEL = "file"
+BODY = "body"
+
+
+def _demote(finding: dict, diff: Diff, path: str) -> tuple[str, dict]:
+    """The surface for a finding the line gate rejected (ADR 0040 decision 1)."""
+    return (FILE_LEVEL if path in diff.hunks else BODY), finding
+
+
 def _anchor_at(
     finding: dict, diff: Diff, path: str, target: int, emitted_line: int, end_line: int | None
-) -> dict | None:
-    """Anchor `finding` at `target`, shifting a range's end by target - emitted_line.
+) -> tuple[str, dict]:
+    """Anchor `finding` inline at `target`, shifting a range's end by target - emitted_line.
 
     Returns the corrected finding when the resulting span stays inside one hunk,
-    else None to relocate."""
+    else demotes it: a span that leaves the hunk is one GitHub would reject."""
     new_end = end_line + (target - emitted_line) if end_line is not None else None
     if not diff.is_anchored(path, target, new_end):
-        return None
+        return _demote(finding, diff, path)
     result = {**finding, "line": target}
     if end_line is not None:
         result["end_line"] = new_end
-    return result
+    return INLINE, result
 
 
-def resolve_finding(finding: dict, diff: Diff) -> dict | None:
-    """Resolve a finding's inline anchor by content, the ADR 0018 confidence gate.
+def resolve_finding(finding: dict, diff: Diff) -> tuple[str, dict]:
+    """Route a finding by content, the ADR 0018 confidence gate as ADR 0040 amends it.
 
-    Returns the finding (its `line`/`end_line` corrected to the quoted location)
-    when it anchors inline with confidence, or None when it should relocate to
-    the review body's `## Findings outside the diff` section. Never anchors inline
-    on a guess.
+    Returns `(surface, finding)`. On INLINE the finding comes back with its
+    `line`/`end_line` corrected to the quoted location; on FILE_LEVEL and BODY it
+    comes back untouched, since neither surface reads a line. Never anchors inline
+    on a guess, and never invents a line for the file-level comment either.
     """
     path = finding.get("path", "")
     line = finding.get("line", 0)
@@ -199,31 +219,40 @@ def resolve_finding(finding: dict, diff: Diff) -> dict | None:
         if len(matches) == 1:
             # The quote pins the start line. Shift a range's end by the same
             # delta (the miscount is a constant offset), then require the
-            # corrected span to stay in one hunk, else relocate.
+            # corrected span to stay in one hunk, else demote.
             return _anchor_at(finding, diff, path, matches[0], line, end_line)
         # Several matches: trust the emitted line only when it coincides with one
-        # of them (corroboration); otherwise relocate rather than guess.
+        # of them (corroboration); otherwise demote rather than guess.
         if len(matches) > 1 and line in matches:
             return _anchor_at(finding, diff, path, line, line, end_line)
-        return None
+        return _demote(finding, diff, path)
     # No quote: a region-level finding (file-level, an absence, a block) with no
     # single line to verify. The emitted line was read off the leading number,
     # not counted, so fall back to the range check on it (ADR 0018).
     if diff.is_anchored(path, line, end_line):
-        return finding
-    return None
+        return INLINE, finding
+    return _demote(finding, diff, path)
 
 
-def split_findings(findings: list[dict], diff: Diff) -> tuple[list[dict], list[dict]]:
-    anchored: list[dict] = []
-    unanchored: list[dict] = []
+def split_findings(findings: list[dict], diff: Diff) -> tuple[list[dict], list[dict], list[dict]]:
+    """Findings grouped by surface, as (inline, file_level, body)."""
+    routed: dict[str, list[dict]] = {INLINE: [], FILE_LEVEL: [], BODY: []}
     for f in findings:
-        resolved = resolve_finding(f, diff)
-        if resolved is not None:
-            anchored.append(resolved)
-        else:
-            unanchored.append(f)
-    return anchored, unanchored
+        surface, finding = resolve_finding(f, diff)
+        routed[surface].append(finding)
+    return routed[INLINE], routed[FILE_LEVEL], routed[BODY]
+
+
+def count_quote_misses(findings: list[dict]) -> int:
+    """How many of these findings named a `quote` (#191).
+
+    Told apart at the split so the operator can read why a finding lost its line.
+    A finding that gave a quote and still failed the gate cited a line that is not
+    in the diff, which is a generation defect the file-level comment relocates
+    rather than fixes. One that gave none is region-level by construction (ADR
+    0018 decision 3), which is the pipeline working and having nowhere to put the
+    answer. The ratio decides whether the next move here is a surface or a prompt."""
+    return sum(1 for f in findings if (f.get("quote") or "").strip())
 
 
 def _cmd_split(args: argparse.Namespace) -> int:
@@ -231,11 +260,13 @@ def _cmd_split(args: argparse.Namespace) -> int:
     findings = payload.get("comments", [])
     kept, dropped = drop_forbidden_combos(findings)
     diff = Diff.parse(args.diff.read_text())
-    anchored, unanchored = split_findings(kept, diff)
+    anchored, file_level, unanchored = split_findings(kept, diff)
 
     args.anchored.write_text(json.dumps(anchored, indent=2) + "\n")
+    args.file_level.write_text(json.dumps(file_level, indent=2) + "\n")
     args.unanchored.write_text(json.dumps(unanchored, indent=2) + "\n")
     print(f"dropped_forbidden_combo={dropped}")
+    print(f"file_level_quote_miss={count_quote_misses(file_level)}")
     return 0
 
 
@@ -248,10 +279,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_split = sub.add_parser("split", help="route findings into anchored vs relocated")
+    p_split = sub.add_parser("split", help="route findings to inline, file-level, or the body")
     p_split.add_argument("payload", type=Path, help="path to extract_json.py output")
     p_split.add_argument("diff", type=Path, help="path to gh pr diff output")
     p_split.add_argument("--anchored", type=Path, required=True)
+    p_split.add_argument("--file-level", type=Path, required=True, dest="file_level")
     p_split.add_argument("--unanchored", type=Path, required=True)
     p_split.set_defaults(func=_cmd_split)
 

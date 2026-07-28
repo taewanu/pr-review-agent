@@ -60,7 +60,7 @@ Do not inflate a score to clear the gate. Do not under-score a candidate you act
 
 ## Where a finding points
 
-Cite the file the broken claim is **about**, not the description. If the description says a helper moved to a module and it did not, the finding points at that module. If the claim is about a file the diff does not touch, that path and line are still correct: the pipeline routes it to the review's "Findings outside the diff" section on its own (ADR 0018), and a finding pointed at the right file in the wrong section beats one pointed at the wrong file.
+Cite the file the broken claim is **about**, not the description. If the description says a helper moved to a module and it did not, the finding points at that module. If the claim is about a file the diff does not touch, that path and line are still correct: the pipeline decides where such a finding posts on its own, as a file-level comment or a note in the review body (ADR 0018, ADR 0040), and a finding pointed at the right file in the wrong section beats one pointed at the wrong file.
 
 ## Output prose and format
 

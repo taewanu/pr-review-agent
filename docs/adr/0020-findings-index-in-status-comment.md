@@ -1,7 +1,7 @@
 # ADR 0020: Findings index folded into the Status comment
 
 Date: 2026-06-18
-Status: Accepted. Relaxes ADR 0019's "Status comment = scope, never findings" boundary (the rest of ADR 0019 stands).
+Status: Accepted. Relaxes ADR 0019's "Status comment = scope, never findings" boundary (the rest of ADR 0019 stands). Decision 4 is narrowed by [ADR 0040](./0040-file-level-findings-and-a-gate-on-threads.md): a finding on a file the PR touches now has a thread and is an ordinary index entry, so the pointer treatment covers only findings on untouched files.
 
 ## Context
 

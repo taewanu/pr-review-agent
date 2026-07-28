@@ -229,7 +229,20 @@ def test_line_not_touched_excluded():
     assert select_candidates([_thread(original_line=99)], DIFF, "operator") == []
 
 
-def test_null_original_line_excluded():
+def test_file_level_thread_is_judged_through_the_untouched_bucket():
+    # A file-level Finding has no line to test against the increment's hunks, so it
+    # can never be touched, but it is still a candidate: the judge re-reads the file
+    # at HEAD and treats the line as a hint (ADR 0040 decision 2).
+    out = select_candidates(
+        [_thread(original_line=None, head_line=None)], DIFF, "operator", untouched_cap=1
+    )
+    assert len(out) == 1
+    assert out[0]["line"] is None
+
+
+def test_file_level_thread_is_not_counted_as_touched():
+    # It must not consume the touched budget, which is reserved for Findings whose
+    # own flagged line the increment changed.
     assert select_candidates([_thread(original_line=None)], DIFF, "operator") == []
 
 

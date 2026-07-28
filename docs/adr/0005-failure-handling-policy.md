@@ -40,9 +40,10 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 | Editor produced no usable output: timeout or empty (`edit-timeout`, `edit-empty`; ADR 0016) | system | exit non-zero, no post (transient, retried next cycle) |
 | Editor decisions unusable: unparseable, schema-invalid, non-covering, or fidelity-corrupt (`edit-no-fence`, `edit-parse-error`, `edit-schema-invalid`, `edit-coverage`, `edit-fidelity`; ADR 0016 amended, #258) | degrade | post the author draft with a bypass note |
 | Forbidden combo (`polish + important`) | per-finding | drop, note in summary, post remaining |
-| `line` outside diff | per-finding | move body to summary's `## Findings outside the diff` section, post remaining |
-| `quote` matches no new-side line (ADR 0018) | per-finding | relocate to `## Findings outside the diff`, post remaining |
-| `quote` matches several new-side lines and the emitted `line` corroborates none (ADR 0018) | per-finding | relocate to `## Findings outside the diff`, post remaining |
+| `line` outside diff | per-finding | demote per ADR 0040: file-level comment when the diff touches the path, else `## Findings outside the diff`; post remaining |
+| `quote` matches no new-side line (ADR 0018) | per-finding | demote per ADR 0040, post remaining |
+| `quote` matches several new-side lines and the emitted `line` corroborates none (ADR 0018) | per-finding | demote per ADR 0040, post remaining |
+| A file-level comment's own POST fails (ADR 0040) | per-finding | render it in `## Findings outside the diff` instead, post remaining |
 | Any exit that leaves the checks row's run open: system failure, watchdog TERM, Ctrl-C (ADR 0039) | system | conclude the run `neutral`, then flip the status comment; exit code unchanged |
 
 - The summary's `## Findings outside the diff` section is the canonical relocation
@@ -52,6 +53,9 @@ A PR-tick stops on system failures and degrades on per-finding failures.
 > **Amended 2026-06-10 (#115).** The relocation heading is renamed `## Additional findings` → `## Findings outside the diff`. "Additional" named sequence ("more findings"); the defining property is the cause: the finding's line is not in the diff's changed hunks (`anchor_findings.py` could not anchor it), so it is relocated to the body. The new name states that cause, echoing the established term (CodeRabbit's "Outside diff range", GitHub's "outside the diff").
 
 > **Amended 2026-06-15 (#155, ADR 0018).** Content-anchoring adds two per-finding relocation triggers (rows above): a `quote` that matches no new-side line, and a `quote` that matches several with no corroboration from the emitted `line`. Both relocate to the same `## Findings outside the diff` surface rather than anchor inline on a guess. ADR 0018 owns the anchoring mechanism; this table owns the degradation policy it routes through.
+
+> **Amended 2026-07-28 (#191, ADR 0040).** The three relocation rows above no longer land in the body directly. A finding whose path the PR's diff touches becomes a file-level comment, which is a real thread; only one on a file the PR never touched reaches `## Findings outside the diff`, where it is advisory by design. The body section stays the canonical surface for that remainder and for a file-level comment whose extra request failed.
+
 - The set of "per-finding failures" is closed at the entries in the table above.
   Any future category discovered defaults to **system / loud** unless this ADR is
   revisited.

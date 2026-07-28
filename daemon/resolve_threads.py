@@ -149,7 +149,8 @@ def select_candidates(
     to select_retry_threads, never re-judged here).
 
     Among those, a Finding is `touched` when its `original_line` (creation-side
-    coordinate) falls inside an old-side hunk of this increment's diff. Touched
+    coordinate) falls inside an old-side hunk of this increment's diff. A file-level
+    Finding has no line to test and is therefore never touched. Touched
     threads are judged first — the increment changed the exact line the Finding
     sits on, the strongest "maybe fixed" signal — up to `touched_cap` of them
     (#197): each candidate is one serial judge-fix `claude -p` call, so an
@@ -179,7 +180,11 @@ def select_candidates(
         path = t.get("path") or ""
         line = t.get("original_line")
         if not isinstance(line, int):
-            continue
+            # A file-level thread has no line at all (ADR 0040), and the judge does
+            # not need one: it treats the line as a hint and re-reads the file at
+            # HEAD. With nothing to test against the increment's hunks, it routes
+            # through the untouched bucket below.
+            line = None
         start_line = t.get("original_start_line")
         if not isinstance(start_line, int):
             start_line = None
@@ -195,7 +200,7 @@ def select_candidates(
             "head_start_line": t.get("head_start_line"),
             "finding_body": body,
         }
-        if diff.touched(path, line, start_line):
+        if line is not None and diff.touched(path, line, start_line):
             touched.append(entry)
         else:
             untouched.append(entry)

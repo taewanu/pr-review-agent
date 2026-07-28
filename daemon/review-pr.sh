@@ -309,6 +309,16 @@ extract_session_limit_deadline() {
   grep -m1 '^session_limit_deadline=' "$stderr_path" 2>/dev/null | cut -d= -f2- || true
 }
 
+# Parse the `file_level_failed=<n>` line create-review.sh emits on every run: how
+# many file-level comments it could not post and handed to the review body instead
+# (ADR 0040). Falls back to 0, so an absent line reads as "none failed".
+extract_file_level_failed() {
+  local stderr_path="$1"
+  local n
+  n="$(grep -m1 '^file_level_failed=' "$stderr_path" 2>/dev/null | cut -d= -f2 || true)"
+  [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n" || printf '0'
+}
+
 # Parse the `truncated_count=<n>` line merge_findings.py emits on a successful
 # (non-error) run whose post-cap truncation dropped findings (ADR 0023). Falls
 # back to 0 so an absent line (no truncation happened) is indistinguishable
@@ -385,11 +395,13 @@ resolution() {
     local judge_sys="$SCRATCH/.pr-review-judge-sys.md"
     awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
       "$SCRATCH/.claude/agents/review-agent-fix-check.md" >"$judge_sys"
-    local i tid path line verdict fixed rationale rc judge_prompt
+    local i tid loc verdict fixed rationale rc judge_prompt
     for ((i = 0; i < n; i++)); do
       tid="$(jq -r ".[$i].thread_id" "$candidates_file")"
-      path="$(jq -r ".[$i].path" "$candidates_file")"
-      line="$(jq -r ".[$i].line" "$candidates_file")"
+      # A file-level candidate carries no line (ADR 0040), so the label is its path
+      # alone rather than a `path:null` that reads as a bug in the log.
+      loc="$(jq -r ".[$i] | .path + (if .line == null then \"\" else \":\" + (.line | tostring) end)" \
+        "$candidates_file")"
       finding_file="$SCRATCH/.pr-review-finding-${i}.json"
       jq ".[$i] | {path, line, finding_body}" "$candidates_file" >"$finding_file"
 
@@ -428,7 +440,7 @@ resolution() {
         exit "$inner_rc"
       ) || rc=$?
       if [[ "$rc" -ne 0 || ! -s "$judge_raw" ]]; then
-        log_info "fix-check failed for ${path}:${line} (${tid}), rc=${rc}; leaving open"
+        log_info "fix-check failed for ${loc} (${tid}), rc=${rc}; leaving open"
         continue
       fi
 
@@ -436,14 +448,14 @@ resolution() {
       fixed="$(jq -r '.fixed' <<<"$verdict")"
       rationale="$(jq -r '.rationale' <<<"$verdict")"
       if [[ "$fixed" == "true" ]]; then
-        log_info "fix detected ${path}:${line} (${tid}): ${rationale}"
+        log_info "fix detected ${loc} (${tid}): ${rationale}"
         # Pull comment_id (the in-place edit target) and finding_body straight from
         # the candidate, so the multi-line body never round-trips through a shell var.
         jq -c --argjson i "$i" --arg rationale "$rationale" \
           '.[$i] | {thread_id, comment_id, path, line, head_line, head_start_line, finding_body, rationale: $rationale}' \
           "$candidates_file" >>"$notes_jsonl"
       else
-        log_info "left open ${path}:${line} (${tid}): ${rationale}"
+        log_info "left open ${loc} (${tid}): ${rationale}"
       fi
     done
   fi
@@ -687,6 +699,7 @@ AUTHOR_FILE="$SCRATCH/$AUTHOR_BASENAME"
 EDIT_RAW_FILE="$SCRATCH/.pr-review-edit-raw.txt"
 PAYLOAD_FILE="$SCRATCH/.pr-review-payload.json"
 ANCHORED_FILE="$SCRATCH/.pr-review-anchored.json"
+FILE_LEVEL_FILE="$SCRATCH/.pr-review-file-level.json"
 UNANCHORED_FILE="$SCRATCH/.pr-review-unanchored.json"
 SUMMARY_FILE="$SCRATCH/.pr-review-summary.txt"
 EXTRACT_ERR="$SCRATCH/.pr-review-extract.err"
@@ -1141,6 +1154,7 @@ log_step "anchoring findings"
 python3 "$SCRIPT_DIR/anchor_findings.py" split \
   "$PAYLOAD_FILE" "$DIFF_FILE" \
   --anchored "$ANCHORED_FILE" \
+  --file-level "$FILE_LEVEL_FILE" \
   --unanchored "$UNANCHORED_FILE" \
   >"$ANCHOR_OUT"
 DROPPED_COMBO="$(grep -m1 '^dropped_forbidden_combo=' "$ANCHOR_OUT" | cut -d= -f2 || true)"
@@ -1148,14 +1162,30 @@ DROPPED_COMBO="${DROPPED_COMBO:-0}"
 
 jq -r '.summary' "$PAYLOAD_FILE" >"$SUMMARY_FILE"
 
-# New findings this tick: inline (anchored) plus relocated (unanchored). Zero
-# means the increment raised nothing new, so a posted review would be an empty
-# per-SHA object stacked on the PR (ADR 0020); skip the POST and let the status
-# index below carry the tick's effect (a resolution-only push still flips threads
-# resolved). unanchored_count also feeds the index's "outside the diff" pointer.
+# New findings this tick, across all three surfaces (ADR 0040). Zero means the
+# increment raised nothing new, so a posted review would be an empty per-SHA
+# object stacked on the PR (ADR 0020); skip the POST and let the status index
+# below carry the tick's effect (a resolution-only push still flips threads
+# resolved).
 anchored_count="$(jq 'length' "$ANCHORED_FILE")"
+file_level_count="$(jq 'length' "$FILE_LEVEL_FILE")"
 unanchored_count="$(jq 'length' "$UNANCHORED_FILE")"
-new_findings_total=$((anchored_count + unanchored_count))
+new_findings_total=$((anchored_count + file_level_count + unanchored_count))
+# The two buckets the status index reports separately (ADR 0040 decision 3):
+# findings that got a thread and can therefore be fixed and closed, and advisory
+# ones that stay in the review body. A file-level comment whose POST failed moves
+# from the first to the second, which create-review.sh reports back below.
+threaded_count=$((anchored_count + file_level_count))
+advisory_count=$unanchored_count
+# Why each file-level finding lost its line, the open question on #191: a finding
+# that gave a quote cited a line the diff does not contain (a generation defect
+# this surface relocates rather than fixes), one that gave none is region-level by
+# construction. Logged rather than acted on until the ratio is known.
+if [[ "$file_level_count" -gt 0 ]]; then
+  quote_miss="$(grep -m1 '^file_level_quote_miss=' "$ANCHOR_OUT" | cut -d= -f2 || true)"
+  quote_miss="${quote_miss:-0}"
+  log_info "file-level: ${file_level_count} finding(s), ${quote_miss} from a quote that matched no diff line"
+fi
 
 review_url=""
 if [[ "$new_findings_total" -gt 0 && $DRY_RUN -eq 1 ]]; then
@@ -1174,6 +1204,7 @@ elif [[ "$new_findings_total" -gt 0 ]]; then
     --head-repo-url "$HEAD_REPO_URL"
     --summary-file "$SUMMARY_FILE"
     --anchored "$ANCHORED_FILE"
+    --file-level "$FILE_LEVEL_FILE"
     --unanchored "$UNANCHORED_FILE"
     --dropped-combo "$DROPPED_COMBO"
   )
@@ -1191,9 +1222,19 @@ elif [[ "$new_findings_total" -gt 0 ]]; then
   # (unexpected shape) degrades to no id, never an error — the review did land.
   review_id="$(jq -r '.id // empty' "$POST_OUT" 2>/dev/null || true)"
   # html_url anchors the status index's "outside the diff" pointer at this review,
-  # the home of any relocated finding (ADR 0005, ADR 0020 Decision 4).
+  # the home of any advisory finding (ADR 0005, ADR 0020 Decision 4).
   review_url="$(jq -r '.html_url // empty' "$POST_OUT" 2>/dev/null || true)"
   log_ok "submitted review${review_id:+ #$review_id}"
+  # A file-level comment whose POST failed fell back into the review body, so it is
+  # advisory this tick rather than a thread (ADR 0040 decision 2). Surface it: the
+  # rest of create-review.sh's stderr is only shown on a failed run.
+  file_level_failed="$(extract_file_level_failed "$POST_ERR")"
+  if [[ "$file_level_failed" -gt 0 ]]; then
+    threaded_count=$((threaded_count - file_level_failed))
+    advisory_count=$((advisory_count + file_level_failed))
+    log_info "${file_level_failed} file-level comment(s) failed to post; rendered in the review body"
+    cat "$POST_ERR" >&2
+  fi
 elif [[ $DRY_RUN -eq 1 ]]; then
   # Zero findings under dry-run is a real result the harness must record (a recall
   # miss, not a failure), so it reports the same contract with a zero count. The
@@ -1226,7 +1267,7 @@ fi
 delta_args=()
 if [[ -n "$LAST_SHA" && $DRY_RUN -eq 0 ]]; then
   push_fixed="$(jq 'length' "$SCRATCH/.pr-review-stamps.json" 2>/dev/null || printf 0)"
-  delta_args=(--new "$new_findings_total" --fixed "$push_fixed")
+  delta_args=(--new "$threaded_count" --fixed "$push_fixed")
 fi
 
 # Edit the status comment into its terminal state (#60) with the cumulative
@@ -1240,14 +1281,28 @@ if [[ $DRY_RUN -eq 0 ]]; then
   log_step "rendering status index"
   index_threads_file="$SCRATCH/.pr-review-index-threads.json"
   index_block=""
+  # Gate verdict for the themed head-line (ADR 0036 4a) and the checks row (ADR
+  # 0039): "you shall not pass" while any bot finding thread is still open after
+  # this tick's resolution, else "you shall pass". Open threads are the only
+  # signal that satisfies "fix it and the gate opens", so an advisory finding,
+  # which has no thread to resolve, never blocks (ADR 0040 decision 4).
+  open_findings=0
   if fetch_open_review_threads "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER" >"$index_threads_file"; then
     index_block="$(python3 "$SCRIPT_DIR/findings_index.py" \
       --threads "$index_threads_file" --operator "$PRA_BOT_LOGIN_GQL" \
-      --unanchored "$unanchored_count" --review-url "$review_url" \
+      --advisory "$advisory_count" --review-url "$review_url" \
       --summary-file "$SUMMARY_FILE" \
       ${delta_args[@]+"${delta_args[@]}"} 2>/dev/null || true)"
+    open_findings="$(jq --arg op "$PRA_BOT_LOGIN_GQL" \
+      '[.[] | select(.root_author == $op and ((.is_resolved // false) | not))] | length' \
+      "$index_threads_file" 2>/dev/null || printf 0)"
   else
     log_info "thread fetch for status index failed (non-fatal)"
+    # No thread list to count, so stand in the threads this tick just created. It
+    # sees nothing of what earlier ticks left open, so a degraded tick can report
+    # `pass` over an open backlog; the next reviewed SHA recomputes from a fresh
+    # fetch (ADR 0040).
+    open_findings=$threaded_count
   fi
   # Append this tick's reviewed SHA to the trail (ADR 0021): re-parse the prior
   # block (held in STATUS_TRAIL_PRIOR) and fold in HEAD with the reviewed-at time,
@@ -1256,18 +1311,8 @@ if [[ $DRY_RUN -eq 0 ]]; then
     python3 "$SCRIPT_DIR/status_trail.py" \
       --add-sha "${HEAD_OID:0:7}" --add-time "$(date -u +'%Y-%m-%d %H:%M UTC')" \
       2>/dev/null || true)"
-  # Gate verdict for the themed head-line (ADR 0036 4a): "you shall not pass" when
-  # any bot finding is still open after this tick's resolution, else "you shall
-  # pass". Binary, not a count — the tally stays in the index rollup (ADR 0020).
-  # Counts prior open threads (from the freshly-fetched index threads) and this
-  # tick's new findings; a failed thread fetch degrades to the new-findings count.
-  open_findings="$(jq --arg op "$PRA_BOT_LOGIN_GQL" \
-    '[.[] | select(.root_author == $op and ((.is_resolved // false) | not))] | length' \
-    "$index_threads_file" 2>/dev/null || printf 0)"
-  review_state="pass"
-  if [[ "${open_findings:-0}" -gt 0 || "${new_findings_total:-0}" -gt 0 ]]; then
-    review_state="block"
-  fi
+  # Binary, not a count: the tally stays in the index rollup (ADR 0020).
+  review_state="$(review_state_for_open_threads "${open_findings:-0}")"
   reviewed_body="$(render_status_comment \
     "$(render_status_headline "$PRA_BOT_LOGIN_GQL" "$review_state" \
       "$(status_sha_link "$HEAD_REPO_URL" "$HEAD_OID")" "$HEAD_OID")" \

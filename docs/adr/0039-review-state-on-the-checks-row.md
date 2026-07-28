@@ -1,7 +1,7 @@
 # ADR 0039: Review state on the PR's checks row
 
 Date: 2026-07-27
-Status: Accepted. Amends [ADR 0005](./0005-failure-handling-policy.md) (failure table) and [ADR 0036](./0036-github-app-identity.md) (permission set).
+Status: Accepted. Amends [ADR 0005](./0005-failure-handling-policy.md) (failure table) and [ADR 0036](./0036-github-app-identity.md) (permission set). Decision 3's verdict is narrowed by [ADR 0040](./0040-file-level-findings-and-a-gate-on-threads.md): it reads open finding threads alone, so a review whose only findings are advisory now concludes `success`. The two-surface split and the conclusion mapping stand.
 
 ## Context
 
@@ -35,7 +35,7 @@ Whether `main` requires the check is branch protection, an operator choice, and 
 
 ## Consequences
 
-- **A nit-only review shows a red X.** That is the claim the status head-line already makes for the same state ("you shall not pass" whenever any finding is open), so the row is consistent with the comment rather than harsher than it. Deriving a softer conclusion from severity would be a second verdict, which decision 3 exists to prevent.
+- **A nit-only review shows a red X.** That is the claim the status head-line already makes for the same state ("you shall not pass" whenever any finding thread is open), so the row is consistent with the comment rather than harsher than it. Deriving a softer conclusion from severity would be a second verdict, which decision 3 exists to prevent. ADR 0040 decision 4 re-examined the severity question directly and kept this answer, on the evidence that the grading is not reliable enough to carry merge authority.
 
 - **A `SIGKILL`ed review leaves the row `in_progress` until the same SHA is reviewed again.** The trap covers every exit the process controls, including the watchdog's TERM, but nothing survives KILL. A failed tick stamps no sentinel ([ADR 0006](./0006-sentinel-based-dedup.md)), so the next cycle re-reviews that SHA and opens a fresh run; until then, a repo that requires the check sees a pending gate. An operator who stops the daemon with a run open clears it the same way: by letting a later review of that commit land.
 

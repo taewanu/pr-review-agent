@@ -1,7 +1,7 @@
 # ADR 0018: Line-numbered diff input and content-anchored findings
 
 Date: 2026-06-15
-Status: Accepted
+Status: Accepted, with one amendment. [ADR 0040](./0040-file-level-findings-and-a-gate-on-threads.md) adds a fourth outcome to Decision 3 (a file-level comment when the path is in the diff but no line verifies) and corrects the second Consequence below, whose stated reason was false. The two layers and the safe-biased gate stand.
 
 ## Context
 
@@ -32,6 +32,8 @@ Anchor findings from two layers over a safe-biased gate, mirroring ADR 0017's bi
    - `quote` matches none: the claimed text is not in the diff, so the finding is suspect. Relocate. The emitted line does not rescue it.
    - `quote` absent: the finding is region-level (file-level, an absence, or a block) and has no single line to verify. Anchor to the emitted `line` (now read off the leading number, not counted) under the existing range check.
 
+   > **Amended 2026-07-28 (#191, ADR 0040).** Every "relocate" above resolves once more before it reaches the body: when the PR's diff touches the finding's path, it posts as a file-level comment (`subject_type: "file"`) instead, which is a real thread. Only a finding on a file the PR never touched goes to `## Findings outside the diff`. This does not loosen the never-guess rule; a file-level comment claims exactly what a failed line check justifies.
+
 4. **Whitespace.** Match on leading- and trailing-stripped text, internal whitespace preserved. Stripping leading absorbs the agent's most common indentation drift; preserving internal avoids collapsing two distinct lines into one ambiguous match.
 
 5. **Schema stays optional.** `quote` is optional with graceful fallback, so a finding that omits it never fails the whole review. The agent prompt asks for `quote` on every single-line and block finding and to omit it only for genuinely line-less findings, making absence a deliberate "this is region-level" signal rather than noise.
@@ -44,5 +46,7 @@ This ADR decides how a finding's inline line is determined. It does not change t
 
 - The per-finding relocation triggers in ADR 0005 gain two entries: `quote` ambiguous and `quote` no-match both relocate to `## Findings outside the diff`. ADR 0005's table is amended to reference this ADR.
 - A finding relocated outside the diff has no inline thread, so commit-driven resolution (#125) cannot auto-resolve it. Acceptable: an unverifiable anchor could never auto-resolve correctly anyway, and the finding still ships in the review body.
+
+  > **Corrected 2026-07-28 (#191, ADR 0040).** The stated reason is false. The fix-check judge takes `{path, line, finding_body}` and its prompt calls the line "a starting hint, not a fixed address", so it never needed a verified anchor; what it lacked was a candidate record, since `select_candidates` iterates threads and a relocated finding had none. The loss was real, the reason for accepting it was not, and the file-level comment retires both for findings on files the PR touches.
 - `anchor_findings.py` becomes the single home for diff-line indexing: hunk ranges (existing), per-line `(new_lineno, text)` for quote matching, and the line-numbered renderer all share one walk (`_iter_diff_lines`). No new pipeline stage.
 - The two layers are belt-and-suspenders by design: layer 1 lifts base accuracy for every finding including the no-quote ones layer 2 cannot reach; layer 2 catches layer 1's residual drift on precise findings. Precedent: CodeRabbit and the broader LLM-review field treat content as authoritative over emitted line numbers.

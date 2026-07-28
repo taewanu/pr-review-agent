@@ -1999,6 +1999,23 @@ complete_check_run() {
   log_info "check run ${check_run_id} not concluded after 3 attempts (left in_progress)"
 }
 
+# review_state_for_open_threads <open-thread-count>
+# The review's binary verdict, `block` or `pass`, rendered by the status head-line
+# (ADR 0036 4a) and mapped to the checks row below.
+#
+# Open daemon finding threads are the whole input, because a gate must satisfy
+# "fix it and it opens" (ADR 0040 decision 4). A finding with no thread has
+# nothing to resolve, so gating on one leaves the row red permanently, which is
+# what PR #312 showed. Severity is deliberately not an input either: the grading
+# orders reading, not merging.
+review_state_for_open_threads() {
+  if [[ "${1:-0}" -gt 0 ]]; then
+    printf 'block'
+  else
+    printf 'pass'
+  fi
+}
+
 # check_conclusion_for_state <state>
 # Maps the review's verdict, the same block|pass the status head-line renders, to
 # a GitHub check-run conclusion. One verdict feeds both surfaces so they cannot
