@@ -47,10 +47,15 @@ class Finding(BaseModel):
     # quote never fails the review (#44); the agent omits it only for region-level
     # findings with no single line to quote.
     quote: str | None = None
-    # Confidence 0-100 that the finding is real and worth surfacing (ADR 0022).
-    # Optional like `quote`: an unscored finding (None) is never dropped by the
-    # gate, so an older payload or a #44 omission is kept, not culled.
+    # How far the role's verification got, 0-100, not a probability that the
+    # finding is real (ADR 0022). Optional like `quote`: an unscored finding
+    # (None) is never dropped by the gate, so an older payload or a #44 omission
+    # is kept, not culled.
     confidence: int | None = Field(default=None, ge=0, le=100)
+    # One line naming what the score above did not reach, which is what makes a
+    # score comparable across runs (#302). Optional on the same terms, and read
+    # by no gate.
+    verification_gap: str | None = None
 
     @model_validator(mode="after")
     def _check_end_line(self) -> Self:

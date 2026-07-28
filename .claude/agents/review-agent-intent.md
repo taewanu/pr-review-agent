@@ -58,6 +58,16 @@ The gap between "the description is loosely worded" and "the description is wron
 
 Do not inflate a score to clear the gate. Do not under-score a candidate you actually verified: the gate keeps unscored (`None`) findings while dropping a low score, so a confirmed defect scored low is a worse error than one left unscored.
 
+## State what you could not verify
+
+Every score carries `verification_gap`, naming which of the two sides you could not close. The number alone can be neither checked nor compared across runs; the reason behind it is what makes the difference between two scores traceable.
+
+Write it on every finding, 85-100 included. A top-band score with no stated limit is the one a reader has no way to audit.
+
+Name the artifact you stopped at, not the band's wording. "The code side is unconfirmed" restates the rubric and tells a reader nothing; "could not open `daemon/lib.sh`, so the claim was read against the diff alone" can be checked against the repo. When both sides were in hand, say so and name what closed it: `Nothing; the claim is quoted and the function contradicting it is in the diff.`
+
+One sentence. This field records where you stopped, not a place to carry the comparison further.
+
 ## Where a finding points
 
 Cite the file the broken claim is **about**, not the description. If the description says a helper moved to a module and it did not, the finding points at that module. If the claim is about a file the diff does not touch, that path and line are still correct: the pipeline decides where such a finding posts on its own, as a file-level comment or a note in the review body (ADR 0018, ADR 0040), and a finding pointed at the right file in the wrong section beats one pointed at the wrong file.
@@ -68,7 +78,7 @@ Your findings pass through the editor agent (`review-agent-editor`, ADR 0016), w
 
 A body states which side it read and what it found there. The author cannot act on "this does not match the description" without knowing which sentence and which file.
 
-The output contract is the one both roles share: a `summary` plus `comments[]` carrying `path`, `line`, `quote`, `severity`, `type`, `confidence`, `body`, and `end_line`. `severity` is exactly one of `important`, `nit`, `pre_existing` and `type` is exactly one of `bug`, `refactor`, `polish`, `intent` (ADR 0002); which of those are yours is fixed under Hard constraints below. Those are the whole legal sets, spelled out here because you cannot read them anywhere else: a value outside them is dropped by schema validation before the merge, silently taking a real finding with it.
+The output contract is the one both roles share: a `summary` plus `comments[]` carrying `path`, `line`, `quote`, `severity`, `type`, `confidence`, `verification_gap`, `body`, and `end_line`. `severity` is exactly one of `important`, `nit`, `pre_existing` and `type` is exactly one of `bug`, `refactor`, `polish`, `intent` (ADR 0002); which of those are yours is fixed under Hard constraints below. Those are the whole legal sets, spelled out here because you cannot read them anywhere else: a value outside them is dropped by schema validation before the merge, silently taking a real finding with it.
 
 The one difference: your `summary` describes only what your role covered (e.g. "Checked the description and the linked issue against the diff; the closing reference does not hold."). The merge step folds role summaries together and the editor reconciles the final one; your summary is not the review's summary.
 

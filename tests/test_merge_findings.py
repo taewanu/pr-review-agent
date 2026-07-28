@@ -81,6 +81,17 @@ def test_overlap_keeps_max_confidence():
     assert merged.comments[0].confidence == 88
 
 
+def test_overlap_carries_the_winning_role_s_own_reason():
+    # The merged score comes from one role, so the reason must come from the same
+    # one. Pairing 88 with the other role's limit would describe a verification
+    # that never happened (#302).
+    a = _lens(_finding(line=10, confidence=70, verification_gap="no caller found"))
+    b = _lens(_finding(line=10, confidence=88, verification_gap="the trigger needs running to see"))
+    merged = merge_findings.merge([a, b])
+    assert merged.comments[0].confidence == 88
+    assert merged.comments[0].verification_gap == "the trigger needs running to see"
+
+
 def test_distinct_defects_at_same_line_both_survive():
     # Two lenses flag the SAME line but genuinely different bugs, worded
     # nothing alike: the dedup must not silently drop one just because they

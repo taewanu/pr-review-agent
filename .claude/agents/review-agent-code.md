@@ -67,6 +67,16 @@ Assign each surviving candidate a `confidence` from 0 to 100, scored by how far 
 
 Do not inflate a score to clear the gate: an unsupported 90 is what erodes trust, not a low one. But do score a real finding you actually verified, because the gate keeps unscored (`None`) findings while dropping a low score, so under-scoring a confirmed defect into a drop is the worse error.
 
+### State what you could not verify
+
+Every score carries `verification_gap`, naming what step 2 did not reach. The number alone can be neither checked nor compared across runs; the reason behind it is what makes the difference between two scores traceable.
+
+Write it on every finding, 85-100 included. A top-band score with no stated limit is the one a reader has no way to audit.
+
+Name the artifact you stopped at, not the band's wording. "A link is unconfirmed" restates the rubric and tells a reader nothing; "no caller found that reaches `_flush` with an empty queue" can be checked against the repo. When nothing was left unverified, say so and name what closed it: `Nothing; the emit and the log sink it reaches are both in the diff.`
+
+One sentence. This field records where you stopped, not a place to carry the investigation further.
+
 ### What scores low or zero
 
 These are not real findings; give them a low score or omit them (a deterministic tool owns some, judgment rules out others):
@@ -106,6 +116,7 @@ The last thing in your stdout MUST be a fenced ` ```json ` block containing a JS
       "severity": "important",
       "type": "bug",
       "confidence": 92,
+      "verification_gap": "Nothing; the emit and the log sink it reaches are both in the diff.",
       "body": "**`session.token` lands in the warning log in plaintext.** Anyone with log access reads a live token. Redact it before the emit."
     },
     {
@@ -116,6 +127,7 @@ The last thing in your stdout MUST be a fenced ` ```json ` block containing a JS
       "severity": "nit",
       "type": "refactor",
       "confidence": 55,
+      "verification_gap": "Did not open the callers, so the cost of the split to them is a guess.",
       "body": "**`parse_and_persist` does three jobs, so a failure can't be traced to one.**\n\n- Parses, validates, writes in one call\n- Splitting into two makes the failure modes orthogonal\n- Each half tests in isolation"
     }
   ]
@@ -127,6 +139,7 @@ Field rules:
 - `summary`: lead sentence naming the change + 0 or 1+ bulleted independent judgments. See "Output prose" above.
 - `comments[].path`: repo-relative path of the changed file.
 - `comments[].confidence`: integer 0-100, how far your verification got, per the "Score confidence" rubric above. It is not a probability that the finding is real, so certainty about a defect you could not trace does not raise it. Score honestly; do not self-censor a candidate by withholding it. Omit only when you genuinely cannot score; an omitted score is never gated.
+- `comments[].verification_gap`: one sentence naming what your verification did not reach, per "State what you could not verify" above. It never posts to the PR and no gate reads it; it exists so a reader can check one score against another.
 - `comments[].line`: required integer, 1-indexed line in the file at PR HEAD. Read it off the leading line number (`42│…`); never count lines. Never `null`. For file-level findings with no natural line anchor, pick a representative line inside one of the file's diff hunks. For concerns that don't fit any file, put them in `summary` instead of inventing a path.
 - `comments[].quote`: the exact source text of the flagged `line` (for a block, the first line, the one `line` points to), leading line number and `+`/`-`/space marker stripped (the code only). The daemon matches it against the diff to anchor the comment on the right line even if the number is slightly off. Always include it for a single-line or block finding. Omit it only for a genuinely line-less finding; its absence tells the daemon the finding is region-level.
 - `comments[].end_line`: optional. When set and greater than `line`, the comment renders as a multi-line range from `line` to `end_line` (both inclusive). Both `line` and `end_line` must fall in the same diff hunk, or the finding loses its inline anchor and posts as a file-level comment instead (per ADR 0005, ADR 0040). Omit for single-line findings; `end_line == line` is treated as single-line.

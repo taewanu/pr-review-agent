@@ -110,6 +110,19 @@ REVIEW_CONFIG_VARS = (
 )
 
 
+def matched_index(raw: object, count: int) -> int | None:
+    """The judge's `matched_index` as a usable index, or None if it is not one.
+
+    Normalising once keeps every reader of it agreeing on what matched: the
+    recording guard and the `others` filter read the same value, so a reply that
+    is not an index cannot record nothing and still exclude a finding from noise
+    grading. `bool` is an `int` in Python, so `true` would otherwise pass an
+    isinstance check and select findings[1]."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw if 0 <= raw < count else None
+
+
 def summarize_finding(finding: dict) -> dict:
     """A finding reduced to what a human needs to judge whether it is noise: where
     it landed and its leading claim. The scratch is deleted after every review, so
@@ -126,6 +139,9 @@ def summarize_finding(finding: dict) -> dict:
         # run under — which is how a threshold nobody calibrated ended up
         # deciding a config comparison.
         "confidence": finding.get("confidence"),
+        # Why the score is what it is (#302): without it a results file can show a
+        # score's spread across runs but never account for it.
+        "verification_gap": finding.get("verification_gap"),
         "claim": body.splitlines()[0][:300] if body else "",
     }
 
@@ -643,12 +659,19 @@ def main(argv: list[str] | None = None) -> int:
                 # for the noise to sit beside. Every finding except the one that
                 # matched the known bug is graded here, on the diff it was made
                 # on, by the same judge and the same bar the precision path uses.
-                matched = verdict.get("matched_index")
+                matched = matched_index(verdict.get("matched_index"), len(review["findings"]))
                 # The gate is chosen by comparing this against the scores of the
                 # findings around it: a threshold is only defensible if it sits
                 # below where real bugs land and above where noise does.
-                if isinstance(matched, int) and 0 <= matched < len(review["findings"]):
+                if matched is not None:
                     verdict["matched_confidence"] = review["findings"][matched].get("confidence")
+                    # The matched finding's score is the one that repeats across a
+                    # batch, so it is the one a spread has to be accounted for
+                    # from; the number on its own is what left the last comparison
+                    # able to show a spread and not explain it (#302).
+                    verdict["matched_verification_gap"] = review["findings"][matched].get(
+                        "verification_gap"
+                    )
                 others = [(i, f) for i, f in enumerate(review["findings"]) if i != matched]
                 graded = [
                     {**summarize_finding(f), **judge_finding_noise(review["diff"], f)}
