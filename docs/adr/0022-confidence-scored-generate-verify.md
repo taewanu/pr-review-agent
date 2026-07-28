@@ -1,7 +1,7 @@
 # ADR 0022: Confidence-scored generate-verify review
 
 Date: 2026-07-02
-Status: Accepted. Amended 2026-07-26 (#302): the gate's default moves from 80 to 60, a boundary in the roles' scoring rubric rather than a point inside one of its bands; the generate-verify core and the gate's placement are unchanged.
+Status: Accepted. Amended 2026-07-26 (#302): the gate's default moves from 80 to 60, a boundary in the roles' scoring rubric rather than a point inside one of its bands; the generate-verify core and the gate's placement are unchanged. Amended 2026-07-28 (#302): every score carries a one-sentence `verification_gap` naming what its verification did not reach.
 
 ## Context
 
@@ -60,6 +60,14 @@ This ADR decides the single-agent generate-verify core and the deterministic con
   This deliberately does **not** rest on a recall number, and the recall gain is small: 20/30 to 25/30, all five on `pr-review-agent-152`, whose bug sits in a module with no callers and whose PR body declares the bug deliberate, so a role scoring it low is reading it correctly. On the other two fixtures the gate is flat from 45 through 80. "Do not tune the gate to fix a recall number" survives this change intact.
 
   **Shipped ahead of the order #302 set for itself, and here is why.** That issue ranked making the score auditable, then hardening the precision corpus, ahead of moving the number, on the reasoning that the noise curve would be what picks a threshold. It would not have: measured on 5 fixtures of 1 to 2 lines, the curve is pinned at zero and has no knee, so no amount of hardening short of a new corpus turns it into a chooser. The argument this amendment actually rests on is structural rather than measured, that the cut should fall where the roles' own vocabulary has a boundary, and it holds whatever the precision corpus later says. The measurement's role here is narrower: it rules out the old value rather than selecting the new one. What #302 keeps is the part this does not fix, that the score is not reproducible enough for any hard cutoff to mean much.
+
+- *Amended 2026-07-28 (#302):* **every score carries `verification_gap`, one sentence naming what its verification did not reach.** This addresses the part the threshold move left open. The same defect drew 82 and 70 off investigation notes matching in length to within 4%, and no role wrote down why it chose either number, so the spread could be described but not diagnosed; a 72 nobody can explain is not a quantity a deterministic gate should act on.
+
+  The field is optional on the same terms as `confidence`, so an omission degrades to `None` rather than failing the payload. No gate reads it and it never posts to the PR, which keeps the reader-facing review unchanged and leaves the roles free to name a limit they would not want an author to read as hedging. Both generator prompts require it on every finding, top band included, since a score with no stated limit is the one that cannot be audited.
+
+  `eval/run_eval.py` carries it into the results file through `summarize_finding`, for the finding that matched a fixture's known bug as well as for the graded ones around it. The matched finding is the one that matters here, since its score is what repeats across a batch, and recording only its number is what left the last comparison able to show a spread without accounting for it. That hop is load-bearing rather than incidental: the per-PR clone is deleted after every review, so a results file is the only place a later batch can read a score's reason back.
+
+  A production review keeps nothing, which is this shape's residual cost: every finding pays for a sentence that only a measurement run will ever read. Logging the reason beside each gate drop is the obvious way to spend it in production and is deliberately not part of this change.
 
 - A wrongly low-scored real finding is dropped silently, a new failure mode the old binary path expressed as a non-emit. The gate mitigates by never dropping unscored (`None`) findings and by keeping the threshold overridable; the verify step (scenario construction) is what should keep a real finding's score above the floor.
 - No new pipeline stage, unlike ADR 0016. The change is one optional field and one deterministic filter in an existing stage, plus a prompt rewrite. Cost and latency are unchanged; the single `claude -p` generation call does more work internally but the pipeline shape is the same.

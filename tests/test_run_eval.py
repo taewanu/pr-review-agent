@@ -192,3 +192,27 @@ def test_run_review_kills_a_review_over_the_wall_clock_ceiling(tmp_path, monkeyp
     assert result["ok"] is False
     assert result["rc"] == -1
     assert elapsed < 10  # killed near the 1s ceiling, not after sleep 60
+
+
+def test_summarize_finding_carries_the_score_and_its_reason():
+    # The per-PR clone is deleted after every review, so a field absent from this
+    # summary cannot be read back off a results file at all (#302).
+    summary = run_eval.summarize_finding(
+        {
+            "path": "daemon/poll.sh",
+            "line": 118,
+            "confidence": 72,
+            "verification_gap": "no caller found reaching the branch",
+            "body": "**The guard trusts a code the resume path can desync.**\n\n- one\n- two",
+        }
+    )
+    assert summary["confidence"] == 72
+    assert summary["verification_gap"] == "no caller found reaching the branch"
+    assert summary["claim"] == "**The guard trusts a code the resume path can desync.**"
+
+
+def test_summarize_finding_tolerates_a_finding_with_no_reason():
+    # The field is optional at the schema, so the summarizer cannot assume it.
+    summary = run_eval.summarize_finding({"path": "a.py", "line": 1, "confidence": 88})
+    assert summary["verification_gap"] is None
+    assert summary["claim"] == ""

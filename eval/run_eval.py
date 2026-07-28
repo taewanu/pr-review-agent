@@ -126,6 +126,9 @@ def summarize_finding(finding: dict) -> dict:
         # run under — which is how a threshold nobody calibrated ended up
         # deciding a config comparison.
         "confidence": finding.get("confidence"),
+        # Why the score is what it is (#302): without it a results file can show a
+        # score's spread across runs but never account for it.
+        "verification_gap": finding.get("verification_gap"),
         "claim": body.splitlines()[0][:300] if body else "",
     }
 
@@ -649,6 +652,11 @@ def main(argv: list[str] | None = None) -> int:
                 # below where real bugs land and above where noise does.
                 if isinstance(matched, int) and 0 <= matched < len(review["findings"]):
                     verdict["matched_confidence"] = review["findings"][matched].get("confidence")
+                    # The matched finding is the one whose score repeats across a
+                    # batch, so it is the one a spread has to be explained from.
+                    # Recording only its number is what left the last comparison
+                    # able to show the spread and not account for it (#302).
+                    verdict["matched_finding"] = summarize_finding(review["findings"][matched])
                 others = [(i, f) for i, f in enumerate(review["findings"]) if i != matched]
                 graded = [
                     {**summarize_finding(f), **judge_finding_noise(review["diff"], f)}

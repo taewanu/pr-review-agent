@@ -111,6 +111,48 @@ def test_quote_rides_through_keep_and_rewrite_untouched():
     assert final["comments"][1]["body"] == "**Sharper.** Now clear."
 
 
+def test_verification_gap_rides_through_keep_and_rewrite_untouched():
+    # The Editor rewrites prose and never re-scores, so the reason behind a score
+    # has to reach the final payload with the score it explains (#302). A rewrite
+    # that dropped it would leave an 82 the results file cannot account for.
+    author = {
+        "summary": "s",
+        "comments": [
+            {
+                "path": "a.py",
+                "line": 1,
+                "severity": "nit",
+                "type": "polish",
+                "body": "**Keep.**",
+                "confidence": 72,
+                "verification_gap": "no caller reaching the branch",
+            },
+            {
+                "path": "b.py",
+                "line": 2,
+                "severity": "nit",
+                "type": "polish",
+                "body": "**Rewrite.**",
+                "confidence": 64,
+                "verification_gap": "the config path was outside the clone",
+            },
+        ],
+    }
+    edits = apply_edits.EditorPayload.model_validate(
+        {
+            "summary": "s",
+            "decisions": [
+                {"index": 0, "action": "keep"},
+                {"index": 1, "action": "rewrite", "body": "**Sharper.** Now clear."},
+            ],
+        }
+    )
+    final = apply_edits.apply_edits(author, edits)
+    assert final["comments"][0]["verification_gap"] == "no caller reaching the branch"
+    assert final["comments"][1]["verification_gap"] == "the config path was outside the clone"
+    assert final["comments"][1]["confidence"] == 64
+
+
 def test_drop_omits_and_survivors_keep_order():
     author = _author("**A.** one", "**B.** two", "**C.** three")
     edits = apply_edits.EditorPayload.model_validate(

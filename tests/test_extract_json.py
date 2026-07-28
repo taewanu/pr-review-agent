@@ -589,6 +589,36 @@ def test_confidence_out_of_range_drops_that_finding_only(bad):
     assert payload.comments[0].line == 99
 
 
+def test_verification_gap_survives_extraction():
+    # The score's stated reason has to reach the payload or it cannot be read
+    # back off a results file; pydantic drops unknown keys (#302).
+    f = _minimal_finding(confidence=72, verification_gap="no caller reaching the branch")
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert payload.comments[0].verification_gap == "no caller reaching the branch"
+
+
+def test_verification_gap_defaults_to_none_when_omitted():
+    f = _minimal_finding(confidence=72)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert payload.comments[0].verification_gap is None
+
+
+def test_a_stated_gap_does_not_rescue_a_below_threshold_score():
+    # The gate reads `confidence` alone. A named gap explains a score; it never
+    # lifts one past the cut.
+    f = _minimal_finding(confidence=30, verification_gap="no caller reaching the branch")
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert payload.comments == []
+
+
+def test_a_missing_gap_does_not_cull_a_passing_score():
+    # The field is optional, so a payload that omits it keeps its findings. A
+    # later move to require it would drop them at per-finding validation instead.
+    f = _minimal_finding(confidence=extract_json.DEFAULT_CONFIDENCE_THRESHOLD)
+    payload = extract_json.extract(_wrap({"summary": "x", "comments": [f]}))
+    assert len(payload.comments) == 1
+
+
 def test_default_threshold_is_pinned():
     # The one place the default's value is asserted, so moving it stays a
     # deliberate act rather than a side effect; ADR 0022 as amended holds why
