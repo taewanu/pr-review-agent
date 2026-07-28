@@ -158,6 +158,12 @@ LAST_FAILURE_CATEGORY=""
 # than the generic next-cycle retry.
 STATUS_PAUSE_UNTIL=""
 
+# Live check-run id (#308) and whether it has been concluded. The EXIT trap reads
+# both: a run left in_progress is the one artifact of a crashed review that can
+# hold a merge back, so the trap always concludes it.
+CHECK_RUN_ID=""
+CHECK_RUN_CONCLUDED=0
+
 # Per-PR lock path (#67); set once acquired, released by cleanup().
 LOCK_FILE=""
 
@@ -204,6 +210,28 @@ cleanup() {
   fi
 }
 
+# conclude_check_incomplete
+# Ends the checks row's in_progress state for a review that never reached a
+# verdict (#308). Fires on any exit that left the run open, not only a non-zero
+# one: the property worth holding is that no run of this script leaves a check
+# in_progress, because that state can block a merge indefinitely while the
+# review it announced is long dead.
+#
+# The conclusion is `neutral` rather than `failure`: the review produced no
+# verdict, and a daemon-side crash is not a claim about the PR (ADR 0005). The
+# next cycle re-reviews the same SHA, since a failed tick stamps no sentinel, and
+# opens a fresh run that supersedes this one.
+conclude_check_incomplete() {
+  [[ -n "${CHECK_RUN_ID:-}" ]] || return 0
+  [[ "${CHECK_RUN_CONCLUDED:-0}" -eq 0 ]] || return 0
+  log_info "review did not complete; concluding check run ${CHECK_RUN_ID} as neutral"
+  complete_check_run "$BASE_OWNER" "$BASE_REPO" "$CHECK_RUN_ID" neutral \
+    "Review did not complete" \
+    "No verdict was reached, so this run does not gate the merge. The daemon reviews this commit again on a later polling cycle; the status comment carries why this one stopped."
+  CHECK_RUN_CONCLUDED=1
+  return 0
+}
+
 # flip_status_failed <exit-code>
 # On a system failure after the status comment went live, flip it from
 # "Reviewing…" to a failed head-line so a persistent failure stops reading as a
@@ -245,6 +273,20 @@ flip_status_failed() {
   edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$failed_body"
   log_info "status comment flipped to failed (${LAST_FAILURE_CATEGORY:-unknown})"
   return 0
+}
+
+# on_exit <exit-code>
+# The EXIT trap's whole body, so the order the three handlers run in is stated
+# once here rather than inline in a quoted trap string. The checks row goes
+# first because it is the only artifact that can hold a merge back (#308) and
+# these handlers may be racing the per-PR watchdog's escalation from TERM to
+# KILL; the durable status comment follows; cleanup tears down the run-scoped
+# lock and scratch last. Each handler no-ops on the globals a run that died
+# early never set.
+on_exit() {
+  conclude_check_incomplete
+  flip_status_failed "$1"
+  cleanup
 }
 
 # Recover the `category=<slug>` first stderr line the Python pipeline stages emit
@@ -486,14 +528,21 @@ fi
 # Take the per-PR lock before any work, skipping if a review of this PR is
 # already in flight (#67; rationale on acquire_pr_lock). The EXIT trap moves up
 # to here so the lock is released on every exit below, including the dedup skip;
-# both handlers no-op on the still-empty globals. flip_status_failed runs first
-# so the (durable) status comment is updated before cleanup tears down the
-# (run-scoped) lock and scratch; it reads $? for the exit code (#180).
+# on_exit's handlers each no-op on the still-empty globals. `$?` is read in the
+# trap string, before any handler can clobber it, because flip_status_failed
+# branches on the exit code (#180).
 if ! LOCK_FILE="$(acquire_pr_lock "$BASE_OWNER" "$BASE_REPO" "$PR_NUMBER")"; then
   log_info "review already in progress for ${BASE_OWNER}/${BASE_REPO}#${PR_NUMBER}, skipping"
   exit 0
 fi
-trap 'flip_status_failed $?; cleanup' EXIT
+trap 'on_exit $?' EXIT
+# A signal kills the shell without running the EXIT trap unless it is trapped,
+# and the signalled death is exactly the case that matters: poll.sh's per-PR
+# watchdog sends TERM before it escalates to KILL, and Ctrl-C on the foreground
+# daemon sends INT. Either would otherwise leave the checks row in_progress
+# forever. Exiting re-enters the EXIT trap with the conventional 128+signal code.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # Idempotency for the sequential case: skip if the operator already reviewed this
 # exact HEAD (the lock above covers the concurrent case). poll.sh dedups before
@@ -774,6 +823,21 @@ if [[ $DRY_RUN -eq 0 ]]; then
     else
       log_info "status comment unavailable (non-fatal)"
     fi
+  fi
+
+  # Open the checks row's in_progress entry (#308). This is the review's pickup
+  # announcement, in the shape the surface already has: nothing to post and
+  # nothing to delete, unlike the transient comment #48 used when check runs
+  # were out of reach under the operator identity (ADR 0036). Its "Details" link
+  # points at the status comment just posted, the surface carrying the content
+  # this row deliberately omits.
+  check_details_url=""
+  [[ -n "$STATUS_COMMENT_ID" ]] && check_details_url="${PR_URL}#issuecomment-${STATUS_COMMENT_ID}"
+  CHECK_RUN_ID="$(start_check_run "$BASE_OWNER" "$BASE_REPO" "$HEAD_OID" "$check_details_url")"
+  if [[ -n "$CHECK_RUN_ID" ]]; then
+    log_info "check run started (${CHECK_RUN_ID})"
+  else
+    log_info "check run unavailable (non-fatal)"
   fi
 fi
 
@@ -1210,6 +1274,20 @@ if [[ $DRY_RUN -eq 0 ]]; then
     "$STATUS_SCOPE" "$STATUS_FILE_COUNT" "$STATUS_FILES" "$index_block" "$status_trail_block" \
     "$HEAD_OID")"
   edit_status_comment "$BASE_OWNER" "$BASE_REPO" "$STATUS_COMMENT_ID" "$reviewed_body"
+
+  # Conclude the checks row on the same verdict the head-line above renders
+  # (#308), so the two surfaces cannot disagree about whether the review passed.
+  # The titles say which state the row is in and nothing more; the count, the
+  # findings, and the trail stay one click away in the status comment.
+  if [[ "$review_state" == "block" ]]; then
+    check_title="Findings open on this commit"
+  else
+    check_title="No findings open on this commit"
+  fi
+  complete_check_run "$BASE_OWNER" "$BASE_REPO" "$CHECK_RUN_ID" \
+    "$(check_conclusion_for_state "$review_state")" "$check_title" \
+    "The findings index, the review scope, and the reviewed-SHAs trail are in the review status comment."
+  CHECK_RUN_CONCLUDED=1
 fi
 
 log_total_review_cost

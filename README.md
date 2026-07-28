@@ -11,7 +11,8 @@ Automated PR review agent that posts as a self-hosted GitHub App. Run it in your
 3. It skips drafts, PRs labeled `no-ai-review`, and PRs whose HEAD SHA was already reviewed.
 4. For the rest, it runs two review roles (`.claude/agents/review-agent-code.md` and `review-agent-intent.md`, ADR 0038) via headless Claude Code (`claude -p`) against the diff, and anchors findings to file/line ranges.
 5. It submits the findings as a `COMMENT` review under its App bot identity, in one call ([ADR 0036](docs/adr/0036-github-app-identity.md)).
-6. You open the PR to read them, and edit or dismiss any you disagree with.
+6. The PR's checks row tracks it throughout: a `review` check runs while the agent works, then passes when no finding is open and fails when one is ([ADR 0039](docs/adr/0039-review-state-on-the-checks-row.md)). Make it a required check if you want it to gate merges.
+7. You open the PR to read them, and edit or dismiss any you disagree with.
 
 ## Why this exists
 

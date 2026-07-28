@@ -1938,3 +1938,86 @@ edit_status_comment() {
   done
   log_info "status comment edit failed after 3 attempts (comment ${comment_id})"
 }
+
+# --- checks row (#308) -------------------------------------------------------
+#
+# The second review surface, and the one a reader scans before merging. It
+# carries state alone: in_progress while the review runs, then one conclusion.
+# Everything a reader has to read (findings index, scope, reviewed-SHAs trail)
+# stays in the status comment above, so the row restates nothing and stays
+# scannable next to the repo's other checks.
+
+# The name the checks row shows, and the string an operator types into branch
+# protection to require the review. Fixed rather than derived from the App slug,
+# which varies per fork: a required-check rule names the string, so deriving it
+# would rename the rule out from under the operator.
+CHECK_RUN_NAME="review"
+
+# start_check_run <owner> <repo> <head-sha> [details-url]
+# Opens the in_progress check run for this review and prints its id. This is the
+# pickup announcement: the row shows the review is running from here until it is
+# concluded. details-url is where the row's "Details" link lands, which is the
+# status comment (the surface carrying what this row deliberately omits).
+#
+# Created on the base repo because that is where the App is installed and where
+# the PR's checks row lives. Best-effort like the status comment: prints nothing
+# and returns 0 on failure, so a repo whose installation lacks `checks: write`
+# still gets its review.
+start_check_run() {
+  local owner="$1" repo="$2" head_sha="$3" details_url="${4:-}"
+  local payload
+  payload="$(jq -n --arg name "$CHECK_RUN_NAME" --arg sha "$head_sha" --arg url "$details_url" \
+    '{name: $name, head_sha: $sha, status: "in_progress"}
+     | if $url == "" then . else .details_url = $url end')"
+  run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api -X POST "repos/${owner}/${repo}/check-runs" --input - --jq '.id' \
+    <<<"$payload" 2>/dev/null || true
+}
+
+# complete_check_run <owner> <repo> <check-run-id> <conclusion> <title> <summary>
+# Concludes a live check run, ending the in_progress state the row shows.
+# No-ops on an empty id (no run was opened).
+#
+# Retried like edit_status_comment (ADR 0027) and for a stronger reason: a run
+# left in_progress can hold a merge back where a stale comment only misinforms,
+# so a dropped conclude is worth three attempts. Still best-effort overall, since
+# a landed review must never be aborted over its checks row, but an exhausted
+# retry is logged: the state it leaves behind is the one an operator has to clear
+# by hand.
+complete_check_run() {
+  local owner="$1" repo="$2" check_run_id="$3" conclusion="$4" title="$5" summary="$6"
+  local attempt sleep_secs="${CHECK_RUN_RETRY_SLEEP_SECONDS:-2}" payload
+  [[ -n "$check_run_id" ]] || return 0
+  payload="$(jq -n --arg conclusion "$conclusion" --arg title "$title" --arg summary "$summary" \
+    '{status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary}}')"
+  for attempt in 1 2 3; do
+    run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+      gh api -X PATCH "repos/${owner}/${repo}/check-runs/${check_run_id}" --input - \
+      <<<"$payload" >/dev/null 2>&1 && return 0
+    [[ "$attempt" -lt 3 ]] && sleep "$sleep_secs"
+  done
+  log_info "check run ${check_run_id} not concluded after 3 attempts (left in_progress)"
+}
+
+# check_conclusion_for_state <state>
+# Maps the review's verdict, the same block|pass the status head-line renders, to
+# a GitHub check-run conclusion. One verdict feeds both surfaces so they cannot
+# disagree.
+#
+# `block` is `failure`, not `neutral`: GitHub treats neutral as a pass, so a
+# neutral block would decide the gating question for the operator by making the
+# check unusable as a required check. Whether the review holds a merge back is
+# branch protection, which is theirs to set; this reports the verdict either way.
+# Not `action_required` either, whose call-to-action framing overstates a review
+# whose findings may all be nits.
+#
+# Anything else, including the review that crashed before it had a verdict, is
+# `neutral`: no verdict was reached, so the row must state that without gating a
+# merge on a daemon-side failure the author cannot act on.
+check_conclusion_for_state() {
+  case "$1" in
+    pass) printf 'success' ;;
+    block) printf 'failure' ;;
+    *) printf 'neutral' ;;
+  esac
+}
