@@ -650,13 +650,21 @@ def main(argv: list[str] | None = None) -> int:
                 # The gate is chosen by comparing this against the scores of the
                 # findings around it: a threshold is only defensible if it sits
                 # below where real bugs land and above where noise does.
-                if isinstance(matched, int) and 0 <= matched < len(review["findings"]):
+                # `bool` is an `int` in Python, so a judge reply of `true` would
+                # otherwise index findings[1] and record it as the match.
+                if (
+                    isinstance(matched, int)
+                    and not isinstance(matched, bool)
+                    and 0 <= matched < len(review["findings"])
+                ):
                     verdict["matched_confidence"] = review["findings"][matched].get("confidence")
-                    # The matched finding is the one whose score repeats across a
-                    # batch, so it is the one a spread has to be explained from.
-                    # Recording only its number is what left the last comparison
-                    # able to show the spread and not account for it (#302).
-                    verdict["matched_finding"] = summarize_finding(review["findings"][matched])
+                    # The matched finding's score is the one that repeats across a
+                    # batch, so it is the one a spread has to be accounted for
+                    # from; the number on its own is what left the last comparison
+                    # able to show a spread and not explain it (#302).
+                    verdict["matched_verification_gap"] = review["findings"][matched].get(
+                        "verification_gap"
+                    )
                 others = [(i, f) for i, f in enumerate(review["findings"]) if i != matched]
                 graded = [
                     {**summarize_finding(f), **judge_finding_noise(review["diff"], f)}
