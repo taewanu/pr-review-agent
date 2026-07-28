@@ -9,7 +9,7 @@ A GitHub PR Review object in the `PENDING` state. On **others' PRs** (author ≠
 _Avoid_: dry-run, draft review (the platform term is "pending"), preview
 
 **Review body**:
-The top-level summary text of a Pending review. 2–3 sentences, English. When some findings cannot be anchored to specific diff lines, the daemon appends an `## Findings outside the diff` section to the Review body (see ADR 0005).
+The top-level summary text of a Pending review. 2–3 sentences, English. When a finding lands on a file the PR never touched, and GitHub therefore accepts no comment for it, the daemon appends it to the Review body under `## Findings outside the diff` (see ADR 0005, ADR 0040).
 _Avoid_: summary (use Review body for the formal term; "summary" is fine in casual prose)
 
 **Finding**:
@@ -17,8 +17,12 @@ One logical review item the Review agent emits. Has a `path`, `line`, `severity`
 _Avoid_: comment (use Inline comment for the rendered API form), issue, remark
 
 **Inline comment**:
-A Finding after it has been rendered into GitHub's PR Review API shape: path + line + body with severity emoji prefix and bold type label. Each Finding either becomes an Inline comment (if anchored in the diff) or is relocated into the Review body's `## Findings outside the diff` section (if not).
+A Finding after it has been rendered into GitHub's PR Review API shape: path + line + body with severity emoji prefix and bold type label. A Finding whose line verifies becomes an Inline comment; one whose line does not becomes a File-level comment when the PR touches the file, and otherwise goes to the Review body's `## Findings outside the diff` section (ADR 0040).
 _Avoid_: comment alone (ambiguous), finding (Finding is the logical unit; Inline comment is the rendered form)
+
+**File-level comment**:
+A Finding posted against a whole file rather than a line (`subject_type: "file"`), used when the PR's diff touches the Finding's path but no line verifies (ADR 0040). It carries a thread, so it resolves, accepts replies, and counts at the merge gate exactly like an Inline comment. It posts in its own request, outside the review batch, which does not accept `subject_type`.
+_Avoid_: unanchored (a File-level comment is anchored, to the file)
 
 **Review footer**:
 The attribution-plus-next-action line closing a Review body, of the form `🤖 <verb> by [<Operator identity>](<project url>). <action>.`. Two variants on the pending/posted axis: on others' PRs the review is genuinely pending, so it reads "Drafted by … Submit, edit, or cancel as needed"; on the Operator's own PRs it is auto-submitted (ADR 0008), so it reads "Auto-submitted by … Edit as needed". Draft-status is stated here, once per review, and nowhere else. Format pinned by ADR 0010.

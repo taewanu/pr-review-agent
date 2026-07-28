@@ -4,7 +4,7 @@ The index is a derived, pointer-only view of the PR's daemon Finding threads: a
 `total · open · resolved` rollup plus one linked entry per thread (location +
 state, never the body). These tests pin the filter (daemon-authored only), the
 ordering (open before resolved), the link fallback (no URL → plain label), the
-rollup math, and the unanchored pointer that stands in for Review-body findings.
+rollup math, and the advisory pointer that stands in for Review-body findings.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def test_entry_resolved_state_and_outdated_line():
     assert line == "- [`daemon/foo.py`](https://gh/x) · resolved"
 
 
-# --- render_index: rollup, order, unanchored ---------------------------------
+# --- render_index: rollup, order, advisory pointer ---------------------------
 
 
 def test_render_rollup_counts_and_open_first_order():
@@ -107,13 +107,11 @@ def test_render_singular_noun_for_one_finding():
 def test_render_clean_affirmation_bare_rollup_without_summary():
     # Zero findings, no summary: the bare rollup so a clean review still reads as
     # reviewed-and-clean rather than an empty no-op (ADR 0020).
-    assert fi.render_index([], OPERATOR, unanchored_count=0) == "**No findings**"
+    assert fi.render_index([], OPERATOR, advisory_count=0) == "**No findings**"
 
 
 def test_render_clean_affirmation_quotes_the_summary():
-    out = fi.render_index(
-        [], OPERATOR, unanchored_count=0, summary="All clear; nothing blocking.\n"
-    )
+    out = fi.render_index([], OPERATOR, advisory_count=0, summary="All clear; nothing blocking.\n")
     assert out == "**No findings**\n\n> All clear; nothing blocking."
 
 
@@ -129,21 +127,21 @@ def test_clean_affirmation_falls_back_to_bare_rollup_on_whitespace_summary():
     assert fi._clean_affirmation(None) == "**No findings**"
 
 
-def test_render_unanchored_pointer_with_review_url():
-    out = fi.render_index([], OPERATOR, unanchored_count=2, review_url="https://gh/review")
+def test_render_advisory_pointer_with_review_url():
+    out = fi.render_index([], OPERATOR, advisory_count=2, review_url="https://gh/review")
     assert out == "_+ 2 outside the diff → [review](https://gh/review)_"
 
 
-def test_render_unanchored_pointer_without_review_url():
-    out = fi.render_index([], OPERATOR, unanchored_count=3, review_url=None)
+def test_render_advisory_pointer_without_review_url():
+    out = fi.render_index([], OPERATOR, advisory_count=3, review_url=None)
     assert out == "_+ 3 outside the diff_"
 
 
-def test_render_findings_then_unanchored_pointer_separated():
+def test_render_findings_then_advisory_pointer_separated():
     out = fi.render_index(
         [_thread("1", "a.py", 1, url="https://gh/o")],
         OPERATOR,
-        unanchored_count=1,
+        advisory_count=1,
         review_url="https://gh/review",
     )
     assert out.splitlines()[-1] == "_+ 1 outside the diff → [review](https://gh/review)_"
@@ -163,6 +161,18 @@ def test_delta_line_new_only_carries_plus():
 
 def test_delta_line_fixed_only_has_no_plus():
     assert fi._delta_line(fi.Delta(0, 2)) == "_2 fixed_"
+
+
+def test_delta_line_counts_advisory_findings_in_their_own_bucket():
+    # An advisory finding sits on a file the PR never touched, so it has no thread
+    # and can never be counted as fixed. Folding it into `new` would book an
+    # arrival that never departs (ADR 0040 decision 3).
+    assert fi._delta_line(fi.Delta(2, 1, 1)) == "_+2 new · 1 fixed · +1 advisory_"
+    assert fi._delta_line(fi.Delta(0, 0, 2)) == "_+2 advisory_"
+
+
+def test_delta_line_defaults_to_no_advisory_findings():
+    assert fi._delta_line(fi.Delta(1, 0)) == "_+1 new_"
 
 
 def test_delta_line_both_zero_reads_no_change():

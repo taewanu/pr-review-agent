@@ -207,3 +207,25 @@ def test_a_review_with_no_verdict_never_gates_a_merge():
     for state in ("", "unknown", "reviewing"):
         assert _conclusion(state) == "neutral"
         assert _conclusion(state) in NON_BLOCKING
+
+
+# --- review_state_for_open_threads (ADR 0040) --------------------------------
+
+
+def _state(open_threads: str) -> str:
+    out, _, rc, _, _ = _run(f"review_state_for_open_threads '{open_threads}'")
+    assert rc == 0
+    return out.strip()
+
+
+def test_an_open_thread_blocks():
+    assert _state("1") == "block"
+    assert _conclusion(_state("1")) not in NON_BLOCKING
+
+
+def test_no_open_thread_passes_however_the_tick_reached_that_state():
+    # The gate has one input, so a review that posted findings with no thread left
+    # open still passes. A finding nobody can resolve must not hold a merge, which
+    # is the permanent-red state PR #312 hit.
+    assert _state("0") == "pass"
+    assert _conclusion(_state("0")) in NON_BLOCKING

@@ -1,7 +1,7 @@
 # ADR 0033: Per-push delta in the Status comment
 
 Date: 2026-07-13
-Status: Accepted. Extends the ADR 0020 (findings index) → ADR 0021 (reviewed-SHAs trail) Status-comment arc with a fourth derived view.
+Status: Accepted. Extends the ADR 0020 (findings index) → ADR 0021 (reviewed-SHAs trail) Status-comment arc with a fourth derived view. Decision 1 is amended by [ADR 0040](./0040-file-level-findings-and-a-gate-on-threads.md): `new` counts only findings that got a thread, and body-only findings move to their own `advisory` bucket, since they can never be counted as `fixed`.
 
 ## Context
 
