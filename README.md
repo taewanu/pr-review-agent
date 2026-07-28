@@ -60,7 +60,7 @@ chmod 600 ~/.pr-review-agent/app.pem
 
 Set `APP_KEY_PATH` in the environment to keep it somewhere else.
 
-**6. Install the App on each repo you want reviewed.** Open the **Install App** tab, install it on your account, and choose **Only select repositories**. There is no installation id to copy down: the daemon asks GitHub which installation covers each watched repo ([ADR 0036](docs/adr/0036-github-app-identity.md) decision 4). A watched repo the App is not installed on is named in a warning when `daemon/run.sh` starts and then skipped. That probe runs at startup rather than every cycle, so installing on a new repo mid-run needs a restart to take effect.
+**6. Install the App on each repo you want reviewed.** Open the **Install App** tab, install it on your account, and choose **Only select repositories**. There is no installation id to copy down: the daemon asks GitHub which installation covers each watched repo ([ADR 0036](docs/adr/0036-github-app-identity.md) decision 4). A watched repo the App is not installed on is skipped, and named once in a warning when `daemon/run.sh` starts. Installing on a new repo mid-run needs no restart: the daemon resolves each repo's installation every cycle, so the next one picks it up. Only the startup warning waits for a restart.
 
 **7. Copy the App id into your config.** The **App ID** is on the App's General settings page, a number. It goes in `.env` as `GITHUB_APP_ID`, which the next section covers.
 
