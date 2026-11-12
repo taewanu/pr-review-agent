@@ -124,10 +124,69 @@ def test_each_call_site_sends_its_exact_argv(tmp_path, script, label, mode, agen
     assert (site.mode, site.agent) == (mode, agent)
     run = run_agent(tmp_path, site.mode, agent=site.agent)
     assert run.rc == 0, run.stderr
-    assert run.argv == argv(run.raw)
+    rest, _ = run.split_settings()
+    assert rest == argv(run.raw)
     assert run.stdin == PROMPT
     assert run.raw.read_text() == RESULT
     assert Path(f"{run.raw}.cost").read_text() == "0.25"
+
+
+@pytest.mark.parametrize(
+    ("mode", "agent"), [("read-only", "review-agent-editor"), ("orchestrate", None)]
+)
+def test_shell_commands_run_in_a_fail_closed_sandbox_bounded_to_the_clone(tmp_path, mode, agent):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    link = tmp_path / "clone-link"
+    link.symlink_to(clone)
+    tmpdir = tmp_path / "tmp"
+    tmpdir.mkdir()
+    # Entered through a symlink, so every path the settings name must come out physical.
+    run = run_agent(tmp_path, mode, agent=agent, cwd=link, env={"TMPDIR": str(tmpdir)})
+    assert run.rc == 0, run.stderr
+    agent_tmp = Path(run.env["CLAUDE_CODE_TMPDIR"]).resolve()
+    assert run.split_settings()[1] == {
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "allowUnsandboxedCommands": False,
+            "autoAllowBashIfSandboxed": False,
+            "filesystem": {
+                "denyRead": ["~/", str(tmpdir.resolve()), str(Path("/tmp").resolve())],
+                "allowRead": [str(clone.resolve()), str(agent_tmp)],
+                "denyWrite": [str(clone.resolve())],
+            },
+            "network": {"strictAllowlist": True},
+        }
+    }
+
+
+@pytest.mark.parametrize("rc", [0, 3])
+def test_each_call_gets_its_own_short_temp_directory_removed_afterwards(tmp_path, rc):
+    # A long path makes Claude Code hand sandboxed commands its shared temp directory.
+    run = run_agent(
+        tmp_path, "read-only", agent="review-agent-reply", env={"FAKE_CLAUDE_RC": str(rc)}
+    )
+    assert run.rc == rc
+    agent_tmp = Path(run.env["CLAUDE_CODE_TMPDIR"])
+    assert agent_tmp.parent == Path("/tmp")
+    assert agent_tmp.name.startswith("pr-review-claude.")
+    assert run.tmp_existed
+    assert not agent_tmp.exists()
+
+
+def test_git_inside_the_agent_skips_its_config_under_the_home_directory(tmp_path):
+    run = run_agent(tmp_path, "read-only", agent="review-agent-reply")
+    assert run.rc == 0, run.stderr
+    git_env = {k: v for k, v in run.env.items() if k.startswith("GIT_CONFIG")}
+    assert git_env == {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "core.excludesFile",
+        "GIT_CONFIG_VALUE_0": "/dev/null",
+        "GIT_CONFIG_KEY_1": "core.attributesFile",
+        "GIT_CONFIG_VALUE_1": "/dev/null",
+    }
 
 
 @pytest.mark.parametrize(("script", "label", "agent"), _READ_ONLY_SITES)
@@ -216,6 +275,7 @@ def test_timeout_surfaces_as_timeout_exit_with_empty_output(tmp_path):
     assert run.stdin == PROMPT
     assert run.raw.read_text() == ""
     assert not Path(f"{run.raw}.cost").exists()
+    assert not Path(run.env["CLAUDE_CODE_TMPDIR"]).exists()
 
 
 def test_unknown_mode_refuses_without_running_claude(tmp_path):

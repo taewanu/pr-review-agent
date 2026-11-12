@@ -76,14 +76,16 @@ Everything in the per-PR clone is written by the pull request's author. Everythi
 
 - Configure the review agent. The roles run with `--restricted --strict-mcp-config`: no settings, hooks, MCP servers, or `CLAUDE.md` instructions load from the clone. The `code` role still reads the clone's `CLAUDE.md` and ADRs as conventions to review against.
 - Run a shell command outside a fixed set. The daemon runs unattended, so Claude Code denies any command that needs approval. Read-only commands need none. The review call's `acceptEdits` mode also approves file edits and `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed` inside the per-PR clone.
+- Read your home directory, the daemon's files, or another PR's clone from a shell command, write in the clone, or reach the network. The roles' commands run in Claude Code's OS sandbox, and a review does not start if the sandbox is unavailable.
 - Reach the App's token. It is attached to one `gh` call at a time and never enters the roles' environment.
 - Plant files under the daemon's working-file names. Every `.pr-review-*` entry at the clone's root is deleted before the daemon writes.
 
 **What this does not protect against**
 
 - Prompt injection. PR text can steer a role into a wrong or empty review. The limits above bound what a role can do, not what it says.
-- Changes inside the per-PR clone. During the review call, a steered role can edit or delete files there, including the other role's output.
-- Anything Claude Code itself allows. No OS-level sandbox surrounds the roles' commands.
+- Changes inside the per-PR clone. During the review call, a steered role can overwrite files there with the Write tool, including the other role's output. The sandbox stops shell commands from writing, not the file tools.
+- Reads outside the denied locations. A role's shell command can still read system paths such as `/etc`.
+- Linux. The sandbox is tested on macOS only.
 - Disclosure to the model provider. The PR's files go to the provider behind your Claude Code sign-in. Training use follows your account settings.
 
 The App holds the [five permissions](docs/github-app.md#steps) ([why Contents: write](docs/github-app.md#why-contents-needs-write-access)). Its private key stays on your machine at mode 0600.

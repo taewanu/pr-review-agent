@@ -25,8 +25,11 @@ RESULT = "the agent's final text"
 
 _FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys, time
+env = {k: v for k, v in os.environ.items() if k.startswith(("GIT_CONFIG", "CLAUDE_CODE_TMPDIR"))}
+tmp = env.get("CLAUDE_CODE_TMPDIR")
 with open(os.environ["FAKE_CLAUDE_LOG"], "w") as f:
-    json.dump({"argv": sys.argv[1:], "stdin": sys.stdin.read()}, f)
+    json.dump({"argv": sys.argv[1:], "stdin": sys.stdin.read(), "env": env,
+               "tmp_existed": bool(tmp) and os.path.isdir(tmp)}, f)
 time.sleep(float(os.environ.get("FAKE_CLAUDE_SLEEP", "0")))
 print(json.dumps({"type": "result", "result": os.environ["FAKE_CLAUDE_RESULT"],
                   "total_cost_usd": 0.25}), flush=True)
@@ -41,6 +44,15 @@ class AgentRun:
     stdin: str | None
     raw: Path
     stderr: str
+    env: dict[str, str] | None = None
+    tmp_existed: bool | None = None
+
+    def split_settings(self) -> tuple[list[str], dict]:
+        """The argv without its one --settings pair, and that pair's parsed JSON."""
+        assert self.argv is not None
+        assert self.argv.count("--settings") == 1, self.argv
+        i = self.argv.index("--settings")
+        return self.argv[:i] + self.argv[i + 2 :], json.loads(self.argv[i + 1])
 
 
 def run_agent(
@@ -51,10 +63,12 @@ def run_agent(
     timeout_secs: int = 30,
     env: dict[str, str] | None = None,
     dirs_left: tuple[str, ...] = (),
+    cwd: Path | None = None,
 ) -> AgentRun:
     """Call run_agent the way the daemon's call sites do, from inside a clone
     whose reserved names were cleared after the checkout. `dirs_left` are clone
-    paths an earlier agent in the same review made into directories."""
+    paths an earlier agent in the same review made into directories; `cwd`
+    enters the clone by another path, such as a symlink to it."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     fake = bindir / "claude"
@@ -75,7 +89,7 @@ def run_agent(
     script = (
         f'set -euo pipefail; source "{LIB}"; '
         f"REVIEW_MODEL={MODEL}; REVIEW_EFFORT={EFFORT}; "
-        f'clear_reserved_names "{clone}"; cd "{clone}"; '
+        f'clear_reserved_names "{clone}"; cd "{cwd or clone}"; '
         + "".join(f'mkdir -p "{clone / d}"; ' for d in dirs_left)
         + 'rc=0; run_agent "$@" || rc=$?; exit "$rc"'
     )
@@ -100,6 +114,8 @@ def run_agent(
         stdin=call.get("stdin"),
         raw=raw,
         stderr=result.stderr,
+        env=call.get("env"),
+        tmp_existed=call.get("tmp_existed"),
     )
 
 

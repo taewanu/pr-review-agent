@@ -539,6 +539,36 @@ write_run_file() {
   fi
 }
 
+# agent_sandbox_settings <agent-tmp>
+# Prints the --settings JSON that puts the agent's shell commands in Claude
+# Code's OS sandbox, a second layer under the permission rules: it bounds what a
+# command that runs can reach, so it never auto-allows one, and it fails closed
+# rather than run one unsandboxed. A command reads nothing under the home
+# directory or either temp root, where the operator's other programs keep files,
+# except the per-PR clone and <agent-tmp>; it writes nothing in the clone and
+# reaches no network. Paths are physical because /tmp and /var are symlinks on
+# macOS.
+agent_sandbox_settings() {
+  local clone agent_tmp tmpdir slash_tmp
+  clone="$(pwd -P)" &&
+    agent_tmp="$(cd "$1" && pwd -P)" &&
+    tmpdir="$(cd "${TMPDIR:-/tmp}" && pwd -P)" &&
+    slash_tmp="$(cd /tmp && pwd -P)" || return 1
+  jq -cn --arg clone "$clone" --arg agent_tmp "$agent_tmp" --arg tmpdir "$tmpdir" \
+    --arg slash_tmp "$slash_tmp" '{sandbox: {
+    enabled: true,
+    failIfUnavailable: true,
+    allowUnsandboxedCommands: false,
+    autoAllowBashIfSandboxed: false,
+    filesystem: {
+      denyRead: ["~/", $tmpdir, $slash_tmp],
+      allowRead: [$clone, $agent_tmp],
+      denyWrite: [$clone]
+    },
+    network: {strictAllowlist: true}
+  }}'
+}
+
 # run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [agent-name]
 # The daemon's one way to run an agent: feeds <prompt-file> on stdin, streams
 # labelled activity lines to the terminal, and leaves the agent's final text in
@@ -604,12 +634,32 @@ run_agent() {
   # pure forwarding overhead; every call is directly prompted (ADR 0038).
   args+=(--restricted --strict-mcp-config --disable-slash-commands
     --output-format stream-json --verbose)
+  # Claude Code's own temp files, the Bash tool's output among them, go to a
+  # per-run directory rather than the shared /tmp/claude-<uid>, which holds the
+  # operator's other sessions; it sits directly under /tmp because Claude Code
+  # hands sandboxed commands that shared directory as $TMPDIR when the path is
+  # long.
+  local agent_tmp settings rc=0
+  agent_tmp="$(mktemp -d /tmp/pr-review-claude.XXXXXX)" || return 1
+  if ! settings="$(agent_sandbox_settings "$agent_tmp")"; then
+    rm -rf "$agent_tmp"
+    return 1
+  fi
+  args+=(--settings "$settings")
   # claude's own stderr (e.g. its non-interactive workspace-trust notice,
   # expected every run since a fresh scratch clone is never pre-trusted) goes to
   # a sidecar file so the primary log stays legible.
-  run_with_timeout "$secs" claude "${args[@]}" <"$prompt" 2>"$raw.stderr" |
+  # The GIT_CONFIG_* variables keep git off its files in the home directory,
+  # which the sandbox denies: git exits on an unreadable ~/.gitconfig.
+  run_with_timeout "$secs" env CLAUDE_CODE_TMPDIR="$agent_tmp" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 \
+    GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0=/dev/null \
+    GIT_CONFIG_KEY_1=core.attributesFile GIT_CONFIG_VALUE_1=/dev/null \
+    claude "${args[@]}" <"$prompt" 2>"$raw.stderr" |
     python3 "$(dirname "${BASH_SOURCE[0]}")/stream_format.py" --raw-out "$raw" \
-      --label "$label" --cost-out "$raw.cost"
+      --label "$label" --cost-out "$raw.cost" || rc=$?
+  rm -rf "$agent_tmp"
+  return "$rc"
 }
 
 # clear_reserved_names <clone>

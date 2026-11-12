@@ -66,7 +66,11 @@ _Avoid_: run, cycle, pass
 
 **Scratch directory**:
 A short-lived working tree the daemon creates per PR-tick, holding a shallow clone checked out to the PR's HEAD. Claude Code runs with the scratch directory as its cwd. Deleted at the end of the PR-tick.
-_Avoid_: workspace, sandbox, checkout dir
+_Avoid_: workspace, sandbox (the Agent sandbox is the boundary around it), checkout dir
+
+**Agent sandbox**:
+Claude Code's OS sandbox around every shell command a Review agent or Editor agent runs, configured by the daemon with `--settings`. A command may read only the Scratch directory and the run's own temp directory, may not write in the Scratch directory, and reaches no network. It is a second layer under Claude Code's permission rules: the rules decide which commands run, the sandbox bounds what a running command can touch.
+_Avoid_: sandbox for the Scratch directory, container (no container is involved)
 
 **Status comment**:
 A pr-review-agent-owned issue comment on the PR, edited in place, showing the review scope plus a cumulative findings index (#60, ADR 0020). One per PR, mutable. Identified by the Status marker so a re-review edits it rather than posting a second. The index lists each Finding by location linked to its Inline comment, with the Finding's open/resolved state read from the thread each tick and a `total · open · resolved` rollup; it carries no Finding *body*, which stays in the Review object (one source per fact). The headline shows scope, not a per-SHA finding count. The PR-level twin of the Resolution stamp: both are in-place derived state, the stamp per thread, the index per PR.
