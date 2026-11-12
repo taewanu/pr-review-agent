@@ -611,6 +611,16 @@ require_claude_version() {
   fi
 }
 
+# require_real_codex
+# Resolves codex as every agent call does, so a PATH holding only a shim fails
+# here once instead of failing every call, and logs the binary chosen when a
+# shim came first on PATH.
+require_real_codex() {
+  local note
+  note="$(python3 "$(dirname "${BASH_SOURCE[0]}")/codex_exec.py" check)" || return 1
+  [[ -z "$note" ]] || log_info "$note"
+}
+
 _version_key() {
   local major minor patch
   IFS=. read -r major minor patch <<<"$1"
@@ -798,10 +808,14 @@ run_agent_claude() {
 run_agent_codex() {
   local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" agent="${6:-}"
   local here workdir arg argv=() pid rc=0 format_rc=0
-  # Created before anything below can fail, so a failed run hands back empty
-  # output, and before the formatter follows the events file.
-  : >"$raw"
-  : >"$raw.events"
+  # Each output name is cleared as write_run_file clears it, so nothing the clone
+  # carries there is written through or read back as output, then <raw> and the
+  # events file exist before anything can fail or the formatter follows them.
+  rm -rf -- "$raw" "$raw.events" "$raw.stderr" "$raw.tokens" "$raw.cost"
+  if ! { : >"$raw" && : >"$raw.events"; } 2>/dev/null; then
+    log_err "run_agent: cannot write ${raw}"
+    return 1
+  fi
   if [[ "$mode" == orchestrate ]]; then
     log_err "run_agent: codex cannot run orchestrate mode because it has no subagent tool; run each review role as its own read-only agent instead"
     return 1
@@ -2094,6 +2108,56 @@ format_clock_time() {
   date -r "$1" '+%H:%M' 2>/dev/null ||
     date -d "@$1" '+%H:%M' 2>/dev/null ||
     printf '%s' "$1"
+}
+
+# extract_category <stderr-file>
+# Recovers the `category=<slug>` first stderr line the Python pipeline stages emit
+# on failure (the wire contract documented with the failure categories above).
+# Falls back to the shared FAIL_UNKNOWN so the structured failure line is always
+# populated.
+extract_category() {
+  local stderr_path="$1"
+  local cat
+  cat="$(grep -m1 '^category=' "$stderr_path" 2>/dev/null | cut -d= -f2 || true)"
+  [[ -n "$cat" ]] && printf '%s' "$cat" || printf '%s' "$FAIL_UNKNOWN"
+}
+
+# extract_session_limit_deadline <stderr-file>
+# Parses the `session_limit_deadline=<epoch>` second stderr line merge_findings.py
+# emits alongside a session-limit category. Empty means the sentinel was there
+# but its reset time was unreadable, which the pause treats as its fixed fallback.
+extract_session_limit_deadline() {
+  local stderr_path="$1"
+  grep -m1 '^session_limit_deadline=' "$stderr_path" 2>/dev/null | cut -d= -f2- || true
+}
+
+# merge_role_payloads <harness> <transcript> <author-out> <stderr-out> <payload>...
+# Unions the role payloads into <author-out> with merge_findings.py, which also
+# probes the orchestrator transcript for Claude's session-limit sentence. On
+# failure it sets MERGE_CATEGORY and returns 1. A session-limit classification
+# under claude pauses polling and sets STATUS_PAUSE_UNTIL to the resume time;
+# under codex it counts as all-lenses-failed, because a Codex quota hit never
+# writes that sentence, so only text a PR induced a role to write can match it.
+merge_role_payloads() {
+  local harness="$1" probe="$2" out="$3" err="$4"
+  shift 4
+  MERGE_CATEGORY=""
+  if python3 "$(dirname "${BASH_SOURCE[0]}")/merge_findings.py" --no-style \
+    --session-limit-probe "$probe" "$@" >"$out" 2>"$err"; then
+    return 0
+  fi
+  cat "$err" >&2
+  MERGE_CATEGORY="$(extract_category "$err")"
+  if [[ "$MERGE_CATEGORY" == session-limit && "$harness" != claude ]]; then
+    log_info "ignoring a session-limit classification under ${harness}; failing the review without pausing polling"
+    MERGE_CATEGORY=all-lenses-failed
+  elif [[ "$MERGE_CATEGORY" == session-limit ]]; then
+    # Every lens hit the subscription quota, so every PR this cycle and the next
+    # would hit the same wall; pause polling until the reset instead.
+    STATUS_PAUSE_UNTIL="$(session_pause_write "$(extract_session_limit_deadline "$err")")"
+    log_info "session limit hit, pausing polling until $(format_clock_time "$STATUS_PAUSE_UNTIL")"
+  fi
+  return 1
 }
 
 # fetch_open_review_threads <owner> <repo> <pr-number>

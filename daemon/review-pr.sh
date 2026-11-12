@@ -25,11 +25,8 @@ for cmd in gh "$REVIEW_HARNESS" jq git python3 openssl curl; do
 done
 if [[ "$REVIEW_HARNESS" == claude ]]; then
   require_claude_version || exit 1
-fi
-# Every agent call resolves codex this way and refuses a shim, so a shim fails
-# here once instead of failing every call.
-if [[ "$REVIEW_HARNESS" == codex ]] && ! python3 "$SCRIPT_DIR/codex_exec.py" check; then
-  exit 1
+else
+  require_real_codex || exit 1
 fi
 # App identity (ADR 0036): a machine with no `gh auth login` is a valid
 # deployment; what must exist is the App private key. The App id is checked when
@@ -302,26 +299,6 @@ on_exit() {
   conclude_check_incomplete
   flip_status_failed "$1"
   cleanup
-}
-
-# Recover the `category=<slug>` first stderr line the Python pipeline stages emit
-# on failure (the wire contract documented at lib.sh's failure-category home).
-# Falls back to the shared FAIL_UNKNOWN so the structured failure line is always
-# populated.
-extract_category() {
-  local stderr_path="$1"
-  local cat
-  cat="$(grep -m1 '^category=' "$stderr_path" 2>/dev/null | cut -d= -f2 || true)"
-  [[ -n "$cat" ]] && printf '%s' "$cat" || printf '%s' "$FAIL_UNKNOWN"
-}
-
-# Parse the `session_limit_deadline=<epoch>` second stderr line merge_findings.py
-# emits alongside a session-limit category (#231). Empty means the sentinel was
-# there but its reset time was unreadable, which the pause treats as its fixed
-# fallback.
-extract_session_limit_deadline() {
-  local stderr_path="$1"
-  grep -m1 '^session_limit_deadline=' "$stderr_path" 2>/dev/null | cut -d= -f2- || true
 }
 
 # Parse the `file_level_failed=<n>` line create-review.sh emits on every run: how
@@ -1017,25 +994,12 @@ log_step "merging lens payloads"
 # --no-style: the voice gate moved behind the editor (ADR 0016). This union
 # only schema-validates each lens's draft, dedupes, and shapes the result to
 # hand to the editor; the final gate runs in apply_edits.py, on what is posted.
-# --session-limit-probe (#299): on a quota hit the roles' payload files stay
-# empty and the sentinel lands in the orchestrator transcript, so merge probes
-# it to keep #231's pause classification working under the orchestrator shape.
-# Under codex nothing writes the transcript, and clear_reserved_names removed
-# any the PR carried, so the probe finds no file and classifies nothing.
-if ! python3 "$SCRIPT_DIR/merge_findings.py" --no-style \
-  --session-limit-probe "$ORCH_RAW" "${LENS_RAW_FILES[@]}" \
-  >"$AUTHOR_FILE" 2>"$EXTRACT_ERR"; then
-  cat "$EXTRACT_ERR" >&2
-  MERGE_CATEGORY="$(extract_category "$EXTRACT_ERR")"
-  if [[ "$MERGE_CATEGORY" == "session-limit" ]]; then
-    # Every lens hit the subscription quota, so every PR this cycle and the next
-    # would hit the same wall; pause polling until the reset instead (#231).
-    PAUSE_UNTIL="$(session_pause_write "$(extract_session_limit_deadline "$EXTRACT_ERR")")"
-    log_info "session limit hit, pausing polling until $(format_clock_time "$PAUSE_UNTIL")"
-    # Carried into the failed status comment so the author reads the resume time,
-    # not the head-line's default promise of a retry next cycle.
-    STATUS_PAUSE_UNTIL="$PAUSE_UNTIL"
-  fi
+# On a quota hit the roles' payload files stay empty and the sentinel lands in
+# the orchestrator transcript, so merge probes it; a pause it writes reaches the
+# failed status comment through STATUS_PAUSE_UNTIL, so the author reads the
+# resume time rather than the default promise of a retry next cycle.
+if ! merge_role_payloads "$REVIEW_HARNESS" "$ORCH_RAW" "$AUTHOR_FILE" "$EXTRACT_ERR" \
+  "${LENS_RAW_FILES[@]}"; then
   log_failure "$MERGE_CATEGORY" "$PR_URL" "$HEAD_OID" "merge_findings.py exited non-zero"
   exit 1
 fi
@@ -1068,7 +1032,7 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
   AUTHOR_INDEXED_BASENAME=".pr-review-author-indexed.json"
   AUTHOR_INDEXED_FILE="$SCRATCH/$AUTHOR_INDEXED_BASENAME"
   python3 "$SCRIPT_DIR/index_findings.py" <"$AUTHOR_FILE" >"$AUTHOR_INDEXED_FILE"
-  log_step "running editor agent via claude -p"
+  log_step "running editor agent via ${REVIEW_HARNESS}"
   # Same unbounded `claude -p` shape and backstop as the review agent, raised
   # to 600s for the same dogfood-observed reason. Not backgrounded (nothing to
   # fan out to; it's the one call after the lenses), but still draws from the

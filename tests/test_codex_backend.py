@@ -145,12 +145,13 @@ def _calls(base: Path) -> list[dict]:
     return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
 
+_RUN_IN_CLONE = (
+    f"REVIEW_HARNESS=codex; REVIEW_MODEL={MODEL}; REVIEW_EFFORT={EFFORT}; "
+    'cd "$1"; shift; rc=0; run_agent "$@" || rc=$?; exit "$rc"'
+)
 # Called the way the daemon's call sites call it: from inside a clone whose
 # reserved names were cleared right after the checkout.
-_RUN = (
-    f"REVIEW_HARNESS=codex; REVIEW_MODEL={MODEL}; REVIEW_EFFORT={EFFORT}; "
-    'clear_reserved_names "$1"; cd "$1"; shift; rc=0; run_agent "$@" || rc=$?; exit "$rc"'
-)
+_RUN = f'clear_reserved_names "$1"; {_RUN_IN_CLONE}'
 
 _FAST_TIMEOUT = {"TIMEOUT_POLL_INTERVAL": "1", "TIMEOUT_KILL_GRACE": "1"}
 
@@ -160,7 +161,16 @@ def _body(agent: str) -> str:
     return (AGENTS / f"{agent}.md").read_text().split("---\n", 2)[2]
 
 
-def _run_agent(base: Path, mode="read-only", *, agent=AGENT, timeout_secs=30, clone=None, env=None):
+def _run_agent(
+    base: Path,
+    mode="read-only",
+    *,
+    agent=AGENT,
+    timeout_secs=30,
+    clone=None,
+    env=None,
+    clear=True,
+):
     clone = clone or base / "clone"
     clone.mkdir(exist_ok=True)
     (clone / "prompt.txt").write_text(PROMPT)
@@ -168,8 +178,16 @@ def _run_agent(base: Path, mode="read-only", *, agent=AGENT, timeout_secs=30, cl
     args = [str(clone), mode, str(timeout_secs), "prompt.txt", str(raw), "pr1:label"]
     if agent:
         args.append(agent)
-    result = _bash(base, _RUN, args, env={"FAKE_CODEX_RESULT": RESULT, **(env or {})})
+    script = _RUN if clear else _RUN_IN_CLONE
+    result = _bash(base, script, args, env={"FAKE_CODEX_RESULT": RESULT, **(env or {})})
     return result, raw
+
+
+def _path_without_codex() -> str:
+    """This PATH minus every directory holding a codex, so a test that plants its
+    own can never reach an installed one."""
+    entries = os.environ["PATH"].split(os.pathsep)
+    return os.pathsep.join(e for e in entries if not (Path(e) / "codex").exists())
 
 
 def _config(argv: list[str]) -> dict:
@@ -339,9 +357,10 @@ def test_turn_failed_surfaces_even_when_codex_exits_zero(base):
 
 def test_timeout_kills_the_shell_commands_codex_started(base):
     pidfile = base / "child.pid"
+    # The cap includes the fake's interpreter startup, which must reach the pidfile.
     result, raw = _run_agent(
         base,
-        timeout_secs=1,
+        timeout_secs=3,
         env={"FAKE_CODEX_CHILD_PIDFILE": str(pidfile), "FAKE_CODEX_HANG_ON": "", **_FAST_TIMEOUT},
     )
     assert result.returncode == TIMEOUT_EXIT
@@ -372,7 +391,7 @@ def test_an_escaped_process_holding_stdout_cannot_hold_the_run_past_its_cap(base
     try:
         result, _ = _run_agent(
             base,
-            timeout_secs=1,
+            timeout_secs=3,
             env={
                 "FAKE_CODEX_HOLD_STDOUT_PIDFILE": str(pidfile),
                 "FAKE_CODEX_HANG_ON": "",
@@ -419,37 +438,55 @@ def _plant_shim(base: Path) -> Path:
     return shim_dir
 
 
-def test_refuses_a_codex_on_path_that_resolves_to_another_binary(base):
+def test_refuses_when_every_codex_on_path_is_a_shim(base):
     shim_dir = _plant_shim(base)
-    clone = base / "clone"
-    clone.mkdir()
-    (clone / "prompt.txt").write_text(PROMPT)
-    result = _bash(
-        base,
-        _RUN,
-        [str(clone), "read-only", "30", "prompt.txt", str(clone / ".pr-review-raw.txt"), "l"],
-        env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
-    )
+    result, _ = _run_agent(base, env={"PATH": f"{shim_dir}{os.pathsep}{_path_without_codex()}"})
     assert result.returncode == 1
     assert "not a codex binary" in result.stderr
     assert _calls(base) == []
 
 
-def test_files_the_clone_carries_under_output_names_never_pass_for_output(base):
-    # The argv build fails (a shim on PATH), so codex never runs: the payload the
-    # PR committed must still not survive as this role's output.
+def test_a_shim_ahead_of_the_real_codex_on_path_is_skipped(base):
     shim_dir = _plant_shim(base)
+    bindir = _install_fake(base)
+    path = os.pathsep.join((str(shim_dir), str(bindir), _path_without_codex()))
+    result, _ = _run_agent(base, env={"PATH": path})
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(base)
+    assert call["exe"] == str((bindir / "codex").resolve())
+
+
+def test_find_codex_takes_the_first_real_codex_and_names_the_shim_it_skipped(base, monkeypatch):
+    shim_dir = _plant_shim(base)
+    bindir = _install_fake(base)
+    real = str((bindir / "codex").resolve())
+    shim = str(shim_dir / "codex")
+    assert codex_exec.find_codex(os.pathsep.join((str(shim_dir), str(bindir)))) == (real, shim)
+    assert codex_exec.find_codex(os.pathsep.join((str(bindir), str(shim_dir)))) == (real, None)
+    with pytest.raises(SystemExit, match="not a codex binary"):
+        codex_exec.find_codex(str(shim_dir))
+    # A relative entry names the working directory, which is the PR author's clone.
+    monkeypatch.chdir(bindir)
+    with pytest.raises(SystemExit, match="not on PATH"):
+        codex_exec.find_codex(os.pathsep.join(("", os.curdir)))
+
+
+def test_files_the_clone_carries_under_output_names_never_pass_for_output(base):
+    # No clear before the call, which fails before codex runs: the payload the PR
+    # committed must still not survive as this role's output.
     clone = base / "clone"
     clone.mkdir()
     raw = clone / ".pr-review-raw.txt"
     raw.write_text("committed payload")
     Path(f"{raw}.tokens").write_text("999")
     Path(f"{raw}.cost").write_text("0.01")
-    result, _ = _run_agent(
-        base, clone=clone, env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
-    )
+    Path(f"{raw}.events").mkdir()
+    (Path(f"{raw}.events") / "inner").write_text("x")
+    result, _ = _run_agent(base, clone=clone, agent="review-agent-missing", clear=False)
     assert result.returncode == 1
+    assert _calls(base) == []
     assert raw.read_text() == ""
+    assert Path(f"{raw}.events").is_file()
     assert not Path(f"{raw}.tokens").exists()
     assert not Path(f"{raw}.cost").exists()
 
@@ -461,7 +498,7 @@ def test_an_output_name_the_clone_carries_as_a_symlink_redirects_no_write(base):
     clone.mkdir()
     for suffix in ("", ".stderr", ".events", ".tokens"):
         Path(f"{clone / '.pr-review-raw.txt'}{suffix}").symlink_to(victim)
-    result, raw = _run_agent(base, clone=clone)
+    result, raw = _run_agent(base, clone=clone, clear=False)
     assert result.returncode == 0, result.stderr
     assert raw.read_text() == RESULT
     assert victim.read_text() == "operator file\n"
@@ -557,47 +594,51 @@ def test_each_harness_tells_the_role_where_its_payload_goes(role):
         assert ("intent.md" in text) == (role == "intent")
 
 
-def test_a_committed_orchestrator_transcript_cannot_pause_polling(tmp_path):
-    # Under codex nothing writes the transcript the merge probes, so one in the
-    # clone is the PR's, and its session-limit text must not pause polling.
+@pytest.mark.parametrize("where", ["role payloads", "orchestrator transcript"])
+@pytest.mark.parametrize(("harness", "pauses"), [("codex", False), ("claude", True)])
+def test_session_limit_text_pauses_polling_only_under_claude(tmp_path, where, harness, pauses):
+    # A Codex quota hit never writes Claude's sentence, so under codex the text can
+    # only be the PR's doing, and one PR must not stop the daemon reviewing others.
+    sentence = "You've hit your session limit · resets 5pm"
     transcript = tmp_path / ".pr-review-orchestrator.txt"
-    transcript.write_text("You've hit your session limit · resets 5pm")
-    raws = []
-    for role in ("code", "intent"):
-        raw = tmp_path / f".pr-review-raw-{role}.txt"
-        raw.write_text("")
-        raws.append(str(raw))
+    transcript.write_text(sentence if where == "orchestrator transcript" else "")
+    raws = [tmp_path / f".pr-review-raw-{role}.txt" for role in ("code", "intent")]
+    for raw in raws:
+        raw.write_text(sentence if where == "role payloads" else "")
+    state = tmp_path / "state"
     result = subprocess.run(
         [
             "bash",
             "-c",
-            f'source "{LIB}"; clear_reserved_names "$1"; t="$2"; shift 2; touch "$@"; '
-            f'python3 "{DAEMON / "merge_findings.py"}" --no-style --session-limit-probe "$t" "$@"',
+            f'source "{LIB}"; rc=0; merge_role_payloads "$@" || rc=$?; '
+            'printf "%s\\n" "$MERGE_CATEGORY" "${STATUS_PAUSE_UNTIL:-}"; exit "$rc"',
             "_",
-            str(tmp_path),
+            harness,
             str(transcript),
-            *raws,
+            str(tmp_path / "author.json"),
+            str(tmp_path / "merge.err"),
+            *map(str, raws),
         ],
         capture_output=True,
         text=True,
+        env={**os.environ, "PR_REVIEW_STATE_DIR": str(state)},
     )
-    assert result.returncode != 0
-    assert "category=all-lenses-failed" in result.stderr.splitlines()
+    assert result.returncode == 1, result.stderr
+    category, pause_until = result.stdout.splitlines()
+    assert category == ("session-limit" if pauses else "all-lenses-failed")
+    assert bool(pause_until) == pauses
+    assert (state / "session-pause.epoch").exists() == pauses
 
 
 # --- a real codex under the generated profile ---
 
 
 def _installed_codex() -> str | None:
-    """The first codex on PATH that is the real binary, not a version-manager shim."""
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = Path(entry) / "codex"
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            try:
-                return codex_exec.real_codex(str(candidate))
-            except SystemExit:
-                continue
-    return None
+    """The codex the daemon would run, or None when there is none."""
+    try:
+        return codex_exec.find_codex(os.environ.get("PATH", ""))[0]
+    except SystemExit:
+        return None
 
 
 @pytest.mark.skipif(_installed_codex() is None, reason="codex is not installed (CI has none)")
@@ -608,6 +649,7 @@ def test_the_profile_confines_real_commands(base):
     codex = _installed_codex()
     clone = base / "clone"
     clone.mkdir()
+    subprocess.run(["git", "init", "-q", str(clone)], check=True)
     (clone / "in.txt").write_text("workspace\n")
     (base / "sibling.txt").write_text("sibling\n")
     argv = codex_exec.build_argv(codex, str(clone), str(clone / "raw"), MODEL, EFFORT, None)
@@ -642,6 +684,10 @@ def test_the_profile_confines_real_commands(base):
     assert sh("touch written.txt").returncode != 0
     assert not (clone / "written.txt").exists()
     assert "PRA_ENV_MARKER" not in sh("env").stdout
+    # git reads files under the home directory by default, which the profile denies.
+    status = sh("git status")
+    assert status.returncode == 0, status.stderr
+    assert "unable to access" not in status.stderr
 
 
 # --- REVIEW_HARNESS and REVIEW_MODEL resolution ---
@@ -711,14 +757,14 @@ def test_codex_takes_the_model_the_operator_set(tmp_path):
 
 
 def _run_preflight(
-    tmp_path: Path, script: Path, harness: str, stubs: Path
+    tmp_path: Path, script: Path, harness: str, *bindirs: Path
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["/bin/bash", str(script), "https://github.com/example/example/pull/1"],
         capture_output=True,
         text=True,
         env={
-            "PATH": f"{stubs}{os.pathsep}/usr/bin{os.pathsep}/bin",
+            "PATH": os.pathsep.join((*map(str, bindirs), "/usr/bin", "/bin")),
             "HOME": str(tmp_path),
             "REVIEW_HARNESS": harness,
             "REVIEW_MODEL": MODEL,
@@ -760,6 +806,20 @@ def test_startup_refuses_a_codex_shim_once_with_the_fix(tmp_path, script):
     assert result.returncode == 1
     assert "not a codex binary" in result.stderr
     assert "real codex binary on PATH ahead of the shim" in result.stderr
+
+
+@pytest.mark.parametrize("script", [REVIEW_PR, REPLY_PR])
+def test_startup_names_the_real_codex_it_chose_past_a_shim_once(tmp_path, script):
+    stubs = tmp_path / "stubs"
+    _stub(stubs, "gh", "jq", "git", "openssl", "curl", "manager")
+    (stubs / "codex").symlink_to(stubs / "manager")
+    (stubs / "python3").symlink_to(sys.executable)
+    real = tmp_path / "real"
+    _stub(real, "codex")
+    result = _run_preflight(tmp_path, script, "codex", stubs, real)
+    # The App key check comes after every harness check, so reaching it means they passed.
+    assert "App private key not readable" in result.stderr
+    assert result.stderr.count(f"using {(real / 'codex').resolve()}") == 1
 
 
 @pytest.mark.parametrize("script", [REVIEW_PR, REPLY_PR])

@@ -34,11 +34,8 @@ for cmd in gh "$REVIEW_HARNESS" jq git python3 openssl curl; do
 done
 if [[ "$REVIEW_HARNESS" == claude ]]; then
   require_claude_version || exit 1
-fi
-# Every agent call resolves codex this way and refuses a shim, so a shim fails
-# here once instead of failing every call.
-if [[ "$REVIEW_HARNESS" == codex ]] && ! python3 "$SCRIPT_DIR/codex_exec.py" check; then
-  exit 1
+else
+  require_real_codex || exit 1
 fi
 # App identity (ADR 0036): the App key must be readable; no `gh auth login` is
 # required. The reply path renders no footer, so it needs no App-owner probe.
@@ -260,7 +257,7 @@ RAW_FILE="$SCRATCH/.pr-review-reply-raw.txt"
 
 printf '%s\n' "$THREADS_JSON" >"$THREADS_FILE"
 
-log_step "running reply agent via claude -p"
+log_step "running reply agent via ${REVIEW_HARNESS}"
 # Wall-clock backstop (#76). #51 removed the cause of the 745s reply-runtime
 # spike, but only as a prompt instruction; this enforces a ceiling no matter how
 # the agent behaves. Sized above the observed legitimate ceiling (review runs

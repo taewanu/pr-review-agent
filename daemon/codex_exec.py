@@ -7,13 +7,13 @@ for claude.
 survives the trip into a bash array. `format` follows the events file codex
 writes until codex's process is gone; codex itself writes the final message to
 the `-o` file, so the formatter only narrates and records the token count.
-`check` resolves codex on PATH the way `argv` does, for a startup check.
+`check` resolves codex on PATH the way `argv` does, for a startup check, and
+prints which binary it chose when a shim came first.
 """
 
 import argparse
 import json
 import os
-import shutil
 import sys
 import time
 from collections.abc import Iterator
@@ -43,6 +43,26 @@ def real_codex(codex_on_path: str | None) -> str:
             " binary on PATH ahead of the shim"
         )
     return codex_bin
+
+
+def find_codex(search_path: str) -> tuple[str, str | None]:
+    """The real path of the first codex on `search_path` that is not a
+    version-manager shim, and the first shim it skipped (None when it skipped
+    none), or SystemExit saying what to fix. A relative entry is skipped because
+    the working directory is the per-PR clone, whose files the PR author controls."""
+    shims = []
+    for entry in search_path.split(os.pathsep):
+        candidate = os.path.join(entry, "codex")
+        if not (
+            os.path.isabs(entry) and os.path.isfile(candidate) and os.access(candidate, os.X_OK)
+        ):
+            continue
+        try:
+            return real_codex(candidate), shims[0] if shims else None
+        except SystemExit:
+            shims.append(candidate)
+    # Every codex found is a shim, so real_codex raises the shim message.
+    return real_codex(shims[0] if shims else None), None
 
 
 def build_argv(
@@ -135,12 +155,15 @@ def sandbox_config(install_root: str) -> list[str]:
         "-c",
         profile,
         # Commands otherwise inherit the daemon's environment, credentials and
-        # agent sockets included. git reads ~/.gitconfig by default and dies when
-        # the profile denies it, so it is pointed at nothing.
+        # agent sockets included. git reads ~/.gitconfig and its default ignore and
+        # attributes files, all denied by the profile, so each is pointed at nothing.
         "-c",
         'shell_environment_policy.inherit="core"',
         "-c",
-        'shell_environment_policy.set={GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1"}',
+        "shell_environment_policy.set={"
+        'GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_COUNT="2", '
+        'GIT_CONFIG_KEY_0="core.excludesFile", GIT_CONFIG_VALUE_0="/dev/null", '
+        'GIT_CONFIG_KEY_1="core.attributesFile", GIT_CONFIG_VALUE_1="/dev/null"}',
     ]
 
 
@@ -241,8 +264,10 @@ def main() -> int:
     args = parser.parse_args()
     if args.cmd == "format":
         return format_stream(follow(args.events, args.while_pid), args.label, args.tokens_out)
-    codex = real_codex(shutil.which("codex"))
+    codex, skipped = find_codex(os.environ.get("PATH", os.defpath))
     if args.cmd == "check":
+        if skipped:
+            print(f"codex: using {codex}; {skipped} comes first on PATH but is a shim")
         return 0
     argv = build_argv(codex, args.workdir, args.raw_out, args.model, args.effort, args.system)
     sys.stdout.write("".join(f"{a}\0" for a in argv))
