@@ -539,34 +539,78 @@ write_run_file() {
   fi
 }
 
+# The oldest Claude Code that honours what run_agent sends: --restricted needs
+# v2.1.248 and the sandbox's network.strictAllowlist v2.1.219, and a CLI that
+# ignores the latter waits on a network approval nobody can give.
+CLAUDE_MIN_VERSION=2.1.248
+
+# require_claude_version
+# Fails with an upgrade hint unless `claude --version` is at least
+# $CLAUDE_MIN_VERSION.
+require_claude_version() {
+  local have
+  have="$(claude --version 2>/dev/null)" || have=""
+  have="${have%% *}"
+  if [[ ! "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    (($(_version_key "$have") < $(_version_key "$CLAUDE_MIN_VERSION"))); then
+    log_err "claude ${have:-of unknown version} is older than ${CLAUDE_MIN_VERSION}, which the agent sandbox needs; run 'claude update'"
+    return 1
+  fi
+}
+
+_version_key() {
+  local major minor patch
+  IFS=. read -r major minor patch <<<"$1"
+  printf '1%06d%06d%06d' "$major" "$minor" "$patch"
+}
+
 # agent_sandbox_settings <agent-tmp>
-# Prints the --settings JSON that puts the agent's shell commands in Claude
-# Code's OS sandbox, a second layer under the permission rules: it bounds what a
-# command that runs can reach, so it never auto-allows one, and it fails closed
-# rather than run one unsandboxed. A command reads nothing under the home
-# directory or either temp root, where the operator's other programs keep files,
-# except the per-PR clone and <agent-tmp>; it writes nothing in the clone and
-# reaches no network. Paths are physical because /tmp and /var are symlinks on
-# macOS.
+# Prints the --settings JSON for the Agent sandbox (CONTEXT.md), and is where its
+# bounds are stated. A shell command runs sandboxed or not at all, and is never
+# auto-allowed. It reads nothing under the home directory, $TMPDIR, the directory
+# `mktemp -t` uses, /tmp, the daemon's state directory, or this checkout, nor the
+# App private key wherever it lives, except the per-PR clone and <agent-tmp>,
+# which allowRead re-opens because the narrower rule wins; it writes nothing in
+# the clone and reaches no network. Paths are physical because /tmp and /var are
+# symlinks on macOS.
 agent_sandbox_settings() {
-  local clone agent_tmp tmpdir slash_tmp
+  local clone agent_tmp tmpdir mktemp_dir slash_tmp state checkout key
   clone="$(pwd -P)" &&
-    agent_tmp="$(cd "$1" && pwd -P)" &&
-    tmpdir="$(cd "${TMPDIR:-/tmp}" && pwd -P)" &&
-    slash_tmp="$(cd /tmp && pwd -P)" || return 1
+    agent_tmp="$(cd "$1" && pwd -P)" || return 1
+  # The daemon's own temp files land where mktemp puts them, which on macOS is
+  # the user temp directory even when TMPDIR is unset or names another one.
+  if ! mktemp_dir="$(mktemp -u -t pr-review-probe.XXXXXX)"; then
+    log_err "run_agent: mktemp cannot name the temp directory to deny"
+    return 1
+  fi
+  tmpdir="$(physical_path "${TMPDIR:-/tmp}")" &&
+    mktemp_dir="$(physical_path "$(dirname "$mktemp_dir")")" &&
+    slash_tmp="$(physical_path /tmp)" &&
+    state="$(physical_path "$(_state_dir)")" &&
+    checkout="$(physical_path "$(dirname "${BASH_SOURCE[0]}")/..")" &&
+    key="$(physical_path "$APP_KEY_PATH")" || return 1
   jq -cn --arg clone "$clone" --arg agent_tmp "$agent_tmp" --arg tmpdir "$tmpdir" \
-    --arg slash_tmp "$slash_tmp" '{sandbox: {
+    --arg mktemp_dir "$mktemp_dir" --arg slash_tmp "$slash_tmp" --arg state "$state" \
+    --arg checkout "$checkout" --arg key "$key" '{sandbox: {
     enabled: true,
     failIfUnavailable: true,
     allowUnsandboxedCommands: false,
     autoAllowBashIfSandboxed: false,
     filesystem: {
-      denyRead: ["~/", $tmpdir, $slash_tmp],
+      denyRead: (["~/", $tmpdir, $mktemp_dir, $slash_tmp, $state, $checkout] | unique),
       allowRead: [$clone, $agent_tmp],
       denyWrite: [$clone]
     },
+    credentials: {files: [{path: $key, mode: "deny"}]},
     network: {strictAllowlist: true}
   }}'
+}
+
+# physical_path <path>
+# Prints <path> with every symlink resolved, including a final one, and works on
+# a path that does not exist yet, which `cd && pwd -P` cannot do.
+physical_path() {
+  python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
 # run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [agent-name]
@@ -639,13 +683,19 @@ run_agent() {
   # operator's other sessions; it sits directly under /tmp because Claude Code
   # hands sandboxed commands that shared directory as $TMPDIR when the path is
   # long.
-  local agent_tmp settings rc=0
+  local agent_tmp settings rc=0 traps
   agent_tmp="$(mktemp -d /tmp/pr-review-claude.XXXXXX)" || return 1
   if ! settings="$(agent_sandbox_settings "$agent_tmp")"; then
     rm -rf "$agent_tmp"
     return 1
   fi
   args+=(--settings "$settings")
+  # The call sites run this in a subshell, where the caller's signal traps do
+  # not apply, so a TERM or INT would kill it before the rm below and leave
+  # behind shell output derived from the PR.
+  traps="$(trap -p INT TERM)"
+  trap 'rm -rf "$agent_tmp"; exit 130' INT
+  trap 'rm -rf "$agent_tmp"; exit 143' TERM
   # claude's own stderr (e.g. its non-interactive workspace-trust notice,
   # expected every run since a fresh scratch clone is never pre-trusted) goes to
   # a sidecar file so the primary log stays legible.
@@ -659,6 +709,8 @@ run_agent() {
     python3 "$(dirname "${BASH_SOURCE[0]}")/stream_format.py" --raw-out "$raw" \
       --label "$label" --cost-out "$raw.cost" || rc=$?
   rm -rf "$agent_tmp"
+  trap - INT TERM
+  eval "$traps"
   return "$rc"
 }
 

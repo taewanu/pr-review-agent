@@ -17,6 +17,7 @@ for cmd in gh claude jq git python3 openssl curl; do
     exit 1
   fi
 done
+require_claude_version || exit 1
 # App identity (ADR 0036): a machine with no `gh auth login` is a valid
 # deployment; what must exist is the App private key. The App id is checked when
 # it is resolved below, once the base repo is known.

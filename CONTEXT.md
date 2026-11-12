@@ -69,7 +69,7 @@ A short-lived working tree the daemon creates per PR-tick, holding a shallow clo
 _Avoid_: workspace, sandbox (the Agent sandbox is the boundary around it), checkout dir
 
 **Agent sandbox**:
-Claude Code's OS sandbox around every shell command a Review agent or Editor agent runs, configured by the daemon with `--settings`. A command may read only the Scratch directory and the run's own temp directory, may not write in the Scratch directory, and reaches no network. It is a second layer under Claude Code's permission rules: the rules decide which commands run, the sandbox bounds what a running command can touch.
+Claude Code's OS sandbox around every shell command a Review agent or Editor agent runs, configured by the daemon with `--settings`; `agent_sandbox_settings` in `daemon/lib.sh` states what a command may read, write, and reach. It is a second layer under Claude Code's permission rules: the rules decide which commands run, the sandbox bounds what a running command can touch.
 _Avoid_: sandbox for the Scratch directory, container (no container is involved)
 
 **Status comment**:

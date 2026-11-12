@@ -10,7 +10,10 @@ review still reads like a review, so nothing else would notice.
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS = REPO_ROOT / ".claude" / "agents"
 REVIEW_PR = REPO_ROOT / "daemon" / "review-pr.sh"
 REPLY_PR = REPO_ROOT / "daemon" / "reply-pr.sh"
+LIB = REPO_ROOT / "daemon" / "lib.sh"
 
 TIMEOUT_EXIT = 142
 
@@ -134,31 +138,79 @@ def test_each_call_site_sends_its_exact_argv(tmp_path, script, label, mode, agen
 @pytest.mark.parametrize(
     ("mode", "agent"), [("read-only", "review-agent-editor"), ("orchestrate", None)]
 )
-def test_shell_commands_run_in_a_fail_closed_sandbox_bounded_to_the_clone(tmp_path, mode, agent):
+def test_daemon_asks_for_a_fail_closed_sandbox_bounded_to_the_clone(tmp_path, mode, agent):
     clone = tmp_path / "clone"
     clone.mkdir()
-    link = tmp_path / "clone-link"
-    link.symlink_to(clone)
-    tmpdir = tmp_path / "tmp"
-    tmpdir.mkdir()
-    # Entered through a symlink, so every path the settings name must come out physical.
-    run = run_agent(tmp_path, mode, agent=agent, cwd=link, env={"TMPDIR": str(tmpdir)})
+    real = tmp_path.resolve() / "real"
+    (real / "state").mkdir(parents=True)
+    (real / "app.pem").touch()
+    (real / "tmp").mkdir()
+    # Every path is entered through a symlink, so each the settings name must come out physical.
+    links = tmp_path / "links"
+    links.mkdir()
+    for name in ("clone", "state", "app.pem", "tmp"):
+        (links / name).symlink_to(clone if name == "clone" else real / name)
+    run = run_agent(
+        tmp_path,
+        mode,
+        agent=agent,
+        cwd=links / "clone",
+        env={
+            "TMPDIR": str(links / "tmp"),
+            "PR_REVIEW_STATE_DIR": str(links / "state"),
+            "APP_KEY_PATH": str(links / "app.pem"),
+        },
+    )
     assert run.rc == 0, run.stderr
-    agent_tmp = Path(run.env["CLAUDE_CODE_TMPDIR"]).resolve()
-    assert run.split_settings()[1] == {
-        "sandbox": {
-            "enabled": True,
-            "failIfUnavailable": True,
-            "allowUnsandboxedCommands": False,
-            "autoAllowBashIfSandboxed": False,
-            "filesystem": {
-                "denyRead": ["~/", str(tmpdir.resolve()), str(Path("/tmp").resolve())],
-                "allowRead": [str(clone.resolve()), str(agent_tmp)],
-                "denyWrite": [str(clone.resolve())],
-            },
-            "network": {"strictAllowlist": True},
-        }
+    sandbox = run.split_settings()[1]["sandbox"]
+    assert sandbox["enabled"] and sandbox["failIfUnavailable"]
+    assert not sandbox["allowUnsandboxedCommands"] and not sandbox["autoAllowBashIfSandboxed"]
+    assert sandbox["network"] == {"strictAllowlist": True}
+    fs = sandbox["filesystem"]
+    assert len(fs["denyRead"]) == len(set(fs["denyRead"]))
+    assert set(fs["denyRead"]) == {
+        "~/",
+        str(real / "tmp"),
+        _mktemp_dir({"TMPDIR": str(links / "tmp")}),
+        str(Path("/tmp").resolve()),
+        str(real / "state"),
+        str(REPO_ROOT.resolve()),
     }
+    # The narrower allowRead wins, which is what keeps the clone readable when
+    # it sits under a denied root, as it does under the temp directory.
+    agent_tmp = Path(run.env["CLAUDE_CODE_TMPDIR"]).resolve()
+    assert fs["allowRead"] == [str(clone.resolve()), str(agent_tmp)]
+    assert fs["denyWrite"] == [str(clone.resolve())]
+    assert sandbox["credentials"] == {"files": [{"path": str(real / "app.pem"), "mode": "deny"}]}
+
+
+def _mktemp_dir(env: dict[str, str]) -> str:
+    """Where the daemon's own `mktemp -t` files land under `env`."""
+    out = subprocess.run(
+        ["mktemp", "-u", "-t", "probe.XXXXXX"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, **env},
+    )
+    return str(Path(out.stdout.strip()).parent.resolve())
+
+
+def _user_temp_dir() -> str:
+    if sys.platform == "darwin":
+        out = subprocess.run(
+            ["getconf", "DARWIN_USER_TEMP_DIR"], capture_output=True, text=True, check=True
+        )
+        return str(Path(out.stdout.strip()).resolve())
+    return str(Path("/tmp").resolve())
+
+
+def test_an_empty_tmpdir_still_denies_the_user_temp_directory_once(tmp_path):
+    run = run_agent(tmp_path, "read-only", agent="review-agent-editor", env={"TMPDIR": ""})
+    assert run.rc == 0, run.stderr
+    deny = run.split_settings()[1]["sandbox"]["filesystem"]["denyRead"]
+    assert _user_temp_dir() in deny
+    assert len(deny) == len(set(deny))
 
 
 @pytest.mark.parametrize("rc", [0, 3])
@@ -173,6 +225,46 @@ def test_each_call_gets_its_own_short_temp_directory_removed_afterwards(tmp_path
     assert agent_tmp.name.startswith("pr-review-claude.")
     assert run.tmp_existed
     assert not agent_tmp.exists()
+
+
+def test_a_terminated_call_removes_its_temp_directory(tmp_path):
+    run = run_agent(
+        tmp_path,
+        "read-only",
+        agent="review-agent-reply",
+        env={"FAKE_CLAUDE_SLEEP": "30"},
+        terminate=True,
+    )
+    agent_tmp = Path(run.env["CLAUDE_CODE_TMPDIR"])
+    assert run.tmp_existed
+    assert not agent_tmp.exists()
+
+
+def _require_claude_version(tmp_path: Path, reported: str) -> subprocess.CompletedProcess:
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "claude"
+    fake.write_text(f"#!/usr/bin/env bash\necho '{reported}'\n")
+    fake.chmod(0o755)
+    return subprocess.run(
+        ["bash", "-c", f'set -euo pipefail; source "{LIB}"; require_claude_version'],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+
+@pytest.mark.parametrize("reported", ["2.1.248 (Claude Code)", "2.10.0 (Claude Code)", "3.0.0"])
+def test_a_claude_new_enough_for_the_sandbox_settings_passes_the_preflight(tmp_path, reported):
+    result = _require_claude_version(tmp_path, reported)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("reported", ["2.1.247 (Claude Code)", "1.9.999", "not a version", ""])
+def test_an_older_or_unreadable_claude_fails_the_preflight_with_the_fix(tmp_path, reported):
+    result = _require_claude_version(tmp_path, reported)
+    assert result.returncode == 1
+    assert "claude update" in result.stderr
 
 
 def test_git_inside_the_agent_skips_its_config_under_the_home_directory(tmp_path):
