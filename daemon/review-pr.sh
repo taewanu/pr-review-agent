@@ -173,17 +173,16 @@ LOCK_FILE=""
 # review actually cost, or a FAILED review had already burned before it failed,
 # meant hand-summing the log by eye.
 # Must run before cleanup() removes $SCRATCH (the trap order below
-# guarantees this: flip_status_failed, which calls this, runs first). `find`,
-# not a `*.cost` glob: every raw file (hence every .cost sidecar) is a dotfile
-# (.pr-review-raw*.txt.cost), which a bare `*` glob silently excludes without
-# `dotglob`. Process substitution (not a pipe) keeps the while loop in this
+# guarantees this: flip_status_failed, which calls this, runs first). Only the
+# reserved prefix is summed, since any other `.cost` file at the clone's root is
+# the PR's. Process substitution (not a pipe) keeps the while loop in this
 # shell, so total_cost survives past the loop.
 log_total_review_cost() {
   [[ -n "${SCRATCH:-}" ]] || return 0
   local total_cost=0 cost_file
   while IFS= read -r cost_file; do
     total_cost="$(awk -v a="$total_cost" -v b="$(cat "$cost_file")" 'BEGIN { printf "%.3f", a + b }')"
-  done < <(find "$SCRATCH" -maxdepth 1 -name "*.cost" -type f)
+  done < <(find "$SCRATCH" -maxdepth 1 -name ".pr-review-*.cost" -type f)
   if [[ "$total_cost" != "0" ]]; then
     log_info "total review cost: \$${total_cost}"
   fi
@@ -575,9 +574,11 @@ run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
   [[ -n "$AT_SHA" ]] && git fetch --quiet --depth=1 origin "$AT_SHA"
   git checkout --quiet --detach "$HEAD_OID"
 )
+clear_reserved_names "$SCRATCH"
 
-# Bare filenames inside the scratch dir. The claude prompt below references the
-# diff by basename so a $TMPDIR containing a space can't break the named path.
+# Bare filenames inside the scratch dir, all under the prefix
+# clear_reserved_names reserves. The claude prompt below references the diff by
+# basename so a $TMPDIR containing a space can't break the named path.
 DIFF_BASENAME=".pr-review-diff.txt"
 DIFF_FILE="$SCRATCH/$DIFF_BASENAME"
 # The agents read a line-numbered copy so they read `line` off the leading number

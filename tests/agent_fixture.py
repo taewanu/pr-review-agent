@@ -51,7 +51,8 @@ def run_agent(
     timeout_secs: int = 30,
     env: dict[str, str] | None = None,
 ) -> AgentRun:
-    """Call run_agent the way the daemon's call sites do, from inside a clone."""
+    """Call run_agent the way the daemon's call sites do, from inside a clone
+    whose reserved names were cleared after the checkout."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     fake = bindir / "claude"
@@ -61,7 +62,7 @@ def run_agent(
     clone.mkdir(exist_ok=True)
     prompt = clone / "prompt.txt"
     prompt.write_text(PROMPT)
-    raw = clone / "raw.txt"
+    raw = clone / ".pr-review-raw.txt"
     log = tmp_path / "claude-call.json"
 
     args = [mode, str(timeout_secs), str(prompt), str(raw), "pr1:label"]
@@ -72,7 +73,7 @@ def run_agent(
     script = (
         f'set -euo pipefail; source "{LIB}"; '
         f"REVIEW_MODEL={MODEL}; REVIEW_EFFORT={EFFORT}; "
-        f'cd "{clone}"; rc=0; run_agent "$@" || rc=$?; exit "$rc"'
+        f'clear_reserved_names "{clone}"; cd "{clone}"; rc=0; run_agent "$@" || rc=$?; exit "$rc"'
     )
     result = subprocess.run(
         ["bash", "-c", script, "_", *args],

@@ -236,9 +236,11 @@ run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
   git fetch --quiet --depth=1 origin "refs/pull/${PR_NUMBER}/head"
   git checkout --quiet --detach "$HEAD_OID"
 )
+clear_reserved_names "$SCRATCH"
 
-# Bare filenames so the prompt's named path survives a $TMPDIR with spaces
-# (same reason as review-pr.sh's diff handling).
+# Bare filenames under the prefix clear_reserved_names reserves, so the prompt's
+# named path survives a $TMPDIR with spaces (same reason as review-pr.sh's diff
+# handling).
 THREADS_BASENAME=".pr-review-threads.json"
 THREADS_FILE="$SCRATCH/$THREADS_BASENAME"
 RAW_FILE="$SCRATCH/.pr-review-reply-raw.txt"

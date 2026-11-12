@@ -516,6 +516,18 @@ run_agent() {
       --label "$label" --cost-out "$raw.cost"
 }
 
+# clear_reserved_names <clone>
+# Every file the daemon writes into the per-PR clone is named `.pr-review-*` at
+# the clone's root, and that prefix is reserved: run this right after the
+# checkout so an entry the PR committed there can be neither read back as daemon
+# output, written through as a symlink, nor left to fail a write as a directory.
+# The match ignores case because a case-insensitive filesystem resolves any
+# casing of the prefix to the daemon's own file, and `rm` removes a symlink, not
+# its target.
+clear_reserved_names() {
+  find "$1" -mindepth 1 -maxdepth 1 -iname '.pr-review-*' -exec rm -rf {} +
+}
+
 # warn_env_drift <dotenv-path> <template-path>
 # One boot-time line naming every key the template carries but the live .env
 # lacks — those knobs silently run on their code defaults (#201). The concrete
