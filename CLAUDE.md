@@ -24,7 +24,7 @@ The daemon is the `daemon/run.sh` polling loop (ADR 0009): each cycle drives `da
 
 Prereqs: a registered GitHub App the daemon authenticates as (its id in `GITHUB_APP_ID`, its private key at `~/.pr-review-agent/app.pem`), so no `gh auth login` (ADR 0036); `gh`, `claude`, `openssl`, `curl` on PATH; `jq`; `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing. README's "Register the GitHub App" is the registration walkthrough: permissions (`contents: write` buys thread resolution alone), webhook off, key at mode 0600, install per watched repo.
 
-The daemon supplies every agent definition from its own `.claude/agents/` (ADR 0007), so target repos carry nothing and cannot override a role. `run_agent` in `daemon/lib.sh` passes the role definitions with `--agents` and runs `claude -p --restricted`, so nothing in the per-PR clone's `.claude/`, no settings file, and no `CLAUDE.md` reaches the agent: the clone holds the PR head, which its author controls.
+The daemon supplies every agent definition from its own `.claude/agents/` (ADR 0007), so target repos carry nothing and cannot override a role, and nothing in the per-PR clone configures the agent; `run_agent` in `daemon/lib.sh` is where that is enforced.
 
 ## Forking
 

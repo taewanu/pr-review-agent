@@ -161,6 +161,22 @@ def test_orchestrator_roles_are_the_daemon_definitions(tmp_path):
     assert {name: {**d, "prompt": d["prompt"].strip()} for name, d in handed.items()} == expected
 
 
+@pytest.mark.parametrize(
+    ("mode", "agent", "flag"),
+    [
+        ("read-only", "review-agent-editor", "--append-system-prompt-file"),
+        ("orchestrate", None, "--agents"),
+    ],
+)
+def test_definition_file_replaces_a_directory_left_at_its_path(tmp_path, mode, agent, flag):
+    # Reserved names are cleared once after the checkout, but an earlier agent
+    # in the same review can still create one.
+    suffix = ".system.md" if mode == "read-only" else ".agents.json"
+    run = run_agent(tmp_path, mode, agent=agent, dirs_left=(f".pr-review-raw.txt{suffix}",))
+    assert run.rc == 0, run.stderr
+    assert _flag_value(run.argv, flag).read_text().strip()
+
+
 def test_unknown_agent_refuses_without_running_claude(tmp_path):
     run = run_agent(tmp_path, "read-only", agent="review-agent-missing")
     assert run.rc == 1

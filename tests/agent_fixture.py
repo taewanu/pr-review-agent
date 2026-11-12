@@ -50,9 +50,11 @@ def run_agent(
     agent: str | None = None,
     timeout_secs: int = 30,
     env: dict[str, str] | None = None,
+    dirs_left: tuple[str, ...] = (),
 ) -> AgentRun:
     """Call run_agent the way the daemon's call sites do, from inside a clone
-    whose reserved names were cleared after the checkout."""
+    whose reserved names were cleared after the checkout. `dirs_left` are clone
+    paths an earlier agent in the same review made into directories."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     fake = bindir / "claude"
@@ -73,7 +75,9 @@ def run_agent(
     script = (
         f'set -euo pipefail; source "{LIB}"; '
         f"REVIEW_MODEL={MODEL}; REVIEW_EFFORT={EFFORT}; "
-        f'clear_reserved_names "{clone}"; cd "{clone}"; rc=0; run_agent "$@" || rc=$?; exit "$rc"'
+        f'clear_reserved_names "{clone}"; cd "{clone}"; '
+        + "".join(f'mkdir -p "{clone / d}"; ' for d in dirs_left)
+        + 'rc=0; run_agent "$@" || rc=$?; exit "$rc"'
     )
     result = subprocess.run(
         ["bash", "-c", script, "_", *args],

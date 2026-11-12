@@ -419,31 +419,124 @@ resolve_review_effort() {
   printf '%s' "$effort"
 }
 
-# agent_body <agent-file>
-# Prints an agent definition's body, the part after its frontmatter.
-agent_body() {
-  awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' "$1"
+# agent_fields <agent-file>
+# Prints an agent file's name, description, and tools, one per line, or prints
+# `<file>:<line>: <problem>` and fails, because a definition read differently
+# from how its author meant it still runs, as a different agent. The one shape
+# read: LF line endings; a frontmatter block opening on line 1 and closed by the
+# next `---`; inside it exactly `name`, `description`, and `tools` as plain
+# `key: value` lines (one matching pair of surrounding quotes is stripped),
+# `tools` a comma-separated list; then a non-empty body.
+agent_fields() {
+  awk '
+    function fail(msg) {
+      printf "%s:%d: %s\n", FILENAME, FNR, msg
+      failed = 1
+      exit 1
+    }
+    /\r$/ { fail("CRLF line ending; save the file with LF line endings") }
+    state == 2 { if ($0 ~ /[^ \t]/) body = 1; next }
+    FNR == 1 {
+      if ($0 != "---") fail("expected --- opening the frontmatter on line 1")
+      state = 1
+      next
+    }
+    $0 == "---" {
+      if (!("name" in val)) fail("frontmatter has no name line")
+      if (!("description" in val)) fail("frontmatter has no description line")
+      if (!("tools" in val)) fail("frontmatter has no tools line")
+      state = 2
+      next
+    }
+    {
+      if ($0 !~ /^[a-z]+:( |$)/) fail("expected a plain key: value line")
+      key = $0
+      sub(/:.*/, "", key)
+      v = substr($0, length(key) + 2)
+      sub(/^[ \t]+/, "", v)
+      sub(/[ \t]+$/, "", v)
+      if (key != "name" && key != "description" && key != "tools") fail("unsupported key " key)
+      if (key in val) fail("duplicate key " key)
+      q = substr(v, 1, 1)
+      if ((q == "\"" || q == "\047") && length(v) >= 2 && substr(v, length(v)) == q) {
+        v = substr(v, 2, length(v) - 2)
+        if (index(v, q) || (q == "\"" && index(v, "\\"))) fail("unsupported quoting in " key)
+      } else if (v ~ /^([>|"\047#&*!%@`[{]|- )/ || v ~ /[ \t]#/) {
+        fail("unsupported YAML in " key "; write a plain value on one line")
+      }
+      if (v == "") fail("empty " key)
+      if (key == "tools") {
+        n = split(v, tool, ",")
+        for (i = 1; i <= n; i++) {
+          t = tool[i]
+          gsub(/^[ \t]+|[ \t]+$/, "", t)
+          if (t !~ /^[A-Za-z][A-Za-z0-9_]*(\([^()]*\))?$/) fail("tools entry \"" t "\" is not a tool name; list them as Read, Grep")
+        }
+      }
+      val[key] = v
+    }
+    END {
+      if (failed) exit 1
+      if (state == 0) fail("empty file")
+      if (state == 1) fail("frontmatter is never closed by ---")
+      if (!body) fail("empty body after the frontmatter")
+      print val["name"]
+      print val["description"]
+      print val["tools"]
+    }
+  ' "$1"
 }
 
-# agent_field <agent-file> <key>
-# Prints one frontmatter field's value.
-agent_field() {
-  awk -v key="$2: " 'NR > 1 && /^---$/ { exit } index($0, key) == 1 { print substr($0, length(key) + 1) }' "$1"
+# agent_body <agent-file>
+# Prints an agent file's body verbatim: every line after the frontmatter's
+# closing `---`, a later `---` line included.
+agent_body() {
+  awk 'done { print; next } NR > 1 && $0 == "---" { done = 1 }' "$1"
+}
+
+# agent_definition <agent-file>
+# Prints one agent file as the `{<name>: {description, prompt, tools}}` entry
+# `claude --agents` takes, or logs where the file breaks the shape agent_fields
+# reads and fails.
+agent_definition() {
+  local fields name description tools
+  if ! fields="$(agent_fields "$1")"; then
+    log_err "agent definition ${fields}"
+    return 1
+  fi
+  {
+    IFS= read -r name
+    IFS= read -r description
+    IFS= read -r tools
+  } <<<"$fields"
+  jq -n --arg name "$name" --arg description "$description" --arg tools "$tools" \
+    --arg prompt "$(agent_body "$1")" \
+    '{($name): {description: $description, prompt: $prompt,
+      tools: ($tools | split(",") | map(gsub("^\\s+|\\s+$"; "")))}}'
 }
 
 # daemon_agents_json
 # Prints this checkout's review-agent-*.md definitions as the JSON object
 # `claude --agents` takes, keyed by each file's frontmatter name.
 daemon_agents_json() {
-  local f
+  local f def defs=()
   for f in "$(dirname "${BASH_SOURCE[0]}")/../.claude/agents/review-agent-"*.md; do
-    jq -n --arg name "$(agent_field "$f" name)" \
-      --arg description "$(agent_field "$f" description)" \
-      --arg tools "$(agent_field "$f" tools)" \
-      --arg prompt "$(agent_body "$f")" \
-      '{($name): {description: $description, prompt: $prompt,
-        tools: ($tools | split(",") | map(gsub("^ +| +$"; "")))}}'
-  done | jq -s add
+    def="$(agent_definition "$f")" || return 1
+    defs+=("$def")
+  done
+  printf '%s\n' "${defs[@]}" | jq -s add
+}
+
+# write_run_file <path> <content>
+# Removes whatever is at <path> (a symlink itself, not its target) before
+# writing <content> there, because an agent earlier in the same review can leave
+# a directory or symlink at a name run_agent reuses.
+write_run_file() {
+  rm -rf -- "$1"
+  if ! printf '%s\n' "$2" 2>/dev/null >"$1"; then
+    log_err "run_agent: cannot write ${1}"
+    return 1
+  fi
 }
 
 # run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [agent-name]
@@ -477,14 +570,17 @@ run_agent() {
       log_err "run_agent: no agent definition '${agent}'"
       return 1
     fi
-    agent_body "$agent_file" >"$raw.system.md"
+    agent_definition "$agent_file" >/dev/null || return 1
+    write_run_file "$raw.system.md" "$(agent_body "$agent_file")" || return 1
     args+=(--append-system-prompt-file "$raw.system.md")
   fi
   args+=(--model "$REVIEW_MODEL" --effort "$REVIEW_EFFORT")
   case "$mode" in
     read-only) args+=(--tools Read Grep Glob Bash) ;;
     orchestrate)
-      daemon_agents_json >"$raw.agents.json"
+      local agents_json
+      agents_json="$(daemon_agents_json)" || return 1
+      write_run_file "$raw.agents.json" "$agents_json" || return 1
       # --tools carries the union of what the role agents need plus Agent: a
       # subagent's effective tool set is the intersection of its frontmatter list
       # and the parent session's --tools, so a tool missing here is silently
