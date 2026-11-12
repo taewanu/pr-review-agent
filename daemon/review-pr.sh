@@ -389,12 +389,7 @@ resolution() {
     # Focused single-file judgment, so a shorter backstop than the full review's 300s.
     local fix_check_timeout="${FIX_CHECK_AGENT_TIMEOUT:-180}"
     # Directly prompted like the roles and the editor (ADR 0038): ADR 0034
-    # measured the slash-command wrapper as pure forwarding overhead. The
-    # system prompt is the same for every candidate, so strip it once here;
-    # the per-finding prompt file is built inside the loop.
-    local judge_sys="$SCRATCH/.pr-review-judge-sys.md"
-    awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
-      "$SCRATCH/.claude/agents/review-agent-fix-check.md" >"$judge_sys"
+    # measured the slash-command wrapper as pure forwarding overhead.
     local i tid loc verdict fixed rationale rc judge_prompt
     for ((i = 0; i < n; i++)); do
       tid="$(jq -r ".[$i].thread_id" "$candidates_file")"
@@ -424,7 +419,7 @@ resolution() {
         cd "$SCRATCH"
         inner_rc=0
         run_agent read-only "$fix_check_timeout" "$judge_prompt" "$judge_raw" \
-          "${PR_COLOR_START}pr${PR_NUMBER}:judge-fix${PR_COLOR_RESET}" "$judge_sys" ||
+          "${PR_COLOR_START}pr${PR_NUMBER}:judge-fix${PR_COLOR_RESET}" review-agent-fix-check ||
           inner_rc=$?
         release_claude_slot "$slot"
         exit "$inner_rc"
@@ -580,10 +575,6 @@ run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
   [[ -n "$AT_SHA" ]] && git fetch --quiet --depth=1 origin "$AT_SHA"
   git checkout --quiet --detach "$HEAD_OID"
 )
-
-# Bundle operator's agent defs into the scratch so the dispatch below reads
-# them from cwd without requiring target-repo .claude/ setup (ADR 0007).
-bundle_operator_agents "$SCRATCH"
 
 # Bare filenames inside the scratch dir. The claude prompt below references the
 # diff by basename so a $TMPDIR containing a space can't break the named path.
@@ -877,9 +868,9 @@ log_info "model: ${REVIEW_MODEL}"
 REVIEW_EFFORT="$(resolve_review_effort "$SCRIPT_DIR/../.env")"
 log_info "effort: ${REVIEW_EFFORT}"
 
-# ADR 0038 amended (#299, Shape C): the roles run as parallel subagents inside
-# ONE orchestrator `claude -p` session, spawned via the Agent tool from the
-# agent definitions the bundle placed in the scratch's .claude/agents/. The
+# ADR 0038 amended: the roles run as parallel subagents inside ONE
+# orchestrator `claude -p` session, spawned via the Agent tool from the
+# daemon's own agent definitions, which run_agent hands to the session. The
 # roles stay unaware of each other (each subagent gets its own context and its
 # own task prompt), but the process-level fan-out is gone, and with it three
 # things this block used to give per role: its own timeout (REVIEW_AGENT_TIMEOUT
@@ -948,8 +939,8 @@ orch_rc=0
   rc=0
   # The payload files are deliberately NOT pre-created: Write refuses to
   # overwrite an existing file it has not Read.
-  # No system-prompt file: the roles' system prompts come from the bundled
-  # .claude/agents/ definitions, and the prompt file above is the
+  # No agent name: the roles' system prompts come from the definitions
+  # run_agent hands to orchestrate, and the prompt file above is the
   # orchestrator's whole instruction.
   run_agent orchestrate "$REVIEW_AGENT_TIMEOUT" "$ORCH_PROMPT" "$ORCH_RAW" \
     "${PR_COLOR_START}pr${PR_NUMBER}:review${PR_COLOR_RESET}" ||
@@ -1063,9 +1054,6 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
     # editor subagent). It keeps its tools because ADR 0016's verify-at-HEAD
     # step needs them, and because a tools-free editor could not reliably emit
     # its decisions JSON on a complex draft.
-    editor_sys="$SCRATCH/.pr-review-single-sys-editor.md"
-    awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
-      ".claude/agents/review-agent-editor.md" >"$editor_sys"
     editor_prompt="$SCRATCH/.pr-review-single-editor-prompt.txt"
     {
       printf 'Edit this draft review and emit your decisions JSON per your instructions.\n\n'
@@ -1083,7 +1071,7 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
       fi
     } >"$editor_prompt"
     run_agent read-only "$EDITOR_AGENT_TIMEOUT" "$editor_prompt" "$EDIT_RAW_FILE" \
-      "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" "$editor_sys" ||
+      "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" review-agent-editor ||
       rc=$?
     release_claude_slot "$slot"
     exit "$rc"

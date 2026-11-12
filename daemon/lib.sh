@@ -419,7 +419,34 @@ resolve_review_effort() {
   printf '%s' "$effort"
 }
 
-# run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [system-prompt-file]
+# agent_body <agent-file>
+# Prints an agent definition's body, the part after its frontmatter.
+agent_body() {
+  awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' "$1"
+}
+
+# agent_field <agent-file> <key>
+# Prints one frontmatter field's value.
+agent_field() {
+  awk -v key="$2: " 'NR > 1 && /^---$/ { exit } index($0, key) == 1 { print substr($0, length(key) + 1) }' "$1"
+}
+
+# daemon_agents_json
+# Prints this checkout's review-agent-*.md definitions as the JSON object
+# `claude --agents` takes, keyed by each file's frontmatter name.
+daemon_agents_json() {
+  local f
+  for f in "$(dirname "${BASH_SOURCE[0]}")/../.claude/agents/review-agent-"*.md; do
+    jq -n --arg name "$(agent_field "$f" name)" \
+      --arg description "$(agent_field "$f" description)" \
+      --arg tools "$(agent_field "$f" tools)" \
+      --arg prompt "$(agent_body "$f")" \
+      '{($name): {description: $description, prompt: $prompt,
+        tools: ($tools | split(",") | map(gsub("^ +| +$"; "")))}}'
+  done | jq -s add
+}
+
+# run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [agent-name]
 # The daemon's one way to run an agent: feeds <prompt-file> on stdin, streams
 # labelled activity lines to the terminal, and leaves the agent's final text in
 # <raw-out> (empty on timeout), its cost in <raw-out>.cost, and its own stderr in
@@ -428,22 +455,36 @@ resolve_review_effort() {
 # formatter's status, under the daemon's `set -o pipefail`.
 #
 # <mode> says what the agent may do:
-#   read-only    inspect the clone and answer in its final message.
-#   orchestrate  spawn the role subagents defined in the clone's .claude/agents/,
-#                each writing its payload file into the clone.
+#   read-only    inspect the clone and answer in its final message, with the body
+#                of this checkout's .claude/agents/<agent-name>.md as its system
+#                prompt (written to <raw-out>.system.md).
+#   orchestrate  spawn the role subagents defined by this checkout's
+#                .claude/agents/ (written to <raw-out>.agents.json), each writing
+#                its payload file into the clone.
+#
+# Every definition comes from this checkout, never the clone, because the clone
+# holds the PR head and its author controls it.
 #
 # Run it from inside the per-PR clone: the agent's working directory is the
 # caller's, and orchestrate's file writes are scoped to it.
 run_agent() {
-  local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" system="${6:-}"
+  local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" agent="${6:-}"
   local args=(-p)
-  if [[ -n "$system" ]]; then
-    args+=(--append-system-prompt-file "$system")
+  if [[ -n "$agent" ]]; then
+    local agent_file
+    agent_file="$(dirname "${BASH_SOURCE[0]}")/../.claude/agents/${agent}.md"
+    if [[ ! -r "$agent_file" ]]; then
+      log_err "run_agent: no agent definition '${agent}'"
+      return 1
+    fi
+    agent_body "$agent_file" >"$raw.system.md"
+    args+=(--append-system-prompt-file "$raw.system.md")
   fi
   args+=(--model "$REVIEW_MODEL" --effort "$REVIEW_EFFORT")
   case "$mode" in
     read-only) args+=(--tools Read Grep Glob Bash) ;;
     orchestrate)
+      daemon_agents_json >"$raw.agents.json"
       # --tools carries the union of what the role agents need plus Agent: a
       # subagent's effective tool set is the intersection of its frontmatter list
       # and the parent session's --tools, so a tool missing here is silently
@@ -451,19 +492,21 @@ run_agent() {
       # --permission-mode acceptEdits: non-interactive claude auto-denies the
       # Write permission prompt, so without this every role completes its review
       # and then fails to land its payload file. acceptEdits auto-approves file
-      # writes inside the session's working directory, which is the scratch.
-      args+=(--tools Agent Read Write Bash Grep Glob WebFetch --permission-mode acceptEdits)
+      # writes inside the session's working directory, which is the per-PR clone.
+      args+=(--tools Agent Read Write Bash Grep Glob WebFetch --permission-mode acceptEdits
+        --agents "$raw.agents.json")
       ;;
     *)
       log_err "run_agent: unknown mode '${mode}'"
       return 1
       ;;
   esac
-  # --setting-sources project is what loads the bundled .claude/agents/ role
-  # definitions orchestrate spawns. Slash commands are disabled because ADR 0034
-  # measured the slash-command wrapper as pure forwarding overhead; every call is
-  # directly prompted (ADR 0038).
-  args+=(--strict-mcp-config --setting-sources project --disable-slash-commands
+  # --restricted ignores every settings file (user, project, and local) and
+  # stops CLAUDE.md loading, so the clone's author cannot plant hooks, env, or
+  # instructions; it also confines file tools to the per-PR clone. Slash
+  # commands are disabled because ADR 0034 measured the slash-command wrapper as
+  # pure forwarding overhead; every call is directly prompted (ADR 0038).
+  args+=(--restricted --strict-mcp-config --disable-slash-commands
     --output-format stream-json --verbose)
   # claude's own stderr (e.g. its non-interactive workspace-trust notice,
   # expected every run since a fresh scratch clone is never pre-trusted) goes to
@@ -1654,27 +1697,6 @@ format_clock_time() {
   date -r "$1" '+%H:%M' 2>/dev/null ||
     date -d "@$1" '+%H:%M' 2>/dev/null ||
     printf '%s' "$1"
-}
-
-# bundle_operator_agents <scratch-dir>
-# Copies operator's agent files from this repo's .claude/agents/ into the
-# scratch clone's .claude/agents/ so the daemon's dispatch (which reads them
-# from cwd) finds them without requiring target-repo setup (ADR 0007). Agent
-# files only: every dispatch is directly prompted (ADR 0038, #294), so no
-# slash-command files exist to bundle. Target-repo files (already present in
-# the scratch from the clone) win via the `[[ -e dst ]] || cp` guard; a repo
-# can ship its own override.
-bundle_operator_agents() {
-  local scratch="$1"
-  local repo_root
-  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  mkdir -p "$scratch/.claude/agents"
-  local f base
-  for f in "$repo_root/.claude/agents/review-agent-"*.md; do
-    [[ -e "$f" ]] || continue
-    base="$(basename "$f")"
-    [[ -e "$scratch/.claude/agents/$base" ]] || cp "$f" "$scratch/.claude/agents/$base"
-  done
 }
 
 # fetch_open_review_threads <owner> <repo> <pr-number>

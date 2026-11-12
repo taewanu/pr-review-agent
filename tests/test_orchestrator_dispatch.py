@@ -17,6 +17,7 @@ silently at runtime if broken:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def _orchestrator_argv(tmp_path: Path) -> list[str]:
     """The argv the orchestrator call site sends to claude."""
     sites = [s for s in map(call_site, run_agent_calls(REVIEW_PR)) if s.mode == "orchestrate"]
     assert len(sites) == 1, f"expected one orchestrate call, found {len(sites)}"
-    run = run_agent(tmp_path, "orchestrate", system=sites[0].system)
+    run = run_agent(tmp_path, "orchestrate", agent=sites[0].agent)
     assert run.rc == 0 and run.argv, run.stderr
     return run.argv
 
@@ -89,12 +90,15 @@ def test_orchestrator_charges_one_slot_per_role():
     assert "release_claude_slots" in body
 
 
-def test_orchestrator_loads_agents_from_project_settings(tmp_path):
+def test_every_spawned_role_is_defined_in_what_claude_receives(tmp_path):
+    # The Agent tool can spawn only a type the session was handed; a role
+    # missing from --agents fails at runtime as an unknown agent type.
     argv = _orchestrator_argv(tmp_path)
-    assert ("--setting-sources", "project") in zip(argv, argv[1:], strict=False), (
-        "without --setting-sources project the bundled .claude/agents/ "
-        "definitions never load and the Agent tool has no role types to spawn"
-    )
+    handed = json.loads(Path(argv[argv.index("--agents") + 1]).read_text())
+    for label in _role_labels():
+        role = handed.get(f"review-agent-{label}")
+        assert role, f"review-agent-{label} is spawned but not handed to claude"
+        assert role["tools"] == _frontmatter_tools(label)
 
 
 def test_orchestrator_auto_approves_payload_writes(tmp_path):

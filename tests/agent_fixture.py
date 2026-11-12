@@ -47,7 +47,7 @@ def run_agent(
     tmp_path: Path,
     mode: str,
     *,
-    system: bool = False,
+    agent: str | None = None,
     timeout_secs: int = 30,
     env: dict[str, str] | None = None,
 ) -> AgentRun:
@@ -61,14 +61,12 @@ def run_agent(
     clone.mkdir(exist_ok=True)
     prompt = clone / "prompt.txt"
     prompt.write_text(PROMPT)
-    system_file = clone / "sys.md"
-    system_file.write_text("system prompt\n")
     raw = clone / "raw.txt"
     log = tmp_path / "claude-call.json"
 
     args = [mode, str(timeout_secs), str(prompt), str(raw), "pr1:label"]
-    if system:
-        args.append(str(system_file))
+    if agent:
+        args.append(agent)
     # The daemon's own flags: pipefail is what carries claude's status through
     # the formatter pipe, so a bare shell would hide that contract.
     script = (
@@ -100,10 +98,6 @@ def run_agent(
     )
 
 
-def system_path(tmp_path: Path) -> str:
-    return str(tmp_path / "clone" / "sys.md")
-
-
 def run_agent_calls(script: Path) -> list[list[str]]:
     """Every run_agent call in the script, split into words, continuations joined."""
     text = re.sub(r"\\\n\s*", " ", script.read_text())
@@ -118,9 +112,9 @@ def run_agent_calls(script: Path) -> list[list[str]]:
 class CallSite:
     mode: str
     label: str
-    system: bool
+    agent: str | None
 
 
 def call_site(words: list[str]) -> CallSite:
-    """Read a run_agent call positionally: mode, timeout, prompt, raw, label, [system file]."""
-    return CallSite(mode=words[1], label=words[5], system=len(words) == 7)
+    """Read a run_agent call positionally: mode, timeout, prompt, raw, label, [agent name]."""
+    return CallSite(mode=words[1], label=words[5], agent=words[6] if len(words) == 7 else None)
