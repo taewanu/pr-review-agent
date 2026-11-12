@@ -389,8 +389,8 @@ resolve_tunable() {
 
 # resolve_review_model <dotenv-path>
 # Resolve the reasoning model every daemon claude -p pins (#209), printing it.
-# The default lives here alone: it reaches the agents as a --model argument the
-# callers expand, never as an environment variable, so a script that resolved it
+# The default lives here alone: it reaches the agents as the --model argument
+# run_agent expands, never as an environment variable, so a script that resolved it
 # separately would be free to drift onto a different model. Unlike the dials
 # resolve_tunable serves, an empty value is not a usable default here (`--model
 # ""` is a broken flag), so this one defaults in the shell rather than downstream.
@@ -417,6 +417,60 @@ resolve_review_effort() {
       ;;
   esac
   printf '%s' "$effort"
+}
+
+# run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [system-prompt-file]
+# The daemon's one way to run an agent: feeds <prompt-file> on stdin, streams
+# labelled activity lines to the terminal, and leaves the agent's final text in
+# <raw-out> (empty on timeout), its cost in <raw-out>.cost, and its own stderr in
+# <raw-out>.stderr. Pins $REVIEW_MODEL and $REVIEW_EFFORT, which the caller
+# resolves. Returns the agent's exit status, $TIMEOUT_EXIT past the cap, or the
+# formatter's status, under the daemon's `set -o pipefail`.
+#
+# <mode> says what the agent may do:
+#   read-only    inspect the clone and answer in its final message.
+#   orchestrate  spawn the role subagents defined in the clone's .claude/agents/,
+#                each writing its payload file into the clone.
+#
+# Run it from inside the per-PR clone: the agent's working directory is the
+# caller's, and orchestrate's file writes are scoped to it.
+run_agent() {
+  local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" system="${6:-}"
+  local args=(-p)
+  if [[ -n "$system" ]]; then
+    args+=(--append-system-prompt-file "$system")
+  fi
+  args+=(--model "$REVIEW_MODEL" --effort "$REVIEW_EFFORT")
+  case "$mode" in
+    read-only) args+=(--tools Read Grep Glob Bash) ;;
+    orchestrate)
+      # --tools carries the union of what the role agents need plus Agent: a
+      # subagent's effective tool set is the intersection of its frontmatter list
+      # and the parent session's --tools, so a tool missing here is silently
+      # unavailable to every role no matter what the agent file grants.
+      # --permission-mode acceptEdits: non-interactive claude auto-denies the
+      # Write permission prompt, so without this every role completes its review
+      # and then fails to land its payload file. acceptEdits auto-approves file
+      # writes inside the session's working directory, which is the scratch.
+      args+=(--tools Agent Read Write Bash Grep Glob WebFetch --permission-mode acceptEdits)
+      ;;
+    *)
+      log_err "run_agent: unknown mode '${mode}'"
+      return 1
+      ;;
+  esac
+  # --setting-sources project is what loads the bundled .claude/agents/ role
+  # definitions orchestrate spawns. Slash commands are disabled because ADR 0034
+  # measured the slash-command wrapper as pure forwarding overhead; every call is
+  # directly prompted (ADR 0038).
+  args+=(--strict-mcp-config --setting-sources project --disable-slash-commands
+    --output-format stream-json --verbose)
+  # claude's own stderr (e.g. its non-interactive workspace-trust notice,
+  # expected every run since a fresh scratch clone is never pre-trusted) goes to
+  # a sidecar file so the primary log stays legible.
+  run_with_timeout "$secs" claude "${args[@]}" <"$prompt" 2>"$raw.stderr" |
+    python3 "$(dirname "${BASH_SOURCE[0]}")/stream_format.py" --raw-out "$raw" \
+      --label "$label" --cost-out "$raw.cost"
 }
 
 # warn_env_drift <dotenv-path> <template-path>

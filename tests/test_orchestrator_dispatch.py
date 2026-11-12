@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from agent_fixture import run_agent, run_agent_calls
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REVIEW_PR = REPO_ROOT / "daemon" / "review-pr.sh"
 AGENTS = REPO_ROOT / ".claude" / "agents"
@@ -32,15 +34,25 @@ def _role_labels() -> list[str]:
     return m.group(1).split()
 
 
-def _orchestrator_tools() -> list[str]:
-    """The `--tools` list of the orchestrator invocation (the one with Agent)."""
-    body = REVIEW_PR.read_text()
-    tool_lists = [m.split() for m in re.findall(r"--tools ([A-Za-z ]+?) \\?\n", body)]
-    with_agent = [t for t in tool_lists if "Agent" in t]
-    assert len(with_agent) == 1, (
-        f"expected exactly one --tools list containing Agent, found {len(with_agent)}"
-    )
-    return with_agent[0]
+def _orchestrator_argv(tmp_path: Path) -> list[str]:
+    """The argv the orchestrator call site sends to claude."""
+    calls = [c for c in run_agent_calls(REVIEW_PR) if c[1] == "orchestrate"]
+    assert len(calls) == 1, f"expected one orchestrate call, found {len(calls)}"
+    run = run_agent(tmp_path, "orchestrate", system=len(calls[0]) == 7)
+    assert run.rc == 0 and run.argv, run.stderr
+    return run.argv
+
+
+def _orchestrator_tools(tmp_path: Path) -> list[str]:
+    """The `--tools` list of the orchestrator invocation."""
+    argv = _orchestrator_argv(tmp_path)
+    tools = []
+    for word in argv[argv.index("--tools") + 1 :]:
+        if word.startswith("--"):
+            break
+        tools.append(word)
+    assert "Agent" in tools, "the orchestrator cannot spawn roles without the Agent tool"
+    return tools
 
 
 def _frontmatter_tools(label: str) -> list[str]:
@@ -50,8 +62,8 @@ def _frontmatter_tools(label: str) -> list[str]:
     return [t.strip() for t in m.group(1).split(",")]
 
 
-def test_orchestrator_tools_cover_every_role_frontmatter_tool():
-    parent = set(_orchestrator_tools())
+def test_orchestrator_tools_cover_every_role_frontmatter_tool(tmp_path):
+    parent = set(_orchestrator_tools(tmp_path))
     for label in _role_labels():
         missing = [t for t in _frontmatter_tools(label) if t not in parent]
         assert not missing, (
@@ -77,22 +89,19 @@ def test_orchestrator_charges_one_slot_per_role():
     assert "release_claude_slots" in body
 
 
-def test_orchestrator_loads_agents_from_project_settings():
-    body = REVIEW_PR.read_text()
-    m = re.search(r"(?ms)--tools Agent.*?--output-format stream-json", body)
-    assert m, "orchestrator invocation not found"
-    assert "--setting-sources project" in m.group(0), (
+def test_orchestrator_loads_agents_from_project_settings(tmp_path):
+    argv = _orchestrator_argv(tmp_path)
+    assert ("--setting-sources", "project") in zip(argv, argv[1:], strict=False), (
         "without --setting-sources project the bundled .claude/agents/ "
         "definitions never load and the Agent tool has no role types to spawn"
     )
 
 
-def test_orchestrator_auto_approves_payload_writes():
+def test_orchestrator_auto_approves_payload_writes(tmp_path):
     # Without acceptEdits every role completes its review and then fails to
     # land its payload: a full-cost run producing an empty review (#299; the
-    # mechanism is documented at the orchestrator invocation in review-pr.sh).
-    body = REVIEW_PR.read_text()
-    m = re.search(r"(?ms)--tools Agent.*?--output-format stream-json", body)
-    assert m and "--permission-mode acceptEdits" in m.group(0), (
+    # mechanism is documented at run_agent's orchestrate mode in lib.sh).
+    argv = _orchestrator_argv(tmp_path)
+    assert ("--permission-mode", "acceptEdits") in zip(argv, argv[1:], strict=False), (
         "orchestrator invocation must carry --permission-mode acceptEdits"
     )

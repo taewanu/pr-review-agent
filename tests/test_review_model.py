@@ -8,8 +8,8 @@ rather than left to a dogfood run to catch.
 
 The helper lives in lib.sh, not inline in review-pr.sh, so a test can source it
 without gh, claude, or a clone (the same reason emit_dryrun_contract does; see
-test_dry_run.py). The four call sites' `--model "$REVIEW_MODEL"` expansion is
-covered by test_model_pinned_at_every_claude_call below, which reads the scripts.
+test_dry_run.py). That every agent call pins the resolved model and effort is
+covered by test_run_agent.py, which runs each call site against a fake claude.
 """
 
 from __future__ import annotations
@@ -96,24 +96,6 @@ def test_template_default_matches_the_code_default():
     assert keyed.group(1).strip() == DEFAULT_MODEL
 
 
-def _claude_invocations(script: Path) -> list[str]:
-    """Every `claude -p` invocation in the script, each with its continuation lines.
-
-    Scoped per-invocation rather than matched file-wide: a pattern free to run to
-    the next call's flags reports one unpinned site as pinned.
-    """
-    lines = script.read_text().splitlines()
-    invocations = []
-    for i, line in enumerate(lines):
-        if not re.match(r"^\s*claude -p ", line):
-            continue
-        block = [line]
-        while block[-1].rstrip().endswith("\\") and i + len(block) < len(lines):
-            block.append(lines[i + len(block)])
-        invocations.append("\n".join(block))
-    return invocations
-
-
 def test_both_scripts_name_the_model_in_the_log():
     # The defect this dial fixes was invisible: a review on the wrong model still
     # reads like a review. Resolving the right value is only half of it; the run
@@ -121,18 +103,6 @@ def test_both_scripts_name_the_model_in_the_log():
     for script in (REVIEW_PR, REPLY_PR):
         assert 'log_info "model: ${REVIEW_MODEL}"' in script.read_text(), (
             f"{script.name}: resolves REVIEW_MODEL without logging it"
-        )
-
-
-def test_model_pinned_at_every_claude_call():
-    # The bug was an unpinned claude -p, so a call site added without --model
-    # reintroduces it silently. Every invocation must carry the dial.
-    for script in (REVIEW_PR, REPLY_PR):
-        invocations = _claude_invocations(script)
-        assert invocations, f"{script.name}: no claude -p call found; did the call site move?"
-        unpinned = [c for c in invocations if '--model "$REVIEW_MODEL"' not in c]
-        assert not unpinned, (
-            f"{script.name}: claude -p not pinned to $REVIEW_MODEL:\n" + "\n---\n".join(unpinned)
         )
 
 
@@ -186,14 +156,4 @@ def test_both_scripts_name_the_effort_in_the_log():
     for script in (REVIEW_PR, REPLY_PR):
         assert 'log_info "effort: ${REVIEW_EFFORT}"' in script.read_text(), (
             f"{script.name}: resolves REVIEW_EFFORT without logging it"
-        )
-
-
-def test_effort_pinned_at_every_claude_call():
-    for script in (REVIEW_PR, REPLY_PR):
-        invocations = _claude_invocations(script)
-        assert invocations, f"{script.name}: no claude -p call found; did the call site move?"
-        unpinned = [c for c in invocations if '--effort "$REVIEW_EFFORT"' not in c]
-        assert not unpinned, (
-            f"{script.name}: claude -p not pinned to $REVIEW_EFFORT:\n" + "\n---\n".join(unpinned)
         )
