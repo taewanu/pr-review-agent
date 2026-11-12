@@ -92,11 +92,12 @@ def sum_tokens(scratch_dir: Path) -> int:
 
 # The dials that select which review config runs. The role set is fixed (ADR
 # 0038: code + intent, no REVIEW_MODE or REVIEW_LENSES), so what remains
-# recordable is the model, the editor skip, and the gates. Recording the
-# resolved dials makes each results JSON self-describing.
+# recordable is the model, its effort, the editor skip, and the gates. Recording
+# the resolved dials makes each results JSON self-describing.
 REVIEW_CONFIG_VARS = (
     "REVIEW_FANOUT",
     "REVIEW_MODEL",
+    "REVIEW_EFFORT",
     "SKIP_EDITOR",
     # The confidence gate decides which findings survive to be scored at all, so
     # two runs at different thresholds are not comparable. Recorded because a mode

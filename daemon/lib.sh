@@ -397,7 +397,26 @@ resolve_tunable() {
 resolve_review_model() {
   local model
   model="$(resolve_tunable REVIEW_MODEL "$1")"
-  printf '%s' "${model:-claude-opus-4-8}"
+  printf '%s' "${model:-claude-opus-5-5}"
+}
+
+# resolve_review_effort <dotenv-path>
+# Resolve the effort level every daemon claude -p pins beside the model, printing
+# it, because the API default effort varies by model and a model bump would
+# otherwise change review depth unannounced. claude -p only warns on an unknown
+# level and runs at the model default, so an invalid value falls back here.
+resolve_review_effort() {
+  local effort default=high
+  effort="$(resolve_tunable REVIEW_EFFORT "$1")"
+  case "$effort" in
+    low | medium | high | xhigh | max) ;;
+    "") effort="$default" ;;
+    *)
+      log_info "ignoring invalid REVIEW_EFFORT='${effort}', using default ${default}"
+      effort="$default"
+      ;;
+  esac
+  printf '%s' "$effort"
 }
 
 # warn_env_drift <dotenv-path> <template-path>

@@ -262,6 +262,8 @@ REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
 REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
 # Named in the log for the reason review-pr.sh gives: an unnamed model fails silently.
 log_info "model: ${REVIEW_MODEL}"
+REVIEW_EFFORT="$(resolve_review_effort "$SCRIPT_DIR/../.env")"
+log_info "effort: ${REVIEW_EFFORT}"
 
 reply_rc=0
 (
@@ -290,6 +292,7 @@ reply_rc=0
   run_with_timeout "$REPLY_AGENT_TIMEOUT" \
     claude -p --append-system-prompt-file "$reply_sys" \
     --model "$REVIEW_MODEL" \
+    --effort "$REVIEW_EFFORT" \
     --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
     --disable-slash-commands \
     --output-format stream-json --verbose <"$reply_prompt" \
