@@ -252,6 +252,26 @@ live_pids() {
   return 0
 }
 
+# kill_with_groups <pid...>
+# Kills the given processes and every process group they belong to except the
+# caller's own, which holds the daemon itself. The groups reach a command that
+# double-forked out of the tree, because its orphan keeps the group it was
+# started in. Freezing everything first stops a process forking a replacement
+# between the group kills and the pid kills.
+kill_with_groups() {
+  local own pid pgid groups=""
+  own="$(ps -o pgid= -p $$ | tr -d ' ')"
+  kill -STOP "$@" 2>/dev/null || true
+  for pid in "$@"; do
+    pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" || continue
+    [[ -n "$pgid" && "$pgid" -gt 1 && "$pgid" != "$own" ]] && groups="$groups $pgid"
+  done
+  for pgid in $groups; do
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+  done
+  kill -KILL "$@" 2>/dev/null || true
+}
+
 # run_with_timeout <seconds> <command...>
 # Caps a command's wall-clock runtime. Returns the command's own exit status, or
 # $TIMEOUT_EXIT on timeout.
@@ -279,6 +299,11 @@ live_pids() {
 # reach. This function nests: run_with_pr_timeout wraps review-pr.sh, which calls
 # it again per lens. The walk is not atomic, so a process forking mid-walk can
 # escape; for a backstop that is the better trade than a kill that composes badly.
+#
+# TIMEOUT_KILL_GROUPS=1 replaces the TERM-then-KILL escalation with
+# kill_with_groups, for a command that starts its children in groups of their
+# own and needs no flush on the way out. A command that calls setsid still
+# escapes both.
 run_with_timeout() {
   local secs="$1"
   shift
@@ -323,7 +348,12 @@ run_with_timeout() {
     # the TERM. This is what a process group gets for free and the walk does not.
     local victims survivors
     victims="$(process_tree "$pid")"
-    # shellcheck disable=SC2086  # word splitting is the point: one pid per arg
+    if [[ "${TIMEOUT_KILL_GROUPS:-0}" -eq 1 ]]; then
+      # shellcheck disable=SC2086  # word splitting is the point: one pid per arg
+      kill_with_groups $victims
+      exit 0
+    fi
+    # shellcheck disable=SC2086
     kill -TERM $victims 2>/dev/null || true
     local grace=$(($(date +%s) + TIMEOUT_KILL_GRACE))
     while :; do
@@ -387,21 +417,27 @@ resolve_tunable() {
   printf '%s' "$val"
 }
 
-# resolve_review_model <dotenv-path>
-# Resolve the reasoning model every daemon claude -p pins (#209), printing it.
+# resolve_review_model <dotenv-path> [harness]
+# Resolve the reasoning model every daemon agent call pins, printing it.
 # The default lives here alone: it reaches the agents as the --model argument
 # run_agent expands, never as an environment variable, so a script that resolved it
 # separately would be free to drift onto a different model. Unlike the dials
 # resolve_tunable serves, an empty value is not a usable default here (`--model
 # ""` is a broken flag), so this one defaults in the shell rather than downstream.
+# Under the codex harness an unset or Claude model fails instead, at startup,
+# because Codex rejects a Claude model ID and every review would fail on it.
 resolve_review_model() {
   local model
   model="$(resolve_tunable REVIEW_MODEL "$1")"
+  if [[ "${2:-}" == codex && (-z "$model" || "$model" == claude-*) ]]; then
+    log_err "REVIEW_HARNESS=codex needs REVIEW_MODEL (env or .env) set to a model the codex CLI accepts; '${model:-the default}' is a Claude model"
+    return 1
+  fi
   printf '%s' "${model:-claude-opus-5-5}"
 }
 
 # resolve_review_effort <dotenv-path>
-# Resolve the effort level every daemon claude -p pins beside the model, printing
+# Resolve the effort level every daemon agent call pins beside the model, printing
 # it, because the API default effort varies by model and a model bump would
 # otherwise change review depth unannounced. claude -p only warns on an unknown
 # level and runs at the model default, so an invalid value falls back here.
@@ -417,6 +453,22 @@ resolve_review_effort() {
       ;;
   esac
   printf '%s' "$effort"
+}
+
+# resolve_review_harness <dotenv-path>
+# Resolve which agent CLI run_agent drives, printing it: claude (the default) or
+# codex. An unknown value fails instead of falling back, because reviewing on a
+# CLI the operator did not pick is worse than not reviewing.
+resolve_review_harness() {
+  local harness
+  harness="$(resolve_tunable REVIEW_HARNESS "$1")"
+  case "${harness:-claude}" in
+    claude | codex) printf '%s' "${harness:-claude}" ;;
+    *)
+      log_err "REVIEW_HARNESS='${harness}' is not claude or codex"
+      return 1
+      ;;
+  esac
 }
 
 # agent_fields <agent-file>
@@ -614,12 +666,28 @@ physical_path() {
   python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
 }
 
+# agent_system_prompt <agent-name> <out>
+# Writes the body of this checkout's .claude/agents/<agent-name>.md to <out> as
+# a directly-prompted agent's system prompt, or logs why it cannot and fails.
+agent_system_prompt() {
+  local agent_file
+  agent_file="$(dirname "${BASH_SOURCE[0]}")/../.claude/agents/${1}.md"
+  if [[ ! -r "$agent_file" ]]; then
+    log_err "run_agent: no agent definition '${1}'"
+    return 1
+  fi
+  agent_definition "$agent_file" >/dev/null || return 1
+  write_run_file "$2" "$(agent_body "$agent_file")"
+}
+
 # run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [agent-name]
 # The daemon's one way to run an agent: feeds <prompt-file> on stdin, streams
 # labelled activity lines to the terminal, and leaves the agent's final text in
-# <raw-out> (empty on timeout), its cost in <raw-out>.cost, and its own stderr in
-# <raw-out>.stderr. Pins $REVIEW_MODEL and $REVIEW_EFFORT, which the caller
-# resolves. Returns the agent's exit status, $TIMEOUT_EXIT past the cap, or the
+# <raw-out> (empty on timeout), its token count in <raw-out>.tokens, its cost in
+# <raw-out>.cost when the CLI reports one (codex does not), and its own stderr
+# in <raw-out>.stderr. Drives the CLI $REVIEW_HARNESS names (claude when unset)
+# and pins $REVIEW_MODEL and $REVIEW_EFFORT, all three resolved by the caller.
+# Returns the agent's exit status, $TIMEOUT_EXIT past the cap, or the
 # formatter's status, under the daemon's `set -o pipefail`.
 #
 # <mode> says what the agent may do:
@@ -628,7 +696,7 @@ physical_path() {
 #                prompt (written to <raw-out>.system.md).
 #   orchestrate  spawn the role subagents defined by this checkout's
 #                .claude/agents/ (written to <raw-out>.agents.json), each writing
-#                its payload file into the clone.
+#                its payload file into the clone. Claude only.
 #
 # Every definition comes from this checkout, never the clone, because the clone
 # holds the PR head and its author controls it.
@@ -636,17 +704,30 @@ physical_path() {
 # Run it from inside the per-PR clone: the agent's working directory is the
 # caller's, and orchestrate's file writes are scoped to it.
 run_agent() {
+  case "$1" in
+    read-only | orchestrate) ;;
+    *)
+      log_err "run_agent: unknown mode '${1}'"
+      return 1
+      ;;
+  esac
+  # The scripts reject an unknown harness at startup, but a caller that skips
+  # resolve_review_harness must not silently review on claude either.
+  case "${REVIEW_HARNESS:-claude}" in
+    claude) run_agent_claude "$@" ;;
+    codex) run_agent_codex "$@" ;;
+    *)
+      log_err "run_agent: unknown harness '${REVIEW_HARNESS}'"
+      return 1
+      ;;
+  esac
+}
+
+run_agent_claude() {
   local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" agent="${6:-}"
   local args=(-p)
   if [[ -n "$agent" ]]; then
-    local agent_file
-    agent_file="$(dirname "${BASH_SOURCE[0]}")/../.claude/agents/${agent}.md"
-    if [[ ! -r "$agent_file" ]]; then
-      log_err "run_agent: no agent definition '${agent}'"
-      return 1
-    fi
-    agent_definition "$agent_file" >/dev/null || return 1
-    write_run_file "$raw.system.md" "$(agent_body "$agent_file")" || return 1
+    agent_system_prompt "$agent" "$raw.system.md" || return 1
     args+=(--append-system-prompt-file "$raw.system.md")
   fi
   args+=(--model "$REVIEW_MODEL" --effort "$REVIEW_EFFORT")
@@ -666,10 +747,6 @@ run_agent() {
       # writes inside the session's working directory, which is the per-PR clone.
       args+=(--tools Agent Read Write Bash Grep Glob WebFetch --permission-mode acceptEdits
         --agents "$raw.agents.json")
-      ;;
-    *)
-      log_err "run_agent: unknown mode '${mode}'"
-      return 1
       ;;
   esac
   # --restricted ignores every settings file (user, project, and local) and
@@ -713,6 +790,114 @@ run_agent() {
   trap - INT TERM
   eval "$traps"
   return "$rc"
+}
+
+# Same contract as run_agent_claude; codex_exec.py builds the argv and says why
+# each flag is there. Its sandbox shares the system temp roots between every
+# command it runs, so a clone under them is refused rather than exposed.
+run_agent_codex() {
+  local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" agent="${6:-}"
+  local here workdir arg argv=() pid rc=0 format_rc=0
+  # Created before anything below can fail, so a failed run hands back empty
+  # output, and before the formatter follows the events file.
+  : >"$raw"
+  : >"$raw.events"
+  if [[ "$mode" == orchestrate ]]; then
+    log_err "run_agent: codex cannot run orchestrate mode because it has no subagent tool; run each review role as its own read-only agent instead"
+    return 1
+  fi
+  workdir="$(pwd -P)"
+  case "$workdir/" in
+    /tmp/* | /private/tmp/* | /var/tmp/* | /private/var/tmp/*)
+      log_err "run_agent: refusing to run codex in ${workdir}: its sandbox denies the system temp directories to every command, the clone included; set TMPDIR to a private directory so the per-PR clone lands outside them"
+      return 1
+      ;;
+  esac
+  if [[ -n "$agent" ]]; then
+    agent_system_prompt "$agent" "$raw.system.md" || return 1
+  fi
+  here="$(dirname "${BASH_SOURCE[0]}")"
+  while IFS= read -r -d '' arg; do
+    argv+=("$arg")
+  done < <(python3 "$here/codex_exec.py" argv --workdir "$workdir" --raw-out "$raw" \
+    --model "$REVIEW_MODEL" --effort "$REVIEW_EFFORT" ${agent:+--system "$raw.system.md"})
+  # codex_exec.py prints nothing, and says why on stderr, when it cannot build one.
+  ((${#argv[@]} > 0)) || return 1
+  # Events go to a file the formatter follows, not a pipe: a command that
+  # escapes the kill and inherits codex's stdout would hold a pipe open, and the
+  # formatter would wait on it past the cap. The group kill reaches what the
+  # descendant walk misses, because codex starts each command in its own group.
+  TIMEOUT_KILL_GROUPS=1 run_with_timeout "$secs" "${argv[@]}" \
+    <"$prompt" >"$raw.events" 2>"$raw.stderr" &
+  pid=$!
+  python3 "$here/codex_exec.py" format --events "$raw.events" --while-pid "$pid" \
+    --label "$label" --tokens-out "$raw.tokens" || format_rc=$?
+  wait "$pid" || rc=$?
+  # The formatter's status first, as pipefail would report it.
+  ((format_rc == 0)) || return "$format_rc"
+  return "$rc"
+}
+
+# run_role_agents <timeout-secs> {<role> <activity-label> <prompt-file> <raw-out> <agent-name>}...
+# Runs each role as its own read-only agent, in parallel, one slot each, for a
+# harness with no subagent tool. Waits for every role, not just the first to
+# fail, because a role still running when this returns races the caller's
+# scratch cleanup (ADR 0026). A failed role is tolerated: its raw file stays
+# empty and merge_findings.py drops it. Returns $TIMEOUT_EXIT when any role hit
+# the cap, else the last failed role's status, else 0. Run it from inside the
+# per-PR clone.
+run_role_agents() {
+  local secs="$1" i rc status=0 pids=() roles=()
+  shift
+  while (($# >= 5)); do
+    (
+      slot="$(acquire_claude_slot "$1 role")"
+      rc=0
+      run_agent read-only "$secs" "$3" "$4" "$2" "$5" || rc=$?
+      release_claude_slot "$slot"
+      exit "$rc"
+    ) &
+    pids+=("$!")
+    roles+=("$1")
+    shift 5
+  done
+  for ((i = 0; i < ${#pids[@]}; i++)); do
+    rc=0
+    wait "${pids[$i]}" || rc=$?
+    if ((rc == TIMEOUT_EXIT)); then
+      log_info "${roles[$i]} role exceeded ${secs}s"
+      status="$TIMEOUT_EXIT"
+    elif ((rc != 0)); then
+      log_info "${roles[$i]} role exited ${rc}"
+      ((status == TIMEOUT_EXIT)) || status="$rc"
+    fi
+  done
+  return "$status"
+}
+
+# print_role_task <role> <harness> <diff-basename> <intent-basename> <payload-basename>
+# The task prompt one review role receives. Under claude the role writes its
+# payload to <payload-basename>; codex's sandbox cannot write, so there the
+# role's final message is the payload.
+print_role_task() {
+  printf 'Review this PR per your instructions.\n'
+  printf 'The line-numbered diff is at: %s\n' "$3"
+  # ADR 0035: the intent role gets the second side of its comparison. The
+  # code role has only the diff, which is the quarantine ADR 0038 names.
+  if [[ "$1" == "intent" ]]; then
+    printf 'What the change says it does is at: %s\n' "$4"
+  fi
+  # The diff goes by path, not inlined: inlining it and saying "reason over
+  # this" made the model treat the context as complete and skip opening the
+  # callers, which is the verify step's whole substance (ADR 0022).
+  printf 'Read it, then investigate the surrounding code with your tools '
+  printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
+  if [[ "$2" == codex ]]; then
+    printf 'Your final message is your payload: end it with the complete ```json fenced payload your instructions require.\n'
+  else
+    printf 'Write your complete output, the ```json fenced payload your instructions require, to a new file named %s. ' "$5"
+    printf 'Your final reply must not restate the payload; one line confirming the write is enough.\n'
+  fi
 }
 
 # clear_reserved_names <clone>
@@ -922,12 +1107,13 @@ log_route_ledger_rollup() {
   log_info "routing ledger (#219): ${prose}/${total} reviews were prose-only, \$${spent} spent on them"
 }
 
-# record_route_observation <pr-url> <sha> <verdict> <cost>
-# Append one line to the routing ledger (#219). A terminal log line answers the
-# routing question only for whoever is watching that terminal, and the daemon's
-# foreground mode has no file to grep afterward, so the observation goes
-# somewhere durable instead. Best-effort: an unwritable ledger must never fail a
-# review that otherwise succeeded.
+# record_route_observation <pr-url> <sha> <verdict> [cost]
+# Append one line to the routing ledger, with cost_usd null when no agent
+# reported a cost. A terminal log line answers the routing question only for
+# whoever is watching that terminal, and the daemon's foreground mode has no
+# file to grep afterward, so the observation goes somewhere durable instead.
+# Best-effort: an unwritable ledger must never fail a review that otherwise
+# succeeded.
 #
 # Read it with:
 #   jq -r '[.verdict, (.cost_usd|tostring)] | @tsv' ~/.pr-review-agent/route-observations.jsonl
@@ -946,7 +1132,7 @@ record_route_observation() {
     return 0
   fi
   printf '{"ts":"%s","pr":"%s","sha":"%s","verdict":"%s","cost_usd":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pr" "$sha" "$verdict" "${cost:-0}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pr" "$sha" "$verdict" "${cost:-null}" \
     >>"$ledger" 2>/dev/null || true
 }
 

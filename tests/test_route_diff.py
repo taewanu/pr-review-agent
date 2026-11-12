@@ -169,6 +169,24 @@ def test_ledger_record_is_appended_and_parseable(tmp_path):
     assert records[0]["sha"] == "abc123"
 
 
+def test_ledger_records_an_unreported_cost_as_unknown_not_zero(tmp_path):
+    lib = REPO_ROOT / "daemon" / "lib.sh"
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"set -euo pipefail; export PR_REVIEW_STATE_DIR={tmp_path}; source {lib}; "
+            "record_route_observation 'https://example/pull/1' abc123 behaviour ''",
+        ],
+        check=True,
+    )
+    [record] = [
+        json.loads(line)
+        for line in (tmp_path / "route-observations.jsonl").read_text().splitlines()
+    ]
+    assert record["cost_usd"] is None
+
+
 def test_ledger_write_is_best_effort(tmp_path):
     # An absent state dir must not fail a review that otherwise succeeded.
     lib = REPO_ROOT / "daemon" / "lib.sh"

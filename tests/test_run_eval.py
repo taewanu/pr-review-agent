@@ -65,8 +65,34 @@ def test_sum_tokens_tolerates_empty_or_garbage(tmp_path):
     assert run_eval.sum_tokens(tmp_path) == 500
 
 
-def test_sum_cost_zero_when_no_sidecars(tmp_path):
-    assert run_eval.sum_cost(tmp_path) == 0.0
+def test_sum_cost_is_unknown_when_no_agent_reported_one(tmp_path):
+    # A harness that reports no cost must not read as a free review.
+    assert run_eval.sum_cost(tmp_path) is None
+
+
+def test_mean_cost_counts_only_runs_with_a_known_cost():
+    assert run_eval.mean_cost([1.0, None, 3.0]) == 2.0
+    assert run_eval.mean_cost([None, None]) is None
+    assert run_eval.dollars(None) == "unknown"
+
+
+def test_max_cost_refuses_to_run_when_the_harness_reports_no_cost(monkeypatch, capsys):
+    # The cap could never trigger, so running would spend without the bound asked for.
+    monkeypatch.setenv("REVIEW_HARNESS", "codex")
+
+    def no_review(_fixture):
+        raise AssertionError("a review ran despite an unenforceable cap")
+
+    monkeypatch.setattr(run_eval, "run_review", no_review)
+    assert run_eval.main(["--max-cost", "5"]) == 2
+    assert "--max-cost" in capsys.readouterr().err
+
+
+def test_the_harness_is_resolved_the_way_review_pr_sh_resolves_it(monkeypatch):
+    monkeypatch.setenv("REVIEW_HARNESS", "claude")
+    assert run_eval.resolved_harness() == "claude"
+    monkeypatch.setenv("REVIEW_HARNESS", "codex")
+    assert run_eval.resolved_harness() == "codex"
 
 
 def test_extract_json_object_from_fenced_reply():

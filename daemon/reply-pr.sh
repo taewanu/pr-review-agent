@@ -21,13 +21,25 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
-for cmd in gh claude jq git python3 openssl curl; do
+# Resolved first for the reason review-pr.sh gives.
+REVIEW_HARNESS="$(resolve_review_harness "$SCRIPT_DIR/../.env")"
+REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env" "$REVIEW_HARNESS")"
+log_info "harness: ${REVIEW_HARNESS}"
+
+for cmd in gh "$REVIEW_HARNESS" jq git python3 openssl curl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log_err "missing '$cmd' on PATH"
     exit 1
   fi
 done
-require_claude_version || exit 1
+if [[ "$REVIEW_HARNESS" == claude ]]; then
+  require_claude_version || exit 1
+fi
+# Every agent call resolves codex this way and refuses a shim, so a shim fails
+# here once instead of failing every call.
+if [[ "$REVIEW_HARNESS" == codex ]] && ! python3 "$SCRIPT_DIR/codex_exec.py" check; then
+  exit 1
+fi
 # App identity (ADR 0036): the App key must be readable; no `gh auth login` is
 # required. The reply path renders no footer, so it needs no App-owner probe.
 if [[ ! -r "$APP_KEY_PATH" ]]; then
@@ -258,8 +270,7 @@ REPLY_AGENT_TIMEOUT="${REPLY_AGENT_TIMEOUT:-300}"
 
 # The reply agent re-checks operator fix claims against HEAD, reasoning the review
 # roles' equal, so it shares their REVIEW_MODEL dial (#209) rather than carrying
-# its own.
-REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
+# its own. Resolved at the top of this script, beside REVIEW_HARNESS.
 # Named in the log for the reason review-pr.sh gives: an unnamed model fails silently.
 log_info "model: ${REVIEW_MODEL}"
 REVIEW_EFFORT="$(resolve_review_effort "$SCRIPT_DIR/../.env")"

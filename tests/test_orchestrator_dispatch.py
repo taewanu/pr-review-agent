@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 from agent_fixture import call_site, run_agent, run_agent_calls
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REVIEW_PR = REPO_ROOT / "daemon" / "review-pr.sh"
+LIB = REPO_ROOT / "daemon" / "lib.sh"
 AGENTS = REPO_ROOT / ".claude" / "agents"
 
 
@@ -74,10 +76,14 @@ def test_orchestrator_tools_cover_every_role_frontmatter_tool(tmp_path):
 
 
 def test_task_prompt_tells_each_role_to_write_its_payload_file():
-    body = REVIEW_PR.read_text()
-    # The instruction and the per-role file name must live in the same prompt
-    # block: the write target is the payload contract with merge_findings.py.
-    assert "fenced payload" in body and "to a new file named %s" in body, (
+    # The write target is the payload contract with merge_findings.py.
+    prompt = subprocess.run(
+        ["bash", "-c", f'source "{LIB}"; print_role_task code claude d.txt i.md payload.txt'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "fenced payload" in prompt and "to a new file named payload.txt" in prompt, (
         "the role task prompt no longer instructs writing the payload to the per-role file"
     )
 

@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""The codex side of lib.sh's run_agent: builds the `codex exec` argv, and renders
+its `--json` events as the same labelled activity lines stream_format.py prints
+for claude.
+
+`argv` prints the argv NUL-separated, so a path or prompt holding a newline
+survives the trip into a bash array. `format` follows the events file codex
+writes until codex's process is gone; codex itself writes the final message to
+the `-o` file, so the formatter only narrates and records the token count.
+`check` resolves codex on PATH the way `argv` does, for a startup check.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import sys
+import time
+from collections.abc import Iterator
+from pathlib import Path
+
+from stream_format import emit, truncate
+
+PROFILE = "pr-review-agent"
+
+
+def _toml_string(text: str) -> str:
+    """A TOML basic string. JSON's escaping is TOML's, except that TOML also forbids
+    a raw DEL, and an astral character escaped as a JSON surrogate pair is not a
+    valid TOML escape, so non-ASCII stays literal."""
+    return json.dumps(text, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
+def real_codex(codex_on_path: str | None) -> str:
+    """The real path of the codex binary on PATH, or SystemExit saying what to fix."""
+    if codex_on_path is None:
+        raise SystemExit("codex is not on PATH")
+    codex_bin = os.path.realpath(codex_on_path)
+    if not os.path.basename(codex_bin).startswith("codex"):
+        raise SystemExit(
+            f"codex on PATH ({codex_on_path}) resolves to {codex_bin}, which is not a codex"
+            " binary (a version-manager shim?); put the directory holding the real codex"
+            " binary on PATH ahead of the shim"
+        )
+    return codex_bin
+
+
+def build_argv(
+    codex_on_path: str, workdir: str, raw_out: str, model: str, effort: str, system: str | None
+) -> list[str]:
+    codex_bin = real_codex(codex_on_path)
+    # Codex re-executes its own binary inside the sandbox, so the profile must let
+    # it read the install. It runs by its real path because a read grant on the
+    # binary's directory does not cover the symlinks between the PATH entry and
+    # the binary, and the grant is the install root, the parent of the binary's
+    # directory, because some installs keep the native binary beside a launcher.
+    install_root = os.path.dirname(os.path.dirname(codex_bin))
+    argv = [
+        codex_bin,
+        "exec",
+        # The operator's own config, execpolicy rules, and session history stay
+        # out of the review; --ignore-rules also drops rules files the clone
+        # carries, which the PR author controls.
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "-C",
+        workdir,
+        "-m",
+        model,
+        *sandbox_config(install_root),
+        # Never --sandbox: passing it makes codex ignore default_permissions.
+        "-c",
+        f'default_permissions="{PROFILE}"',
+        "-c",
+        f"model_reasoning_effort={_toml_string(effort)}",
+    ]
+    if system:
+        argv += ["-c", f"developer_instructions={_toml_string(Path(system).read_text())}"]
+    argv += [
+        # Codex loads AGENTS.md and AGENTS.override.md from the clone, which
+        # would let the PR author instruct the reviewer; a zero byte budget loads
+        # none of either.
+        "-c",
+        "project_doc_max_bytes=0",
+        # Skills (the clone's .agents/skills and .codex/skills among them) and
+        # plugins load even under --ignore-user-config.
+        "-c",
+        "skills.include_instructions=false",
+        "-c",
+        "skills.bundled.enabled=false",
+        "-c",
+        "plugins._default.enabled=false",
+        "--disable",
+        "apps",
+        "--disable",
+        "plugins",
+        "--disable",
+        "hooks",
+        "--disable",
+        "image_generation",
+        "-c",
+        'web_search="disabled"',
+        # Nobody is there to approve, so a command the profile denies fails
+        # rather than waiting.
+        "-c",
+        'approval_policy="never"',
+        "-c",
+        "allow_login_shell=false",
+        "--json",
+        "-o",
+        raw_out,
+        "-",
+    ]
+    return argv
+
+
+def sandbox_config(install_root: str) -> list[str]:
+    """The `-c` pairs that bound what the agent's shell commands can reach."""
+    # One inline table: codex rejects the profile as dotted keys. Read is limited
+    # to the platform minimum, the codex install, and the clone; nothing is
+    # writable and the network is off, because the clone is the PR author's.
+    # :minimal grants read and write on the system temp roots, which only a glob
+    # deny overrides: `X*` hides the root's listing and `X/**` its contents.
+    temp_denies = "".join(
+        f'"{root}*"="deny", "{root}/**"="deny", ' for root in ("/private/tmp", "/private/var/tmp")
+    )
+    profile = (
+        f'permissions.{PROFILE}={{filesystem={{":minimal"="read", {temp_denies}'
+        f'{_toml_string(install_root)}="read", ":workspace_roots"={{"."="read"}}}}, '
+        f"network={{enabled=false}}}}"
+    )
+    return [
+        "-c",
+        profile,
+        # Commands otherwise inherit the daemon's environment, credentials and
+        # agent sockets included. git reads ~/.gitconfig by default and dies when
+        # the profile denies it, so it is pointed at nothing.
+        "-c",
+        'shell_environment_policy.inherit="core"',
+        "-c",
+        'shell_environment_policy.set={GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1"}',
+    ]
+
+
+def render_event(event: dict) -> str | None:
+    """Map one `codex exec --json` event to a progress line, or None to skip it."""
+    etype = event.get("type")
+    if etype == "item.completed":
+        item = event.get("item") or {}
+        if item.get("type") == "command_execution":
+            return f"→ {truncate(str(item.get('command', '')))}"
+        if item.get("type") == "agent_message":
+            text = str(item.get("text", "")).strip()
+            return truncate(text) if text else None
+    elif etype == "turn.completed":
+        return f"done · {usage_tokens(event)} tokens"
+    elif etype in ("turn.failed", "error"):
+        error = event.get("error") if etype == "turn.failed" else event
+        return f"{etype}: {truncate(str((error or {}).get('message', '')))}"
+    return None
+
+
+def usage_tokens(event: dict) -> int:
+    """Input plus output tokens; cached input is a subset of input, not an addend."""
+    usage = event.get("usage") or {}
+    return sum(
+        int(v) for k in ("input_tokens", "output_tokens") if isinstance(v := usage.get(k), int)
+    )
+
+
+def follow(events: Path, pid: int, poll: float = 0.2) -> Iterator[str]:
+    """Yield the lines appended to `events` until process `pid` is gone. One read
+    after it is gone drains what it wrote; a process that escaped the kill and
+    still writes there cannot keep this going."""
+    pending = ""
+    with events.open(errors="replace") as f:
+        while True:
+            alive = _alive(pid)
+            chunk = f.read()
+            *lines, pending = (pending + chunk).split("\n")
+            yield from lines
+            if not alive:
+                break
+            if not chunk:
+                time.sleep(poll)
+    if pending:
+        yield pending
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def format_stream(lines, label: str | None, tokens_out: Path) -> int:
+    """Exits 1 on turn.failed so a failure surfaces even if codex exits 0; on a
+    timeout run_agent returns codex's own status."""
+    failed = False
+    tokens = None
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "turn.completed":
+            tokens = (tokens or 0) + usage_tokens(event)
+        failed = failed or event.get("type") == "turn.failed"
+        rendered = render_event(event)
+        if rendered is not None:
+            emit(rendered, label=label)
+    # Written only on a completed turn, so a timeout leaves no sidecar, as on claude.
+    if tokens is not None:
+        tokens_out.write_text(str(tokens))
+    return 1 if failed else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    argv_p = sub.add_parser("argv")
+    argv_p.add_argument("--workdir", required=True)
+    argv_p.add_argument("--raw-out", required=True)
+    argv_p.add_argument("--model", required=True)
+    argv_p.add_argument("--effort", required=True)
+    argv_p.add_argument("--system")
+    fmt_p = sub.add_parser("format")
+    fmt_p.add_argument("--events", type=Path, required=True)
+    fmt_p.add_argument("--while-pid", type=int, required=True)
+    fmt_p.add_argument("--label")
+    fmt_p.add_argument("--tokens-out", type=Path, required=True)
+    sub.add_parser("check")
+    args = parser.parse_args()
+    if args.cmd == "format":
+        return format_stream(follow(args.events, args.while_pid), args.label, args.tokens_out)
+    codex = real_codex(shutil.which("codex"))
+    if args.cmd == "check":
+        return 0
+    argv = build_argv(codex, args.workdir, args.raw_out, args.model, args.effort, args.system)
+    sys.stdout.write("".join(f"{a}\0" for a in argv))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

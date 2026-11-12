@@ -100,8 +100,8 @@ def test_summarize_tool_unknown_tool_shows_name_only():
 
 
 def test_truncate_flattens_and_caps():
-    assert sf._truncate("a\n  b   c") == "a b c"
-    capped = sf._truncate("x" * 200, limit=80)
+    assert sf.truncate("a\n  b   c") == "a b c"
+    capped = sf.truncate("x" * 200, limit=80)
     assert len(capped) == 80
     assert capped.endswith("…")
 

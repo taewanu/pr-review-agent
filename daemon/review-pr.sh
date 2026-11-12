@@ -11,13 +11,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=daemon/lib.sh disable=SC1091
 source "$SCRIPT_DIR/lib.sh"
 
-for cmd in gh claude jq git python3 openssl curl; do
+# Resolved before anything else, so a bad harness or a codex run without a codex
+# model fails here rather than after the status comment announces a review.
+REVIEW_HARNESS="$(resolve_review_harness "$SCRIPT_DIR/../.env")"
+REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env" "$REVIEW_HARNESS")"
+log_info "harness: ${REVIEW_HARNESS}"
+
+for cmd in gh "$REVIEW_HARNESS" jq git python3 openssl curl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     log_err "missing '$cmd' on PATH"
     exit 1
   fi
 done
-require_claude_version || exit 1
+if [[ "$REVIEW_HARNESS" == claude ]]; then
+  require_claude_version || exit 1
+fi
+# Every agent call resolves codex this way and refuses a shim, so a shim fails
+# here once instead of failing every call.
+if [[ "$REVIEW_HARNESS" == codex ]] && ! python3 "$SCRIPT_DIR/codex_exec.py" check; then
+  exit 1
+fi
 # App identity (ADR 0036): a machine with no `gh auth login` is a valid
 # deployment; what must exist is the App private key. The App id is checked when
 # it is resolved below, once the base repo is known.
@@ -180,11 +193,13 @@ LOCK_FILE=""
 # shell, so total_cost survives past the loop.
 log_total_review_cost() {
   [[ -n "${SCRATCH:-}" ]] || return 0
-  local total_cost=0 cost_file
+  # Empty until a sidecar is found: no sidecar means no agent reported a cost
+  # (codex never does), which the ledger records as unknown rather than $0.
+  local total_cost="" cost_file
   while IFS= read -r cost_file; do
-    total_cost="$(awk -v a="$total_cost" -v b="$(cat "$cost_file")" 'BEGIN { printf "%.3f", a + b }')"
+    total_cost="$(awk -v a="${total_cost:-0}" -v b="$(cat "$cost_file")" 'BEGIN { printf "%.3f", a + b }')"
   done < <(find "$SCRATCH" -maxdepth 1 -name ".pr-review-*.cost" -type f)
-  if [[ "$total_cost" != "0" ]]; then
+  if [[ -n "$total_cost" ]]; then
     log_info "total review cost: \$${total_cost}"
   fi
   # The routing ledger wants the verdict and the cost together, and this is the
@@ -862,7 +877,7 @@ CLAUDE_SLOT_POOL_SIZE="$(resolve_tunable CLAUDE_SLOT_POOL_SIZE "$SCRIPT_DIR/../.
 # inheriting the operator's global ~/.claude/settings.json model, which silently
 # reviewed on whatever their shell happened to prefer. Resolved once here so the
 # lenses, editor, and judge-fix can't drift onto different models mid-review.
-REVIEW_MODEL="$(resolve_review_model "$SCRIPT_DIR/../.env")"
+# REVIEW_MODEL and REVIEW_HARNESS are resolved at the top of this script.
 # Named in the log because an unpinned model is invisible from the outside: a
 # review on the wrong one still reads like a review, which is how the original
 # defect survived weeks of dogfood. The dial is only trustworthy if it says so.
@@ -895,70 +910,82 @@ log_info "effort: ${REVIEW_EFFORT}"
 role_count="${#LENS_LABELS[@]}"
 
 ORCH_RAW="$SCRATCH/.pr-review-orchestrator.txt"
-ORCH_PROMPT="$SCRATCH/.pr-review-orchestrator-prompt.txt"
-{
-  printf 'You are a dispatch orchestrator. Spawn one subagent per role listed below with the Agent tool, issuing ALL the Agent calls in a single message so the roles run in parallel. Pass each role its task prompt verbatim, exactly as written between the BEGIN/END markers.\n\n'
-  printf 'Do not review the PR yourself, do not read the diff, and never read, summarize, or write any payload file a role owns.\n\n'
+orch_rc=0
+if [[ "$REVIEW_HARNESS" == codex ]]; then
+  orch_stage="review roles"
+  # Codex has no subagent tool, so each role runs as its own read-only process
+  # (run_role_agents), the shape this stage had before the orchestrator. Its
+  # sandbox cannot write, so the role's final message, which codex lands in the
+  # role's raw file, is the payload.
+  role_args=()
   role_i=0
   while [[ "$role_i" -lt "$role_count" ]]; do
     role_label="${LENS_LABELS[$role_i]}"
-    role_raw_basename="$(basename "${LENS_RAW_FILES[$role_i]}")"
-    # shellcheck disable=SC2016  # the backticks are a markdown code span in the prompt, not a command substitution
-    printf -- '--- Role %d: agent type `review-agent-%s` ---\n' "$((role_i + 1))" "$role_label"
-    printf 'BEGIN TASK PROMPT\n'
-    printf 'Review this PR per your instructions.\n'
-    printf 'The line-numbered diff is at: %s\n' "$NUMBERED_BASENAME"
-    # ADR 0035: the intent role gets the second side of its comparison. The
-    # code role has only the diff, which is the quarantine ADR 0038 names.
-    if [[ "$role_label" == "intent" ]]; then
-      printf 'What the change says it does is at: %s\n' "$INTENT_BASENAME"
-    fi
-    # The diff goes by path, not inlined: inlining it and saying "reason over
-    # this" made the model treat the context as complete and skip opening the
-    # callers, which is the verify step's whole substance (ADR 0022).
-    printf 'Read it, then investigate the surrounding code with your tools '
-    printf '(open the callers, trace the data flow) to verify each candidate before scoring.\n'
-    printf 'Write your complete output, the ```json fenced payload your instructions require, to a new file named %s. ' "$role_raw_basename"
-    printf 'Your final reply must not restate the payload; one line confirming the write is enough.\n'
-    printf 'END TASK PROMPT\n\n'
+    role_prompt="$SCRATCH/.pr-review-role-prompt-$role_label.txt"
+    print_role_task "$role_label" codex "$NUMBERED_BASENAME" "$INTENT_BASENAME" \
+      "$(basename "${LENS_RAW_FILES[$role_i]}")" >"$role_prompt"
+    role_args+=("$role_label" "${PR_COLOR_START}pr${PR_NUMBER}:${role_label}${PR_COLOR_RESET}"
+      "$role_prompt" "${LENS_RAW_FILES[$role_i]}" "review-agent-$role_label")
     role_i=$((role_i + 1))
   done
-  printf 'Wait for every role to complete. A role that errors or writes nothing is tolerated: never retry it, never write its file yourself, and let its siblings finish. When all roles are done, reply with one line per role: <label>: ok or failed.\n'
-} >"$ORCH_PROMPT"
+  log_step "running review roles (${LENS_LABELS[*]}) via codex exec"
+  (
+    cd "$SCRATCH" || exit 1
+    run_role_agents "$REVIEW_AGENT_TIMEOUT" "${role_args[@]}"
+  ) || orch_rc=$?
+else
+  orch_stage="review orchestrator"
+  ORCH_PROMPT="$SCRATCH/.pr-review-orchestrator-prompt.txt"
+  {
+    printf 'You are a dispatch orchestrator. Spawn one subagent per role listed below with the Agent tool, issuing ALL the Agent calls in a single message so the roles run in parallel. Pass each role its task prompt verbatim, exactly as written between the BEGIN/END markers.\n\n'
+    printf 'Do not review the PR yourself, do not read the diff, and never read, summarize, or write any payload file a role owns.\n\n'
+    role_i=0
+    while [[ "$role_i" -lt "$role_count" ]]; do
+      role_label="${LENS_LABELS[$role_i]}"
+      role_raw_basename="$(basename "${LENS_RAW_FILES[$role_i]}")"
+      # shellcheck disable=SC2016  # the backticks are a markdown code span in the prompt, not a command substitution
+      printf -- '--- Role %d: agent type `review-agent-%s` ---\n' "$((role_i + 1))" "$role_label"
+      printf 'BEGIN TASK PROMPT\n'
+      print_role_task "$role_label" claude "$NUMBERED_BASENAME" "$INTENT_BASENAME" "$role_raw_basename"
+      printf 'END TASK PROMPT\n\n'
+      role_i=$((role_i + 1))
+    done
+    printf 'Wait for every role to complete. A role that errors or writes nothing is tolerated: never retry it, never write its file yourself, and let its siblings finish. When all roles are done, reply with one line per role: <label>: ok or failed.\n'
+  } >"$ORCH_PROMPT"
 
-log_step "running review orchestrator (${LENS_LABELS[*]}) via claude -p"
-orch_rc=0
-(
-  # One slot per hidden role session; released together after the stage.
-  slots="$(acquire_claude_slots "$role_count" "review orchestrator")"
-  # Explicit exit: the `( ... ) || orch_rc=$?` wrapper suppresses errexit inside
-  # this subshell, so an unguarded failed cd would run claude in the daemon's
-  # own repo and the roles would write payloads there.
-  cd "$SCRATCH" || {
+  log_step "running review orchestrator (${LENS_LABELS[*]}) via claude -p"
+  (
+    # One slot per hidden role session; released together after the stage.
+    slots="$(acquire_claude_slots "$role_count" "review orchestrator")"
+    # Explicit exit: the `( ... ) || orch_rc=$?` wrapper suppresses errexit inside
+    # this subshell, so an unguarded failed cd would run claude in the daemon's
+    # own repo and the roles would write payloads there.
+    cd "$SCRATCH" || {
+      release_claude_slots "$slots"
+      exit 1
+    }
+    rc=0
+    # The payload files are deliberately NOT pre-created: Write refuses to
+    # overwrite an existing file it has not Read.
+    # No agent name: the roles' system prompts come from the definitions
+    # run_agent hands to orchestrate, and the prompt file above is the
+    # orchestrator's whole instruction.
+    run_agent orchestrate "$REVIEW_AGENT_TIMEOUT" "$ORCH_PROMPT" "$ORCH_RAW" \
+      "${PR_COLOR_START}pr${PR_NUMBER}:review${PR_COLOR_RESET}" ||
+      rc=$?
     release_claude_slots "$slots"
-    exit 1
-  }
-  rc=0
-  # The payload files are deliberately NOT pre-created: Write refuses to
-  # overwrite an existing file it has not Read.
-  # No agent name: the roles' system prompts come from the definitions
-  # run_agent hands to orchestrate, and the prompt file above is the
-  # orchestrator's whole instruction.
-  run_agent orchestrate "$REVIEW_AGENT_TIMEOUT" "$ORCH_PROMPT" "$ORCH_RAW" \
-    "${PR_COLOR_START}pr${PR_NUMBER}:review${PR_COLOR_RESET}" ||
-    rc=$?
-  release_claude_slots "$slots"
-  exit "$rc"
-) || orch_rc=$?
+    exit "$rc"
+  ) || orch_rc=$?
+fi
 
 # A bad orchestrator exit is not fatal by itself: a role that finished writing
 # its payload before a timeout still counts, exactly as a surviving lens did
 # under the process fan-out. The per-role check logs what is missing, and
 # merge_findings.py rolls a total loss up to all-lenses-failed (ADR 0023).
 if [[ "$orch_rc" -eq "$TIMEOUT_EXIT" ]]; then
-  log_info "review orchestrator exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing with whatever payloads landed"
+  log_info "${orch_stage} exceeded ${REVIEW_AGENT_TIMEOUT}s; continuing with whatever payloads landed"
 elif [[ "$orch_rc" -ne 0 ]]; then
-  log_info "review orchestrator exited ${orch_rc}; continuing with whatever payloads landed"
+  log_info "${orch_stage} exited ${orch_rc}; continuing with whatever payloads landed"
 fi
 role_i=0
 while [[ "$role_i" -lt "$role_count" ]]; do
@@ -993,6 +1020,8 @@ log_step "merging lens payloads"
 # --session-limit-probe (#299): on a quota hit the roles' payload files stay
 # empty and the sentinel lands in the orchestrator transcript, so merge probes
 # it to keep #231's pause classification working under the orchestrator shape.
+# Under codex nothing writes the transcript, and clear_reserved_names removed
+# any the PR carried, so the probe finds no file and classifies nothing.
 if ! python3 "$SCRIPT_DIR/merge_findings.py" --no-style \
   --session-limit-probe "$ORCH_RAW" "${LENS_RAW_FILES[@]}" \
   >"$AUTHOR_FILE" 2>"$EXTRACT_ERR"; then
