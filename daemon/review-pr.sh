@@ -423,19 +423,8 @@ resolution() {
         slot="$(acquire_claude_slot judge-fix)"
         cd "$SCRATCH"
         inner_rc=0
-        # claude's own stderr (workspace-trust notice, etc.) goes to a sidecar
-        # file rather than the primary log; see the lens loop above.
-        run_with_timeout "$fix_check_timeout" \
-          claude -p --append-system-prompt-file "$judge_sys" \
-          --model "$REVIEW_MODEL" \
-          --effort "$REVIEW_EFFORT" \
-          --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
-          --disable-slash-commands \
-          --output-format stream-json --verbose <"$judge_prompt" \
-          2>"$judge_raw.stderr" |
-          python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$judge_raw" \
-            --label "${PR_COLOR_START}pr${PR_NUMBER}:judge-fix${PR_COLOR_RESET}" \
-            --cost-out "$judge_raw.cost" ||
+        run_agent read-only "$fix_check_timeout" "$judge_prompt" "$judge_raw" \
+          "${PR_COLOR_START}pr${PR_NUMBER}:judge-fix${PR_COLOR_RESET}" "$judge_sys" ||
           inner_rc=$?
         release_claude_slot "$slot"
         exit "$inner_rc"
@@ -957,35 +946,13 @@ orch_rc=0
     exit 1
   }
   rc=0
-  # `claude`'s own stderr (e.g. its non-interactive workspace-trust notice,
-  # expected every run since a fresh scratch clone is never pre-trusted) goes
-  # to a sidecar file so the primary log stays legible.
-  # --tools carries the union of what the role agents need plus Agent: a
-  # subagent's effective tool set is the intersection of its frontmatter list
-  # and the parent session's --tools, so a tool missing here is silently
-  # unavailable to every role no matter what the agent file grants.
-  # --permission-mode acceptEdits: non-interactive claude auto-denies the
-  # Write permission prompt, so without this every role completes its review
-  # and then fails to land its payload file. acceptEdits auto-approves file
-  # writes inside the session's working directory, which is the scratch.
   # The payload files are deliberately NOT pre-created: Write refuses to
   # overwrite an existing file it has not Read.
-  # No --append-system-prompt-file: the roles' system prompts come from the
-  # bundled .claude/agents/ definitions, loaded via --setting-sources project;
-  # the prompt file above is the orchestrator's whole instruction.
-  run_with_timeout "$REVIEW_AGENT_TIMEOUT" \
-    claude -p \
-    --model "$REVIEW_MODEL" \
-    --effort "$REVIEW_EFFORT" \
-    --tools Agent Read Write Bash Grep Glob WebFetch \
-    --permission-mode acceptEdits \
-    --strict-mcp-config --setting-sources project \
-    --disable-slash-commands \
-    --output-format stream-json --verbose <"$ORCH_PROMPT" \
-    2>"$ORCH_RAW.stderr" |
-    python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$ORCH_RAW" \
-      --label "${PR_COLOR_START}pr${PR_NUMBER}:review${PR_COLOR_RESET}" \
-      --cost-out "$ORCH_RAW.cost" ||
+  # No system-prompt file: the roles' system prompts come from the bundled
+  # .claude/agents/ definitions, and the prompt file above is the
+  # orchestrator's whole instruction.
+  run_agent orchestrate "$REVIEW_AGENT_TIMEOUT" "$ORCH_PROMPT" "$ORCH_RAW" \
+    "${PR_COLOR_START}pr${PR_NUMBER}:review${PR_COLOR_RESET}" ||
     rc=$?
   release_claude_slots "$slots"
   exit "$rc"
@@ -1091,8 +1058,6 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
     slot="$(acquire_claude_slot editor)"
     cd "$SCRATCH"
     rc=0
-    # See the lens loop above: claude's own stderr goes to a sidecar file, not
-    # the primary log.
     # The editor runs in the same directly-prompted shape as the roles, for the
     # same reason (ADR 0034's measurement: its slash command only dispatched the
     # editor subagent). It keeps its tools because ADR 0016's verify-at-HEAD
@@ -1117,17 +1082,8 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
         cat "$INTENT_BASENAME"
       fi
     } >"$editor_prompt"
-    run_with_timeout "$EDITOR_AGENT_TIMEOUT" \
-      claude -p --append-system-prompt-file "$editor_sys" \
-      --model "$REVIEW_MODEL" \
-      --effort "$REVIEW_EFFORT" \
-      --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
-      --disable-slash-commands \
-      --output-format stream-json --verbose <"$editor_prompt" \
-      2>"$EDIT_RAW_FILE.stderr" |
-      python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$EDIT_RAW_FILE" \
-        --label "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" \
-        --cost-out "$EDIT_RAW_FILE.cost" ||
+    run_agent read-only "$EDITOR_AGENT_TIMEOUT" "$editor_prompt" "$EDIT_RAW_FILE" \
+      "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" "$editor_sys" ||
       rc=$?
     release_claude_slot "$slot"
     exit "$rc"

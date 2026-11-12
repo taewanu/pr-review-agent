@@ -436,6 +436,8 @@ def test_wrapper_needs_a_command(tmp_path):
         # The repo's own idiom, which a ban on `claude` alone lets through
         # because the first word is the timeout wrapper.
         "run_with_timeout 5 claude -p x",
+        # The daemon's agent seam, which starts claude one call down.
+        "run_agent read-only 5 prompt raw label",
         # An interpreter reaches claude one level down, and the whole subtree
         # would inherit the token.
         "bash -c 'claude -p x'",

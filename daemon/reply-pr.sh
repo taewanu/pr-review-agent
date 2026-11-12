@@ -273,13 +273,9 @@ reply_rc=0
   slot="$(acquire_claude_slot reply)"
   cd "$SCRATCH"
   rc=0
-  # claude's own stderr (e.g. its non-interactive workspace-trust notice,
-  # expected every run since a fresh scratch clone is never pre-trusted) goes
-  # to a sidecar file rather than flooding the daemon log unlabeled.
   # Directly prompted like review-pr.sh's roles and editor (ADR 0038): the
-  # agent body (frontmatter stripped) is the system prompt, the prompt names
-  # the inputs, and slash commands are disabled because ADR 0034 measured the
-  # wrapper as pure forwarding overhead.
+  # agent body (frontmatter stripped) is the system prompt and the prompt names
+  # the inputs.
   reply_sys="$SCRATCH/.pr-review-reply-sys.md"
   awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
     ".claude/agents/review-agent-reply.md" >"$reply_sys"
@@ -289,17 +285,8 @@ reply_rc=0
     printf 'The PR under review: %s\n' "$PR_URL"
     printf 'The unaddressed reply threads are at: %s\n' "$THREADS_BASENAME"
   } >"$reply_prompt"
-  run_with_timeout "$REPLY_AGENT_TIMEOUT" \
-    claude -p --append-system-prompt-file "$reply_sys" \
-    --model "$REVIEW_MODEL" \
-    --effort "$REVIEW_EFFORT" \
-    --tools Read Grep Glob Bash --strict-mcp-config --setting-sources project \
-    --disable-slash-commands \
-    --output-format stream-json --verbose <"$reply_prompt" \
-    2>"$RAW_FILE.stderr" |
-    python3 "$SCRIPT_DIR/stream_format.py" --raw-out "$RAW_FILE" \
-      --label "${PR_COLOR_START}pr${PR_NUMBER}:reply${PR_COLOR_RESET}" \
-      --cost-out "$RAW_FILE.cost" ||
+  run_agent read-only "$REPLY_AGENT_TIMEOUT" "$reply_prompt" "$RAW_FILE" \
+    "${PR_COLOR_START}pr${PR_NUMBER}:reply${PR_COLOR_RESET}" "$reply_sys" ||
     rc=$?
   release_claude_slot "$slot"
   exit "$rc"
