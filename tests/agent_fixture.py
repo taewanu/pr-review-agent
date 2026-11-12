@@ -112,3 +112,15 @@ def run_agent_calls(script: Path) -> list[list[str]]:
         if re.match(r"^\s*run_agent ", line):
             calls.append(shlex.split(line.split("||")[0]))
     return calls
+
+
+@dataclass
+class CallSite:
+    mode: str
+    label: str
+    system: bool
+
+
+def call_site(words: list[str]) -> CallSite:
+    """Read a run_agent call positionally: mode, timeout, prompt, raw, label, [system file]."""
+    return CallSite(mode=words[1], label=words[5], system=len(words) == 7)

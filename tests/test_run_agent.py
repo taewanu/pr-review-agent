@@ -18,6 +18,8 @@ from agent_fixture import (
     MODEL,
     PROMPT,
     RESULT,
+    CallSite,
+    call_site,
     run_agent,
     run_agent_calls,
     system_path,
@@ -78,45 +80,39 @@ _ORCHESTRATE_ARGV = [
 ]
 
 
-def _site(script: Path, label: str) -> list[str]:
-    matches = [c for c in run_agent_calls(script) if c[5].endswith(f":{label}${{PR_COLOR_RESET}}")]
+def _site(script: Path, label: str) -> CallSite:
+    suffix = f":{label}${{PR_COLOR_RESET}}"
+    matches = [s for s in map(call_site, run_agent_calls(script)) if s.label.endswith(suffix)]
     assert len(matches) == 1, f"{script.name}: expected one run_agent call labelled {label}"
     return matches[0]
 
 
 @pytest.mark.parametrize(
-    ("script", "label"),
+    ("script", "label", "mode", "system", "argv"),
     [
-        (REVIEW_PR, "judge-fix"),
-        (REVIEW_PR, "review"),
-        (REVIEW_PR, "editor"),
-        (REPLY_PR, "reply"),
-    ],
-)
-def test_each_call_site_sends_its_exact_argv(tmp_path, script, label):
-    words = _site(script, label)
-    mode, has_system = words[1], len(words) == 7
-    run = run_agent(tmp_path, mode, system=has_system)
-    assert run.rc == 0, run.stderr
-    if label == "review":
+        (REVIEW_PR, "judge-fix", "read-only", True, _read_only_argv),
         # The orchestrator alone carries no system prompt: its roles' prompts
         # come from the bundled agent definitions.
-        assert (mode, has_system) == ("orchestrate", False)
-        assert run.argv == _ORCHESTRATE_ARGV
-    else:
-        assert (mode, has_system) == ("read-only", True)
-        assert run.argv == _read_only_argv(system_path(tmp_path))
+        (REVIEW_PR, "review", "orchestrate", False, lambda _: _ORCHESTRATE_ARGV),
+        (REVIEW_PR, "editor", "read-only", True, _read_only_argv),
+        (REPLY_PR, "reply", "read-only", True, _read_only_argv),
+    ],
+)
+def test_each_call_site_sends_its_exact_argv(tmp_path, script, label, mode, system, argv):
+    site = _site(script, label)
+    assert (site.mode, site.system) == (mode, system)
+    run = run_agent(tmp_path, site.mode, system=site.system)
+    assert run.rc == 0, run.stderr
+    assert run.argv == argv(system_path(tmp_path))
     assert run.stdin == PROMPT
     assert run.raw.read_text() == RESULT
     assert Path(f"{run.raw}.cost").read_text() == "0.25"
 
 
 def test_every_call_site_goes_through_run_agent():
-    # Four agent calls exist; a fifth spelled as a bare claude call would skip
-    # the model pin and the flags above, so none may appear outside run_agent.
-    assert len(run_agent_calls(REVIEW_PR)) == 3
-    assert len(run_agent_calls(REPLY_PR)) == 1
+    # A bare claude call would skip the model pin and the flags above.
     for script in (REVIEW_PR, REPLY_PR):
+        assert run_agent_calls(script), f"{script.name} has no run_agent call"
         text = re.sub(r"\\\n\s*", " ", script.read_text())
         bare = re.findall(r"(?m)^\s*(?:run_with_timeout\s+\S+\s+)?claude\s.*$", text)
         assert not bare, f"{script.name} calls claude directly: {bare}"

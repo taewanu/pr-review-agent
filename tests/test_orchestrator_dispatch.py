@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from agent_fixture import run_agent, run_agent_calls
+from agent_fixture import call_site, run_agent, run_agent_calls
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REVIEW_PR = REPO_ROOT / "daemon" / "review-pr.sh"
@@ -36,9 +36,9 @@ def _role_labels() -> list[str]:
 
 def _orchestrator_argv(tmp_path: Path) -> list[str]:
     """The argv the orchestrator call site sends to claude."""
-    calls = [c for c in run_agent_calls(REVIEW_PR) if c[1] == "orchestrate"]
-    assert len(calls) == 1, f"expected one orchestrate call, found {len(calls)}"
-    run = run_agent(tmp_path, "orchestrate", system=len(calls[0]) == 7)
+    sites = [s for s in map(call_site, run_agent_calls(REVIEW_PR)) if s.mode == "orchestrate"]
+    assert len(sites) == 1, f"expected one orchestrate call, found {len(sites)}"
+    run = run_agent(tmp_path, "orchestrate", system=sites[0].system)
     assert run.rc == 0 and run.argv, run.stderr
     return run.argv
 
@@ -99,7 +99,7 @@ def test_orchestrator_loads_agents_from_project_settings(tmp_path):
 
 def test_orchestrator_auto_approves_payload_writes(tmp_path):
     # Without acceptEdits every role completes its review and then fails to
-    # land its payload: a full-cost run producing an empty review (#299; the
+    # land its payload: a full-cost run producing an empty review (the
     # mechanism is documented at run_agent's orchestrate mode in lib.sh).
     argv = _orchestrator_argv(tmp_path)
     assert ("--permission-mode", "acceptEdits") in zip(argv, argv[1:], strict=False), (
