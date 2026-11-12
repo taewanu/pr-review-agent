@@ -406,14 +406,14 @@ resolve_review_model() {
 # otherwise change review depth unannounced. claude -p only warns on an unknown
 # level and runs at the model default, so an invalid value falls back here.
 resolve_review_effort() {
-  local effort
+  local effort default=high
   effort="$(resolve_tunable REVIEW_EFFORT "$1")"
   case "$effort" in
     low | medium | high | xhigh | max) ;;
-    "") effort=high ;;
+    "") effort="$default" ;;
     *)
-      log_info "REVIEW_EFFORT=${effort} is not one of low, medium, high, xhigh, max; using high"
-      effort=high
+      log_info "ignoring invalid REVIEW_EFFORT='${effort}', using default ${default}"
+      effort="$default"
       ;;
   esac
   printf '%s' "$effort"

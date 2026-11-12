@@ -168,13 +168,12 @@ def test_empty_effort_defaults(tmp_path):
 
 
 def test_unknown_effort_defaults_and_says_so(tmp_path):
-    # claude -p only warns on an unknown level and runs at the model default, so
-    # a typo must fall back to the pinned default here, and loudly.
+    # A typo must fall back loudly, for the reason resolve_review_effort gives.
     dotenv = tmp_path / ".env"
     dotenv.write_text("REVIEW_EFFORT=hihg\n")
     result = _run_resolver("resolve_review_effort", "REVIEW_EFFORT", dotenv)
     assert result.stdout == DEFAULT_EFFORT
-    assert "REVIEW_EFFORT=hihg" in result.stderr
+    assert "REVIEW_EFFORT='hihg'" in result.stderr
 
 
 def test_effort_template_default_matches_the_code_default():
