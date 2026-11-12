@@ -1,7 +1,7 @@
 """Tests for daemon/lib.sh's run_agent, the one seam every agent call goes through.
 
-Each daemon call site is resolved from the script itself (its mode and whether it
-passes a system prompt), then run against a fake `claude`, so the argv asserted
+Each daemon call site is resolved from the script itself (its mode and the agent it
+names), then run against a fake `claude`, so the argv asserted
 here is the argv that site sends, not a copy of it. That includes the --model and
 --effort pins: an unpinned call reviews on the operator's global model, and the
 review still reads like a review, so nothing else would notice.
@@ -9,6 +9,7 @@ review still reads like a review, so nothing else would notice.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -22,19 +23,18 @@ from agent_fixture import (
     call_site,
     run_agent,
     run_agent_calls,
-    system_path,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+AGENTS = REPO_ROOT / ".claude" / "agents"
 REVIEW_PR = REPO_ROOT / "daemon" / "review-pr.sh"
 REPLY_PR = REPO_ROOT / "daemon" / "reply-pr.sh"
 
 TIMEOUT_EXIT = 142
 
 _COMMON_TAIL = [
+    "--restricted",
     "--strict-mcp-config",
-    "--setting-sources",
-    "project",
     "--disable-slash-commands",
     "--output-format",
     "stream-json",
@@ -42,11 +42,11 @@ _COMMON_TAIL = [
 ]
 
 
-def _read_only_argv(system: str) -> list[str]:
+def _read_only_argv(raw: Path) -> list[str]:
     return [
         "-p",
         "--append-system-prompt-file",
-        system,
+        f"{raw}.system.md",
         "--model",
         MODEL,
         "--effort",
@@ -60,24 +60,27 @@ def _read_only_argv(system: str) -> list[str]:
     ]
 
 
-_ORCHESTRATE_ARGV = [
-    "-p",
-    "--model",
-    MODEL,
-    "--effort",
-    EFFORT,
-    "--tools",
-    "Agent",
-    "Read",
-    "Write",
-    "Bash",
-    "Grep",
-    "Glob",
-    "WebFetch",
-    "--permission-mode",
-    "acceptEdits",
-    *_COMMON_TAIL,
-]
+def _orchestrate_argv(raw: Path) -> list[str]:
+    return [
+        "-p",
+        "--model",
+        MODEL,
+        "--effort",
+        EFFORT,
+        "--tools",
+        "Agent",
+        "Read",
+        "Write",
+        "Bash",
+        "Grep",
+        "Glob",
+        "WebFetch",
+        "--permission-mode",
+        "acceptEdits",
+        "--agents",
+        f"{raw}.agents.json",
+        *_COMMON_TAIL,
+    ]
 
 
 def _site(script: Path, label: str) -> CallSite:
@@ -87,26 +90,98 @@ def _site(script: Path, label: str) -> CallSite:
     return matches[0]
 
 
+def _definition(path: Path) -> tuple[dict[str, str], str]:
+    """An agent file's frontmatter fields and its body."""
+    _, frontmatter, body = path.read_text().split("---\n", 2)
+    return dict(re.findall(r"(?m)^(\w+): (.*)$", frontmatter)), body
+
+
+def _flag_value(argv: list[str], flag: str) -> Path:
+    return Path(argv[argv.index(flag) + 1])
+
+
+_READ_ONLY_SITES = [
+    (REVIEW_PR, "judge-fix", "review-agent-fix-check"),
+    (REVIEW_PR, "editor", "review-agent-editor"),
+    (REPLY_PR, "reply", "review-agent-reply"),
+]
+
+
 @pytest.mark.parametrize(
-    ("script", "label", "mode", "system", "argv"),
+    ("script", "label", "mode", "agent", "argv"),
     [
-        (REVIEW_PR, "judge-fix", "read-only", True, _read_only_argv),
-        # The orchestrator alone carries no system prompt: its roles' prompts
-        # come from the bundled agent definitions.
-        (REVIEW_PR, "review", "orchestrate", False, lambda _: _ORCHESTRATE_ARGV),
-        (REVIEW_PR, "editor", "read-only", True, _read_only_argv),
-        (REPLY_PR, "reply", "read-only", True, _read_only_argv),
+        *(
+            (script, label, "read-only", agent, _read_only_argv)
+            for script, label, agent in _READ_ONLY_SITES
+        ),
+        # The orchestrator alone names no agent: its roles' prompts come from
+        # the definitions handed over with --agents.
+        (REVIEW_PR, "review", "orchestrate", None, _orchestrate_argv),
     ],
 )
-def test_each_call_site_sends_its_exact_argv(tmp_path, script, label, mode, system, argv):
+def test_each_call_site_sends_its_exact_argv(tmp_path, script, label, mode, agent, argv):
     site = _site(script, label)
-    assert (site.mode, site.system) == (mode, system)
-    run = run_agent(tmp_path, site.mode, system=site.system)
+    assert (site.mode, site.agent) == (mode, agent)
+    run = run_agent(tmp_path, site.mode, agent=site.agent)
     assert run.rc == 0, run.stderr
-    assert run.argv == argv(system_path(tmp_path))
+    assert run.argv == argv(run.raw)
     assert run.stdin == PROMPT
     assert run.raw.read_text() == RESULT
     assert Path(f"{run.raw}.cost").read_text() == "0.25"
+
+
+@pytest.mark.parametrize(("script", "label", "agent"), _READ_ONLY_SITES)
+def test_read_only_system_prompt_is_the_daemon_definitions_body(tmp_path, script, label, agent):
+    # The clone is the PR head, so a definition it carries is the PR author's.
+    planted = tmp_path / "clone" / ".claude" / "agents" / f"{agent}.md"
+    planted.parent.mkdir(parents=True)
+    planted.write_text("---\nname: planted\n---\nPLANTED INSTRUCTIONS\n")
+    run = run_agent(tmp_path, "read-only", agent=_site(script, label).agent)
+    assert run.rc == 0, run.stderr
+    system = _flag_value(run.argv, "--append-system-prompt-file").read_text()
+    assert system.strip() == _definition(AGENTS / f"{agent}.md")[1].strip()
+
+
+def test_orchestrator_roles_are_the_daemon_definitions(tmp_path):
+    # The clone is the PR head, so a definition it carries is the PR author's.
+    planted = tmp_path / "clone" / ".claude" / "agents" / "review-agent-code.md"
+    planted.parent.mkdir(parents=True)
+    planted.write_text("---\nname: review-agent-code\ntools: Read\n---\nPLANTED INSTRUCTIONS\n")
+    run = run_agent(tmp_path, "orchestrate")
+    assert run.rc == 0, run.stderr
+    handed = json.loads(_flag_value(run.argv, "--agents").read_text())
+    expected = {}
+    for path in sorted(AGENTS.glob("review-agent-*.md")):
+        meta, body = _definition(path)
+        expected[meta["name"]] = {
+            "description": meta["description"],
+            "prompt": body.strip(),
+            "tools": [t.strip() for t in meta["tools"].split(",")],
+        }
+    assert {name: {**d, "prompt": d["prompt"].strip()} for name, d in handed.items()} == expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "agent", "flag"),
+    [
+        ("read-only", "review-agent-editor", "--append-system-prompt-file"),
+        ("orchestrate", None, "--agents"),
+    ],
+)
+def test_definition_file_replaces_a_directory_left_at_its_path(tmp_path, mode, agent, flag):
+    # Reserved names are cleared once after the checkout, but an earlier agent
+    # in the same review can still create one.
+    suffix = ".system.md" if mode == "read-only" else ".agents.json"
+    run = run_agent(tmp_path, mode, agent=agent, dirs_left=(f".pr-review-raw.txt{suffix}",))
+    assert run.rc == 0, run.stderr
+    assert _flag_value(run.argv, flag).read_text().strip()
+
+
+def test_unknown_agent_refuses_without_running_claude(tmp_path):
+    run = run_agent(tmp_path, "read-only", agent="review-agent-missing")
+    assert run.rc == 1
+    assert run.argv is None
+    assert "no agent definition" in run.stderr
 
 
 def test_every_call_site_goes_through_run_agent():
@@ -119,7 +194,7 @@ def test_every_call_site_goes_through_run_agent():
 
 
 def test_nonzero_agent_exit_surfaces_to_the_caller(tmp_path):
-    run = run_agent(tmp_path, "read-only", system=True, env={"FAKE_CLAUDE_RC": "3"})
+    run = run_agent(tmp_path, "read-only", agent="review-agent-reply", env={"FAKE_CLAUDE_RC": "3"})
     assert run.rc == 3
     # The formatter still recorded what the agent printed; callers decide.
     assert run.raw.read_text() == RESULT
@@ -129,7 +204,7 @@ def test_timeout_surfaces_as_timeout_exit_with_empty_output(tmp_path):
     run = run_agent(
         tmp_path,
         "read-only",
-        system=True,
+        agent="review-agent-reply",
         timeout_secs=1,
         env={
             "FAKE_CLAUDE_SLEEP": "30",

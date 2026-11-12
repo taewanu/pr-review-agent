@@ -236,12 +236,11 @@ run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
   git fetch --quiet --depth=1 origin "refs/pull/${PR_NUMBER}/head"
   git checkout --quiet --detach "$HEAD_OID"
 )
+clear_reserved_names "$SCRATCH"
 
-# Bundle operator's agent defs into the scratch (ADR 0007).
-bundle_operator_agents "$SCRATCH"
-
-# Bare filenames so the prompt's named path survives a $TMPDIR with spaces
-# (same reason as review-pr.sh's diff handling).
+# Bare filenames under the prefix clear_reserved_names reserves, so the prompt's
+# named path survives a $TMPDIR with spaces (same reason as review-pr.sh's diff
+# handling).
 THREADS_BASENAME=".pr-review-threads.json"
 THREADS_FILE="$SCRATCH/$THREADS_BASENAME"
 RAW_FILE="$SCRATCH/.pr-review-reply-raw.txt"
@@ -274,11 +273,7 @@ reply_rc=0
   cd "$SCRATCH"
   rc=0
   # Directly prompted like review-pr.sh's roles and editor (ADR 0038): the
-  # agent body (frontmatter stripped) is the system prompt and the prompt names
-  # the inputs.
-  reply_sys="$SCRATCH/.pr-review-reply-sys.md"
-  awk 'BEGIN { n = 0 } /^---$/ { n++; next } n >= 2 { print }' \
-    ".claude/agents/review-agent-reply.md" >"$reply_sys"
+  # agent body is the system prompt and the prompt names the inputs.
   reply_prompt="$SCRATCH/.pr-review-reply-prompt.txt"
   {
     printf 'Process these reply threads per your instructions and emit the replies JSON.\n'
@@ -286,7 +281,7 @@ reply_rc=0
     printf 'The unaddressed reply threads are at: %s\n' "$THREADS_BASENAME"
   } >"$reply_prompt"
   run_agent read-only "$REPLY_AGENT_TIMEOUT" "$reply_prompt" "$RAW_FILE" \
-    "${PR_COLOR_START}pr${PR_NUMBER}:reply${PR_COLOR_RESET}" "$reply_sys" ||
+    "${PR_COLOR_START}pr${PR_NUMBER}:reply${PR_COLOR_RESET}" review-agent-reply ||
     rc=$?
   release_claude_slot "$slot"
   exit "$rc"

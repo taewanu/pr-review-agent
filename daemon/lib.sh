@@ -419,7 +419,127 @@ resolve_review_effort() {
   printf '%s' "$effort"
 }
 
-# run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [system-prompt-file]
+# agent_fields <agent-file>
+# Prints an agent file's name, description, and tools, one per line, or prints
+# `<file>:<line>: <problem>` and fails, because a definition read differently
+# from how its author meant it still runs, as a different agent. The one shape
+# read: LF line endings; a frontmatter block opening on line 1 and closed by the
+# next `---`; inside it exactly `name`, `description`, and `tools` as plain
+# `key: value` lines (one matching pair of surrounding quotes is stripped),
+# `tools` a comma-separated list; then a non-empty body.
+agent_fields() {
+  awk '
+    function fail(msg) {
+      printf "%s:%d: %s\n", FILENAME, FNR, msg
+      failed = 1
+      exit 1
+    }
+    /\r$/ { fail("CRLF line ending; save the file with LF line endings") }
+    state == 2 { if ($0 ~ /[^ \t]/) body = 1; next }
+    FNR == 1 {
+      if ($0 != "---") fail("expected --- opening the frontmatter on line 1")
+      state = 1
+      next
+    }
+    $0 == "---" {
+      if (!("name" in val)) fail("frontmatter has no name line")
+      if (!("description" in val)) fail("frontmatter has no description line")
+      if (!("tools" in val)) fail("frontmatter has no tools line")
+      state = 2
+      next
+    }
+    {
+      if ($0 !~ /^[a-z]+:( |$)/) fail("expected a plain key: value line")
+      key = $0
+      sub(/:.*/, "", key)
+      v = substr($0, length(key) + 2)
+      sub(/^[ \t]+/, "", v)
+      sub(/[ \t]+$/, "", v)
+      if (key != "name" && key != "description" && key != "tools") fail("unsupported key " key)
+      if (key in val) fail("duplicate key " key)
+      q = substr(v, 1, 1)
+      if ((q == "\"" || q == "\047") && length(v) >= 2 && substr(v, length(v)) == q) {
+        v = substr(v, 2, length(v) - 2)
+        if (index(v, q) || (q == "\"" && index(v, "\\"))) fail("unsupported quoting in " key)
+      } else if (v ~ /^([>|"\047#&*!%@`[{]|- )/ || v ~ /[ \t]#/) {
+        fail("unsupported YAML in " key "; write a plain value on one line")
+      }
+      if (v == "") fail("empty " key)
+      if (key == "tools") {
+        n = split(v, tool, ",")
+        for (i = 1; i <= n; i++) {
+          t = tool[i]
+          gsub(/^[ \t]+|[ \t]+$/, "", t)
+          if (t !~ /^[A-Za-z][A-Za-z0-9_]*(\([^()]*\))?$/) fail("tools entry \"" t "\" is not a tool name; list them as Read, Grep")
+        }
+      }
+      val[key] = v
+    }
+    END {
+      if (failed) exit 1
+      if (state == 0) fail("empty file")
+      if (state == 1) fail("frontmatter is never closed by ---")
+      if (!body) fail("empty body after the frontmatter")
+      print val["name"]
+      print val["description"]
+      print val["tools"]
+    }
+  ' "$1"
+}
+
+# agent_body <agent-file>
+# Prints an agent file's body verbatim: every line after the frontmatter's
+# closing `---`, a later `---` line included.
+agent_body() {
+  awk 'done { print; next } NR > 1 && $0 == "---" { done = 1 }' "$1"
+}
+
+# agent_definition <agent-file>
+# Prints one agent file as the `{<name>: {description, prompt, tools}}` entry
+# `claude --agents` takes, or logs where the file breaks the shape agent_fields
+# reads and fails.
+agent_definition() {
+  local fields name description tools
+  if ! fields="$(agent_fields "$1")"; then
+    log_err "agent definition ${fields}"
+    return 1
+  fi
+  {
+    IFS= read -r name
+    IFS= read -r description
+    IFS= read -r tools
+  } <<<"$fields"
+  jq -n --arg name "$name" --arg description "$description" --arg tools "$tools" \
+    --arg prompt "$(agent_body "$1")" \
+    '{($name): {description: $description, prompt: $prompt,
+      tools: ($tools | split(",") | map(gsub("^\\s+|\\s+$"; "")))}}'
+}
+
+# daemon_agents_json
+# Prints this checkout's review-agent-*.md definitions as the JSON object
+# `claude --agents` takes, keyed by each file's frontmatter name.
+daemon_agents_json() {
+  local f def defs=()
+  for f in "$(dirname "${BASH_SOURCE[0]}")/../.claude/agents/review-agent-"*.md; do
+    def="$(agent_definition "$f")" || return 1
+    defs+=("$def")
+  done
+  printf '%s\n' "${defs[@]}" | jq -s add
+}
+
+# write_run_file <path> <content>
+# Removes whatever is at <path> (a symlink itself, not its target) before
+# writing <content> there, because an agent earlier in the same review can leave
+# a directory or symlink at a name run_agent reuses.
+write_run_file() {
+  rm -rf -- "$1"
+  if ! printf '%s\n' "$2" 2>/dev/null >"$1"; then
+    log_err "run_agent: cannot write ${1}"
+    return 1
+  fi
+}
+
+# run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [agent-name]
 # The daemon's one way to run an agent: feeds <prompt-file> on stdin, streams
 # labelled activity lines to the terminal, and leaves the agent's final text in
 # <raw-out> (empty on timeout), its cost in <raw-out>.cost, and its own stderr in
@@ -428,22 +548,39 @@ resolve_review_effort() {
 # formatter's status, under the daemon's `set -o pipefail`.
 #
 # <mode> says what the agent may do:
-#   read-only    inspect the clone and answer in its final message.
-#   orchestrate  spawn the role subagents defined in the clone's .claude/agents/,
-#                each writing its payload file into the clone.
+#   read-only    inspect the clone and answer in its final message, with the body
+#                of this checkout's .claude/agents/<agent-name>.md as its system
+#                prompt (written to <raw-out>.system.md).
+#   orchestrate  spawn the role subagents defined by this checkout's
+#                .claude/agents/ (written to <raw-out>.agents.json), each writing
+#                its payload file into the clone.
+#
+# Every definition comes from this checkout, never the clone, because the clone
+# holds the PR head and its author controls it.
 #
 # Run it from inside the per-PR clone: the agent's working directory is the
 # caller's, and orchestrate's file writes are scoped to it.
 run_agent() {
-  local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" system="${6:-}"
+  local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" agent="${6:-}"
   local args=(-p)
-  if [[ -n "$system" ]]; then
-    args+=(--append-system-prompt-file "$system")
+  if [[ -n "$agent" ]]; then
+    local agent_file
+    agent_file="$(dirname "${BASH_SOURCE[0]}")/../.claude/agents/${agent}.md"
+    if [[ ! -r "$agent_file" ]]; then
+      log_err "run_agent: no agent definition '${agent}'"
+      return 1
+    fi
+    agent_definition "$agent_file" >/dev/null || return 1
+    write_run_file "$raw.system.md" "$(agent_body "$agent_file")" || return 1
+    args+=(--append-system-prompt-file "$raw.system.md")
   fi
   args+=(--model "$REVIEW_MODEL" --effort "$REVIEW_EFFORT")
   case "$mode" in
     read-only) args+=(--tools Read Grep Glob Bash) ;;
     orchestrate)
+      local agents_json
+      agents_json="$(daemon_agents_json)" || return 1
+      write_run_file "$raw.agents.json" "$agents_json" || return 1
       # --tools carries the union of what the role agents need plus Agent: a
       # subagent's effective tool set is the intersection of its frontmatter list
       # and the parent session's --tools, so a tool missing here is silently
@@ -451,19 +588,21 @@ run_agent() {
       # --permission-mode acceptEdits: non-interactive claude auto-denies the
       # Write permission prompt, so without this every role completes its review
       # and then fails to land its payload file. acceptEdits auto-approves file
-      # writes inside the session's working directory, which is the scratch.
-      args+=(--tools Agent Read Write Bash Grep Glob WebFetch --permission-mode acceptEdits)
+      # writes inside the session's working directory, which is the per-PR clone.
+      args+=(--tools Agent Read Write Bash Grep Glob WebFetch --permission-mode acceptEdits
+        --agents "$raw.agents.json")
       ;;
     *)
       log_err "run_agent: unknown mode '${mode}'"
       return 1
       ;;
   esac
-  # --setting-sources project is what loads the bundled .claude/agents/ role
-  # definitions orchestrate spawns. Slash commands are disabled because ADR 0034
-  # measured the slash-command wrapper as pure forwarding overhead; every call is
-  # directly prompted (ADR 0038).
-  args+=(--strict-mcp-config --setting-sources project --disable-slash-commands
+  # --restricted ignores every settings file (user, project, and local) and
+  # stops CLAUDE.md loading, so the clone's author cannot plant hooks, env, or
+  # instructions; it also confines file tools to the per-PR clone. Slash
+  # commands are disabled because ADR 0034 measured the slash-command wrapper as
+  # pure forwarding overhead; every call is directly prompted (ADR 0038).
+  args+=(--restricted --strict-mcp-config --disable-slash-commands
     --output-format stream-json --verbose)
   # claude's own stderr (e.g. its non-interactive workspace-trust notice,
   # expected every run since a fresh scratch clone is never pre-trusted) goes to
@@ -471,6 +610,18 @@ run_agent() {
   run_with_timeout "$secs" claude "${args[@]}" <"$prompt" 2>"$raw.stderr" |
     python3 "$(dirname "${BASH_SOURCE[0]}")/stream_format.py" --raw-out "$raw" \
       --label "$label" --cost-out "$raw.cost"
+}
+
+# clear_reserved_names <clone>
+# Every file the daemon writes into the per-PR clone is named `.pr-review-*` at
+# the clone's root, and that prefix is reserved: run this right after the
+# checkout so an entry the PR committed there can be neither read back as daemon
+# output, written through as a symlink, nor left to fail a write as a directory.
+# The match ignores case because a case-insensitive filesystem resolves any
+# casing of the prefix to the daemon's own file, and `rm` removes a symlink, not
+# its target.
+clear_reserved_names() {
+  find "$1" -mindepth 1 -maxdepth 1 -iname '.pr-review-*' -exec rm -rf {} +
 }
 
 # warn_env_drift <dotenv-path> <template-path>
@@ -1654,27 +1805,6 @@ format_clock_time() {
   date -r "$1" '+%H:%M' 2>/dev/null ||
     date -d "@$1" '+%H:%M' 2>/dev/null ||
     printf '%s' "$1"
-}
-
-# bundle_operator_agents <scratch-dir>
-# Copies operator's agent files from this repo's .claude/agents/ into the
-# scratch clone's .claude/agents/ so the daemon's dispatch (which reads them
-# from cwd) finds them without requiring target-repo setup (ADR 0007). Agent
-# files only: every dispatch is directly prompted (ADR 0038, #294), so no
-# slash-command files exist to bundle. Target-repo files (already present in
-# the scratch from the clone) win via the `[[ -e dst ]] || cp` guard; a repo
-# can ship its own override.
-bundle_operator_agents() {
-  local scratch="$1"
-  local repo_root
-  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  mkdir -p "$scratch/.claude/agents"
-  local f base
-  for f in "$repo_root/.claude/agents/review-agent-"*.md; do
-    [[ -e "$f" ]] || continue
-    base="$(basename "$f")"
-    [[ -e "$scratch/.claude/agents/$base" ]] || cp "$f" "$scratch/.claude/agents/$base"
-  done
 }
 
 # fetch_open_review_threads <owner> <repo> <pr-number>

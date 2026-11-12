@@ -1,7 +1,7 @@
 # ADR 0007: Operator-bundled agent definitions for cross-repo review
 
 Date: 2026-05-29
-Status: Accepted
+Status: Accepted. Amended 2026-11-12: the daemon no longer copies its definitions into the per-PR clone; `run_agent` (`daemon/lib.sh`) passes them to `claude -p` directly (`--agents` for the orchestrator's roles, the stripped body as the system prompt otherwise) and runs with `--restricted`, which loads no settings file or `CLAUDE.md` from the clone. The target-repo override below is withdrawn, because the clone holds the PR head and its author controls it, so a carried file let any PR author replace the reviewer's instructions. A future per-repo override would have to be read from the base branch, not the clone.
 
 ## Context
 
