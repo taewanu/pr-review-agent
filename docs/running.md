@@ -51,13 +51,13 @@ With `REVIEW_HARNESS=codex` in `.env`, every agent call runs on the Codex CLI in
 
 ## The `review` check
 
-Each review concludes the `review` check once:
+Each review concludes the `review` check:
 
 - **failure** when a finding thread is open after the review.
 - **success** when none is open, with "No findings open on this commit".
 - **neutral** when the review stopped before reaching a verdict.
 
-Replies do not update the check. A thread resolved by a reply leaves the check failed until the next commit is reviewed.
+After the daemon answers replies, it brings the check and the status comment to the open finding threads, as long as the reviewed commit is still the PR's latest. Each is updated only if it differs, so a check left behind by an earlier failed update is repaired too. A thread resolved or reopened in the GitHub UI, with no reply, shows on both when the daemon next answers a reply or reviews a commit on the PR.
 
 To block merges on the review, make `review` a required status check in the repository's branch protection.
 
