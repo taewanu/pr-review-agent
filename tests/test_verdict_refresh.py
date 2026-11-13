@@ -109,7 +109,7 @@ def _bash(snippet: str, env: dict | None = None) -> subprocess.CompletedProcess:
 
 
 def _status_body(
-    threads: list[dict], sha: str | None, tmp: Path, *, with_index: bool = True
+    threads: list[dict], sha: str | None, tmp: Path, *, with_index: bool = True, advisory: int = 1
 ) -> str:
     """The status comment the review posted, rendered by the review's own helpers:
     head-line from the open-thread verdict, the index with a delta line and an
@@ -120,7 +120,8 @@ def _status_body(
     state = "block" if any(not t["isResolved"] for t in threads) else "pass"
     index_cmd = (
         f'index="$(python3 {DAEMON}/findings_index.py --threads {threads_file} '
-        f'--operator {SLUG} --advisory 1 --review-url {PR_URL}#review --new 1 --fixed 0)"; '
+        f"--operator {SLUG} --advisory {advisory} "
+        f'--review-url {PR_URL}#review --new 1 --fixed 0)"; '
         if with_index
         else 'index=""; '
     )
@@ -661,6 +662,23 @@ def test_a_comment_from_a_review_that_could_not_read_the_threads_gets_its_index(
     assert "_Scope: the scope_\n\n**1 finding · 1 open · 0 resolved**" in body
     check = fx.check_patch()
     assert check is not None and check["conclusion"] == "failure"
+
+
+def test_an_indexless_comment_with_no_findings_gets_the_finished_reviews_affirmation(tmp_path):
+    # With no threads, the head-line alone can already match, so an indexless body
+    # would read as current; it gets the `No findings` index a finished review
+    # with no findings renders, byte for byte.
+    fx = _fixture(
+        tmp_path,
+        at_review=[],
+        now=[],
+        shown_conclusion="success",
+        body=_status_body([], REVIEWED, tmp_path, with_index=False),
+    )
+    result = _refresh(fx)
+    assert result.returncode == 0
+    assert fx.comment_patch() == _status_body([], REVIEWED, tmp_path, advisory=0)
+    assert "already shows pass" not in result.stderr
 
 
 def test_a_comment_in_a_form_the_refresh_does_not_rewrite_is_named_and_left(tmp_path):

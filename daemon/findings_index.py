@@ -118,6 +118,9 @@ _ROLLUP_RE = re.compile(
 )
 # The scope line render_status_comment puts under every head-line.
 _SCOPE_RE = re.compile(r"^_Scope: [^\n]*_$", re.MULTILINE)
+# The scope line with no index block under it, as a review renders it when its
+# own thread read failed.
+_BARE_SCOPE_RE = re.compile(r"^_Scope: [^\n]*_$(?=\n\n<details>)", re.MULTILINE)
 
 
 def refresh_body(body: str, threads: list[dict], operator: str, headline: str) -> str | None:
@@ -126,18 +129,25 @@ def refresh_body(body: str, threads: list[dict], operator: str, headline: str) -
     outside-the-diff pointer, and the trail describe the review, not the threads.
 
     A body without a rollup, which a review renders when its own thread read
-    failed, gets one under its scope line, so the head-line never moves without
-    the index that justifies it. Returns None for a body it cannot bring to the
-    threads: Findings and no scope line to put them under, or a rollup listing
-    Findings the threads no longer hold."""
+    failed, gets one under its scope line, or the `No findings` affirmation when
+    there are none, so the head-line never moves without the index that justifies
+    it. Returns None for a body it cannot bring to the threads: Findings and no
+    scope line to put them under, or a rollup listing Findings the threads no
+    longer hold."""
     findings = daemon_findings(threads, operator)
-    rollup = "\n".join(_rollup(findings))
-    if findings and _ROLLUP_RE.search(body):
-        body = _ROLLUP_RE.sub(lambda _: rollup, body, count=1)
-    elif findings and _SCOPE_RE.search(body):
-        body = _SCOPE_RE.sub(lambda m: f"{m.group(0)}\n\n{rollup}", body, count=1)
-    elif findings or _ROLLUP_RE.search(body):
+    if findings:
+        rollup = "\n".join(_rollup(findings))
+        if _ROLLUP_RE.search(body):
+            body = _ROLLUP_RE.sub(lambda _: rollup, body, count=1)
+        elif _SCOPE_RE.search(body):
+            body = _SCOPE_RE.sub(lambda m: f"{m.group(0)}\n\n{rollup}", body, count=1)
+        else:
+            return None
+    elif _ROLLUP_RE.search(body):
         return None
+    else:
+        affirmation = _clean_affirmation(None)
+        body = _BARE_SCOPE_RE.sub(lambda m: f"{m.group(0)}\n\n{affirmation}", body, count=1)
     _, newline, rest = body.partition("\n")
     return headline + newline + rest
 
