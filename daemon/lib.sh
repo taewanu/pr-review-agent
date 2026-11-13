@@ -1934,45 +1934,63 @@ format_clock_time() {
 # mirrors resolve_threads (RESOLUTION_SENTINEL), pinned by test_resolve_threads.
 # `root_comment_id` is the root comment's node id, the target of the in-place stamp
 # edit. Fetches comments(first:1): the stamp lives on the root comment (not a later
-# reply), so the rest of the thread need not be read. Best-effort: prints `[]` and
-# returns non-zero on query failure, so the caller degrades to "no candidates".
+# reply), so the rest of the thread need not be read. Reads every page of threads,
+# since a verdict from the first page alone misses an open finding past it.
+# Best-effort: prints `[]` and returns non-zero when any page fails or the pages
+# do not end, so the caller degrades to "no candidates".
 fetch_open_review_threads() {
   local owner="$1" repo="$2" pr="$3"
-  local resp
-  # $owner/$repo/$pr are GraphQL variables, not shell vars; keep them literal.
-  # shellcheck disable=SC2016
-  if ! resp="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
-    gh api graphql \
-    -f query='query($owner:String!,$repo:String!,$pr:Int!){
-      repository(owner:$owner,name:$repo){
-        pullRequest(number:$pr){
-          reviewThreads(first:100){
-            nodes{
-              id isResolved path originalLine originalStartLine line startLine
-              comments(first:1){ nodes{ id url author{ login } body } }
+  local resp pages="" page more cursor after_args=()
+  # Ten pages of 100 is far past any real PR; the cap stops a cursor that never
+  # advances, and the fetch then fails rather than return a list cut short.
+  for ((page = 0; page < 10; page++)); do
+    # $owner/$repo/$pr/$after are GraphQL variables, not shell vars; keep them literal.
+    # shellcheck disable=SC2016
+    if ! resp="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+      gh api graphql \
+      -f query='query($owner:String!,$repo:String!,$pr:Int!,$after:String){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$pr){
+            reviewThreads(first:100,after:$after){
+              pageInfo{ hasNextPage endCursor }
+              nodes{
+                id isResolved path originalLine originalStartLine line startLine
+                comments(first:1){ nodes{ id url author{ login } body } }
+              }
             }
           }
         }
-      }
-    }' -f owner="$owner" -f repo="$repo" -F pr="$pr" 2>/dev/null)"; then
-    printf '[]'
-    return 1
-  fi
-  jq -c '[.data.repository.pullRequest.reviewThreads.nodes[]
-    | {
-        thread_id: .id,
-        is_resolved: .isResolved,
-        root_author: (.comments.nodes[0].author.login // null),
-        root_body: (.comments.nodes[0].body // ""),
-        root_comment_id: (.comments.nodes[0].id // null),
-        root_comment_url: (.comments.nodes[0].url // null),
-        path: .path,
-        original_line: .originalLine,
-        original_start_line: .originalStartLine,
-        head_line: .line,
-        head_start_line: .startLine,
-        has_resolution_stamp: ((.comments.nodes[0].body // "") | contains("<!-- pr-review-agent:resolved -->"))
-      }]' <<<"$resp"
+      }' -f owner="$owner" -f repo="$repo" -F pr="$pr" \
+      ${after_args[@]+"${after_args[@]}"} 2>/dev/null)" ||
+      ! more="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo
+        | "\(.hasNextPage // false) \(.endCursor // "")"' <<<"$resp")"; then
+      break
+    fi
+    pages+="$resp"$'\n'
+    read -r more cursor <<<"$more"
+    if [[ "$more" != "true" ]]; then
+      jq -cs '[.[] | .data.repository.pullRequest.reviewThreads.nodes[]
+      | {
+          thread_id: .id,
+          is_resolved: .isResolved,
+          root_author: (.comments.nodes[0].author.login // null),
+          root_body: (.comments.nodes[0].body // ""),
+          root_comment_id: (.comments.nodes[0].id // null),
+          root_comment_url: (.comments.nodes[0].url // null),
+          path: .path,
+          original_line: .originalLine,
+          original_start_line: .originalStartLine,
+          head_line: .line,
+          head_start_line: .startLine,
+          has_resolution_stamp: ((.comments.nodes[0].body // "") | contains("<!-- pr-review-agent:resolved -->"))
+        }]' <<<"$pages"
+      return
+    fi
+    [[ -n "$cursor" ]] || break
+    after_args=(-f "after=${cursor}")
+  done
+  printf '[]'
+  return 1
 }
 
 # render_review_footer <app-slug> <head-sha>

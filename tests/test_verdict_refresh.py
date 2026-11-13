@@ -72,8 +72,16 @@ def _thread(n: int, resolved: bool) -> dict:
     }
 
 
-def _graphql(threads: list[dict]) -> dict:
-    return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": threads}}}}}
+def _graphql(threads: list[dict], next_cursor: str | None = None) -> dict:
+    """One page of reviewThreads; `next_cursor` says a later page follows."""
+    page_info = {"hasNextPage": next_cursor is not None, "endCursor": next_cursor}
+    return {
+        "data": {
+            "repository": {
+                "pullRequest": {"reviewThreads": {"pageInfo": page_info, "nodes": threads}}
+            }
+        }
+    }
 
 
 def _flat(threads: list[dict]) -> list[dict]:
@@ -177,7 +185,13 @@ case "$args" in
     jq -r "$2" "$data/pull.json"
     ;;
   *graphql*)
-    if [[ -f "$data/resolved_by_reply" ]]; then
+    after=""
+    for a in "$@"; do
+      [[ "$a" == after=* ]] && after="${a#after=}"
+    done
+    if [[ -n "$after" ]]; then
+      cat "$data/graphql_${after}.json"
+    elif [[ -f "$data/resolved_by_reply" ]]; then
       cat "$data/graphql_after.json"
     else
       cat "$data/graphql.json"
@@ -216,6 +230,14 @@ class Fixture:
 
     def fail(self, write: str) -> None:
         (self.data / f"{write}.FAIL").touch()
+
+    def set_thread_pages(self, *pages: dict) -> None:
+        """Serve the threads as `pages`, the first unasked for and each later one
+        under the cursor its predecessor names."""
+        (self.data / "graphql.json").write_text(json.dumps(pages[0]))
+        for prev, page in zip(pages, pages[1:], strict=False):
+            cursor = prev["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"]
+            (self.data / f"graphql_{cursor['endCursor']}.json").write_text(json.dumps(page))
 
     def set_head(self, sha: str) -> None:
         """What the PR's head is when the refresh re-reads it."""
@@ -419,6 +441,35 @@ def test_a_head_that_moved_or_cannot_be_reread_before_the_writes_blocks_them(tmp
     assert fx.comment_patch() is None
     assert fx.check_patch() is None
     assert "PATCH" not in fx.calls()
+
+
+def test_an_open_finding_on_a_later_page_of_threads_keeps_the_verdict_blocked(tmp_path):
+    # GitHub serves review threads a page at a time; a verdict read from the first
+    # page alone passes a PR whose open finding sits on the next one.
+    fx = _fixture(
+        tmp_path,
+        at_review=[_thread(1, False), _thread(2, False)],
+        now=[],
+        shown_conclusion="failure",
+    )
+    fx.set_thread_pages(_graphql([_thread(1, True)], "p2"), _graphql([_thread(2, False)]))
+    assert _refresh(fx).returncode == 0
+    body = fx.comment_patch()
+    assert body is not None
+    assert body.splitlines()[0].endswith(BLOCK_LINE)
+    assert "**2 findings · 1 open · 1 resolved**" in body
+    assert fx.check_patch() is None
+
+
+def test_a_thread_cursor_that_never_ends_fails_the_fetch_within_a_bound(tmp_path):
+    # A cut-short list would hide open findings, so pages that never end fail the
+    # fetch, after a bounded number of calls.
+    fx = _fixture(tmp_path, at_review=[_thread(1, False)], now=[], shown_conclusion="failure")
+    fx.set_thread_pages(_graphql([_thread(1, True)], "p2"), _graphql([_thread(2, True)], "p2"))
+    result = _bash(f"PRA_APP_ID={APP_ID}; fetch_open_review_threads example example 7", fx.env)
+    assert result.returncode != 0
+    assert result.stdout == "[]"
+    assert fx.calls().count("graphql") == 10
 
 
 def test_a_status_comment_without_a_completed_review_is_left_alone(tmp_path):
