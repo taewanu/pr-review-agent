@@ -25,7 +25,7 @@ A finding from the `intent` role on this repository's PR #310, whose test plan c
 
 ## Know before you start
 
-- **You register a GitHub App and keep the machine on.**
+- **You register a GitHub App and keep the machine on.** Reviews run only while the daemon runs. Tested on macOS.
 - **It polls.** A review starts on the next polling cycle (default 5 minutes) and takes several minutes.
 - **It runs an agent over files any PR author wrote.** See [Security](#security).
 - **It is a `0.x` preview.** Review wording, line anchoring, and re-review skipping still change.
