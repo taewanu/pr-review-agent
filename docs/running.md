@@ -1,0 +1,133 @@
+# Running the daemon
+
+This page covers what the daemon needs, how a review runs, foreground and background operation, one-shot commands, replies to findings, and forking.
+
+## Requirements
+
+- **A machine that stays on.** macOS is the tested platform. CI runs the test suite on Linux. The foreground loop runs without `launchd`. Only background mode needs it.
+- **Claude Code v2.1.281 or later**, as `claude` on your `PATH`, signed in. The daemon passes role definitions to `--agents` as a file, which v2.1.281 added.
+- **`gh`** ([GitHub CLI](https://cli.github.com/)), **`git`**, **`jq`**, **`openssl`**, and **`curl`** on your `PATH`. You do not need `gh auth login`. The daemon signs in as the App.
+- **Python 3.13 or later** as `python3`, with the dependencies in `pyproject.toml` installed (`python3 -m pip install -e .`).
+- **A GitHub App you register.** See [Register the GitHub App](github-app.md).
+
+The repository's `mise.toml` pins tools for contributors. The daemon does not need mise.
+
+## How it works
+
+Each polling cycle, the daemon lists open PRs on each watched repository. It skips drafts, PRs with the [opt-out label](configuration.md#skipping-a-single-pr), and commits it has already reviewed.
+
+For each remaining PR, the daemon:
+
+1. Makes a per-PR clone.
+2. Runs the `code` and `intent` roles through `claude -p` ([ADR 0038](adr/0038-review-roles-from-contamination-isolation.md)).
+3. Drops findings below the confidence threshold ([ADR 0022](adr/0022-confidence-scored-generate-verify.md)), then runs the editor pass ([ADR 0016](adr/0016-editorial-pass-over-review-content.md)).
+4. Posts the remaining findings as one `COMMENT` review.
+5. Concludes the `review` check ([ADR 0039](adr/0039-review-state-on-the-checks-row.md)).
+
+On later commits, the daemon reviews only the new changes. It resolves threads whose findings the new code fixed ([ADR 0017](adr/0017-commit-driven-thread-resolution.md)).
+
+Role definitions come from `.claude/agents/` in the daemon's checkout, not from the per-PR clone ([ADR 0007](adr/0007-operator-bundled-agents.md)). To change how reviews behave, edit those files.
+
+## The `review` check
+
+Each review concludes the `review` check once:
+
+- **failure** when a finding thread is open after the review.
+- **success** when none is open, with "No findings open on this commit".
+- **neutral** when the review stopped before reaching a verdict.
+
+Replies do not update the check. A thread resolved by a reply leaves the check failed until the next commit is reviewed.
+
+To block merges on the review, make `review` a required status check in the repository's branch protection.
+
+## Replying to findings
+
+The daemon answers any reply to a finding from a user who is not a bot, on the next polling cycle. It checks the reply against the file at the latest commit.
+
+| Reply | Example | Reaction | Answer |
+|---|---|---|---|
+| Fix claim | "Done in `abc123`" | 👀 | confirms the fix or names the mismatch |
+| Question or pushback | "This is a false positive" | 👀 | stands by the finding or withdraws it |
+| Acknowledgment | "Thanks" | 👍 | none |
+
+## Foreground
+
+```bash
+bash daemon/run.sh
+```
+
+- **Stop:** press Ctrl-C. The loop exits and releases its lock.
+- **Update:** stop it, run `git pull`, and start it again. A pull that changes only `daemon/poll.sh` or the review pipeline takes effect on the next polling cycle without a restart. `run.sh` starts `poll.sh` fresh each cycle.
+
+One loop runs at a time. A second `run.sh` prints `another pr-review loop is already running` and exits.
+
+## What a run looks like
+
+In the terminal:
+
+- `polling loop up (pid …, interval 300s, …)`: the loop started.
+- `watched: <owner>/<repo> (app: <id>, …)`: your `.env` loaded.
+- `reviewing: <pr-url> (HEAD <sha>)`: a review began.
+- `cycle done · 1 repo · 1 reviewed`: the polling cycle finished.
+
+On the pull request:
+
+- A check named `review` appears while the review runs.
+- A status comment from `<app-name>[bot]` names the commit under review. It then lists the findings and the commits reviewed.
+- A review from `<app-name>[bot]` carries the findings inline.
+
+If none of this happens, see [Troubleshooting](troubleshooting.md).
+
+## Background (optional)
+
+Background mode registers the daemon as a `launchd` job, which needs macOS:
+
+```bash
+bash bin/install.sh
+```
+
+This writes `~/Library/LaunchAgents/com.user.pr-review.plist` and starts the same `run.sh` loop. The job starts again at login. `launchd` restarts the loop if it exits with an error. Output goes to `.daemon.log`.
+
+The job keeps the `PATH` it was installed with. Re-run `install.sh` after changing your `PATH`.
+
+To remove the job:
+
+```bash
+bash bin/uninstall.sh
+```
+
+This keeps the state in `~/.pr-review-agent/`.
+
+Two limits:
+
+- **Keep this checkout on `main`.** The job runs from this working tree, so switching branches changes the running daemon. Develop in a separate clone ([ADR 0011](adr/0011-foreground-first-operating-model.md)).
+- **Shell variables do not reach the job.** It sees only `PATH`, `HOME`, and `.env`. Put settings in `.env` and keep the key at `~/.pr-review-agent/app.pem`.
+
+Follow the log:
+
+```bash
+tail -f .daemon.log
+```
+
+Show the time since the last polling cycle started:
+
+```bash
+echo $(( $(date +%s) - $(cat ~/.pr-review-agent/daemon.heartbeat) ))s since last cycle
+```
+
+## One-shot commands
+
+These run one step without the loop. `<pr-url>` is a full `https://github.com/<owner>/<repo>/pull/<number>` URL.
+
+| Command | Does |
+|---|---|
+| `bash daemon/poll.sh` | one polling cycle |
+| `bash daemon/review-pr.sh <pr-url>` | review one PR and post the result |
+| `bash daemon/review-pr.sh --dry-run <pr-url>` | review one PR, post nothing |
+| `bash daemon/reply-pr.sh <pr-url>` | answer pending replies on one PR |
+
+`review-pr.sh` skips a commit it has already reviewed. `--dry-run` reviews it anyway and keeps the per-PR clone, whose path it prints. `--keep-scratch` keeps the per-PR clone on a normal run of either script.
+
+## Forking
+
+A fork posts under its own App. The review footer links to the page of the App the daemon signs in as. [Register your own App](github-app.md) and set `GITHUB_APP_ID`. Two Apps installed on one repository each post their own review on every PR.
