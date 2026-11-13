@@ -38,6 +38,8 @@ cleanup() { release_daemon_singleton "$PIDFILE"; }
 trap cleanup EXIT
 trap 'exit 0' INT TERM
 
+offer_model_setup "$REPO_ROOT/.env" || exit 1
+
 # Boot-time, not per-tick: poll.sh runs every cycle, and repeating a static
 # drift warning each cycle would bury it (#201).
 warn_env_drift "$REPO_ROOT/.env" "$REPO_ROOT/templates/.env.example"

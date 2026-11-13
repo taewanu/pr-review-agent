@@ -466,16 +466,18 @@ resolve_review_model() {
 resolve_review_effort() {
   local effort default=high
   effort="$(resolve_tunable REVIEW_EFFORT "$1")"
-  case "$effort" in
-    low | medium | high | xhigh | max) ;;
-    "") effort="$default" ;;
-    *)
-      log_info "ignoring invalid REVIEW_EFFORT='${effort}', using default ${default}"
-      effort="$default"
-      ;;
-  esac
+  if [[ -z "$effort" ]]; then
+    effort="$default"
+  elif [[ " $REVIEW_EFFORT_LEVELS " != *" $effort "* ]]; then
+    log_info "ignoring invalid REVIEW_EFFORT='${effort}', using default ${default}"
+    effort="$default"
+  fi
   printf '%s' "$effort"
 }
+
+# The levels resolve_review_effort accepts, space-separated; bin/setup-model.sh
+# offers the same list.
+REVIEW_EFFORT_LEVELS="low medium high xhigh max"
 
 # resolve_review_harness <dotenv-path>
 # Resolve which agent CLI run_agent drives, printing it: claude (the default) or
@@ -490,6 +492,71 @@ resolve_review_harness() {
       log_err "REVIEW_HARNESS='${harness}' is not claude or codex"
       return 1
       ;;
+  esac
+}
+
+# set_dotenv_keys <dotenv-path> KEY=VALUE...
+# Sets each KEY on the first `KEY=` line, the one resolve_tunable reads, or
+# appends it, leaving every other byte as it was. A missing .env starts from the
+# template. The new file replaces the old in one rename beside it, so a reader
+# never sees half a file and a symlinked .env is written through. A value outside
+# a plain model-name alphabet is refused, because it would land unquoted in a
+# file other scripts parse with grep.
+set_dotenv_keys() {
+  local dotenv="$1" pair real src tmp
+  local value_re='^[A-Z_][A-Z0-9_]*=[]A-Za-z0-9._:/@[-]+$'
+  shift
+  for pair in "$@"; do
+    if [[ ! "$pair" =~ $value_re ]]; then
+      log_err "not writing ${pair%%=*}: the value is empty or has a character other than letters, digits, and . _ : / @ [ ] -"
+      return 1
+    fi
+  done
+  real="$(physical_path "$dotenv")" || return 1
+  src="$real"
+  [[ -e "$src" ]] || src="$(dirname "${BASH_SOURCE[0]}")/../templates/.env.example"
+  if ! tmp="$(mktemp "$(dirname "$real")/.env.XXXXXX")"; then
+    log_err "could not write ${dotenv}; it is unchanged"
+    return 1
+  fi
+  if python3 -c '
+import re, sys
+src, out, *pairs = sys.argv[1:]
+data = open(src, "rb").read()
+for pair in pairs:
+    line = pair.encode()
+    key = line.split(b"=", 1)[0]
+    found = re.search(rb"^" + re.escape(key) + rb"=[^\r\n]*", data, re.M)
+    if found:
+        data = data[: found.start()] + line + data[found.end() :]
+    else:
+        data += (b"" if data.endswith(b"\n") or not data else b"\n") + line + b"\n"
+open(out, "wb").write(data)
+' "$src" "$tmp" "$@" && chmod 600 "$tmp" && mv -f "$tmp" "$real"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  log_err "could not write ${dotenv}; it is unchanged"
+  return 1
+}
+
+# offer_model_setup <dotenv-path>
+# Offers bin/setup-model.sh at an interactive start when neither the environment
+# nor .env names a REVIEW_MODEL, and fails only when that setup fails. Without a
+# terminal it logs a hint and returns 0, because launchd restarts the job on a
+# non-zero exit.
+offer_model_setup() {
+  local answer
+  [[ -z "$(resolve_tunable REVIEW_MODEL "$1")" ]] || return 0
+  if [[ ! -t 0 ]]; then
+    log_info "no review model chosen, so reviews run on the defaults; run bash bin/setup-model.sh in a terminal to choose one"
+    return 0
+  fi
+  printf 'No review model chosen. Set it up now? [Y/n] ' >&2
+  IFS= read -r answer || answer=n
+  case "$answer" in
+    "" | [Yy]*) bash "$(dirname "${BASH_SOURCE[0]}")/../bin/setup-model.sh" "$1" ;;
+    *) log_info "continuing on the defaults; run bash bin/setup-model.sh to choose a model later" ;;
   esac
 }
 
