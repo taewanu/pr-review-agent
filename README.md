@@ -25,7 +25,7 @@ A finding from the `intent` role on this repository's PR #310, whose test plan c
 
 ## Know before you start
 
-- **You register a GitHub App and keep the machine on.** Reviews run only while the daemon runs. Tested on macOS.
+- **You register a GitHub App and keep the machine on.**
 - **It polls.** A review starts on the next polling cycle (default 5 minutes) and takes several minutes.
 - **It runs an agent over files any PR author wrote.** See [Security](#security).
 - **It is a `0.x` preview.** Review wording, line anchoring, and re-review skipping still change.
@@ -54,7 +54,7 @@ A finding from the `intent` role on this repository's PR #310, whose test plan c
    GITHUB_APP_ID=<your-app-id>
    ```
 
-4. **Start the daemon.** Then open a non-draft PR on a watched repository. The first start asks whether to choose the agent CLI and model ([details](docs/running.md#choosing-the-agent-cli-and-model)); answering `n` keeps Claude Code and its default model.
+4. **Start the daemon.** Then open a non-draft PR on a watched repository. The first start offers to [choose the agent CLI and model](docs/running.md#choosing-the-agent-cli-and-model); `n` keeps Claude Code and its default model.
 
    ```bash
    source .venv/bin/activate
@@ -70,7 +70,7 @@ Press Ctrl-C to stop. If nothing appears, see [Troubleshooting](docs/troubleshoo
 
 ## Security
 
-The PR's author writes everything in the per-PR clone; everything else on the machine is yours. Below are Claude Code's limits; [Codex](docs/running.md#codex) has its own.
+The PR's author writes everything in the per-PR clone; everything else on the machine is yours. Below are Claude Code's limits; [Codex's](docs/running.md#codex) differ.
 
 **What a pull request cannot do**
 
