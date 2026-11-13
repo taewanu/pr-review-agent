@@ -355,7 +355,9 @@ def test_timeout_surfaces_as_timeout_exit_with_empty_output(tmp_path):
         tmp_path,
         "read-only",
         agent="review-agent-reply",
-        timeout_secs=1,
+        # The fake must record its stdin before the cap fires, and a loaded runner
+        # can delay its start past 1s.
+        timeout_secs=3,
         env={
             "FAKE_CLAUDE_SLEEP": "30",
             "TIMEOUT_POLL_INTERVAL": "1",

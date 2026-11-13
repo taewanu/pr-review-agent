@@ -110,6 +110,22 @@ def test_over_cap_is_killed_with_timeout_exit():
     assert elapsed < 5, f"took {elapsed:.1f}s; alarm did not fire"
 
 
+def test_a_cap_never_fires_before_it_has_elapsed(tmp_path):
+    # The stub rolls the second over between the deadline's clock read and the
+    # watchdog's first one, where a truncated deadline fired with no time elapsed.
+    counter = tmp_path / "date_calls"
+    counter.write_text("0")
+    stub = (
+        f'_cf="{counter}"; '
+        'date() { if [ "$1" = "+%s" ]; then '
+        'n=$(cat "$_cf"); echo $((n + 1)) >"$_cf"; '
+        'if [ "$n" -eq 0 ]; then printf 100; else printf 101; fi; '
+        'else command date "$@"; fi; }; '
+    )
+    result = _run(f"{stub} run_with_timeout 1 sleep 0.5")
+    assert result.returncode == 0, result.stderr
+
+
 def test_command_own_failure_is_not_masked_as_timeout():
     # An ordinary non-zero exit must surface as itself, not be misread as a timeout.
     result = _run("run_with_timeout 5 sh -c 'exit 3'")
@@ -149,10 +165,6 @@ def test_timeout_escalates_to_sigkill_when_term_is_ignored():
     ends it.
     """
     start = time.monotonic()
-    # Cap 2, not 1: at cap 1 a second-boundary read fires the watchdog with ~0
-    # effective duration, so the KILL lands at just the grace (~2.3s) and trips
-    # the lower bound below (#260, same degeneracy the nested-cap test hit). At
-    # cap 2 the effective duration is at least ~1s, keeping elapsed above 3s.
     result = _run(
         "run_with_timeout 2 sh -c 'trap \"\" TERM; while :; do sleep 0.2; done'",
         env={"TIMEOUT_KILL_GRACE": "2"},
@@ -160,7 +172,7 @@ def test_timeout_escalates_to_sigkill_when_term_is_ignored():
     elapsed = time.monotonic() - start
     assert result.returncode == TIMEOUT_EXIT, result.stderr
     # Past the cap plus the grace (it survived the TERM), but bounded by the KILL.
-    assert 2.5 < elapsed < 12, f"took {elapsed:.1f}s; escalation did not bound it"
+    assert 4 < elapsed < 12, f"took {elapsed:.1f}s; escalation did not bound it"
 
 
 def test_escalation_reaches_a_child_whose_parent_took_the_term(tmp_path):
@@ -248,12 +260,8 @@ def test_a_nested_cap_does_not_orphan_the_inner_tree(tmp_path):
         f"source {LIB}\nrun_with_timeout 300 sh -c 'sleep 120 & echo $! >{pidfile}; wait'\n"
     )
 
-    # Outer cap 2, not 1: at cap 1 the watchdog's first `date +%s` read can land
-    # at floor(T)+1 across a second boundary and fire with ~0 effective duration,
-    # before the inner tree has forked the `sleep 120` for the outer kill to
-    # reach (#260). Cap 2 keeps that first read below the deadline by
-    # construction. stdout is detached so a leaked child cannot hold the capture
-    # pipe open and turn this failure into a 60s hang.
+    # stdout is detached so a leaked child cannot hold the capture pipe open and
+    # turn this failure into a 60s hang.
     start = time.monotonic()
     # One finally covers both exits: the assertion path below and the 60s-hang
     # path, which is the one a leak is guaranteed on, so cleanup must reach it.

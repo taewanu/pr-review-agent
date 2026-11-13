@@ -655,14 +655,15 @@ def test_a_role_past_the_cap_is_named_and_surfaces_as_a_timeout(base):
     clone = base / "clone"
     clone.mkdir()
     args = _write_roles(clone, ("code", "intent"))
+    # Cap 3 for the reason test_run_agent's timeout test gives.
     result = _bash(
         base,
         _FAN_OUT,
-        [str(clone), "1", *args],
+        [str(clone), "3", *args],
         env={"FAKE_CODEX_HANG_ON": "intent task", **_FAST_TIMEOUT},
     )
     assert result.returncode == TIMEOUT_EXIT, result.stderr
-    assert "intent role exceeded 1s" in result.stderr
+    assert "intent role exceeded 3s" in result.stderr
     assert "code role exceeded" not in result.stderr
     assert (clone / ".pr-review-raw-code.txt").read_text() == "code task\n"
 
