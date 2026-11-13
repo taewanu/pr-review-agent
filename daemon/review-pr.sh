@@ -890,8 +890,9 @@ ORCH_RAW="$SCRATCH/.pr-review-orchestrator.txt"
 orch_rc=0
 if [[ "$REVIEW_HARNESS" == codex ]]; then
   orch_stage="review roles"
-  # Codex has no subagent tool, so each role runs as its own read-only process
-  # (run_role_agents), the shape this stage had before the orchestrator. Its
+  # Codex's subagents are disabled, because a spawned session would hold no
+  # slot, so each role runs as its own read-only process (run_role_agents), the
+  # shape this stage had before the orchestrator. Its
   # sandbox cannot write, so the role's final message, which codex lands in the
   # role's raw file, is the payload.
   role_args=()

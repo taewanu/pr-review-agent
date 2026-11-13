@@ -841,7 +841,7 @@ run_agent_codex() {
     return 1
   fi
   if [[ "$mode" == orchestrate ]]; then
-    log_err "run_agent: codex cannot run orchestrate mode because it has no subagent tool; run each review role as its own read-only agent instead"
+    log_err "run_agent: codex cannot run orchestrate mode because its subagents are disabled, so every model session holds a slot; run each review role as its own read-only agent instead"
     return 1
   fi
   workdir="$(pwd -P)"
@@ -878,7 +878,7 @@ run_agent_codex() {
 
 # run_role_agents <timeout-secs> {<role> <activity-label> <prompt-file> <raw-out> <agent-name>}...
 # Runs each role as its own read-only agent, in parallel, one slot each, for a
-# harness with no subagent tool. Waits for every role, not just the first to
+# harness whose subagents are disabled. Waits for every role, not just the first to
 # fail, because a role still running when this returns races the caller's
 # scratch cleanup (ADR 0026). A failed role is tolerated: its raw file stays
 # empty and merge_findings.py drops it. Returns $TIMEOUT_EXIT when any role hit
