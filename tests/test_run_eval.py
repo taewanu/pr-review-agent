@@ -8,6 +8,7 @@ spend tokens and are exercised by a real operator-triggered run, not here.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -76,8 +77,16 @@ def test_mean_cost_counts_only_runs_with_a_known_cost():
     assert run_eval.dollars(None) == "unknown"
 
 
-def test_max_cost_refuses_to_run_when_the_harness_reports_no_cost(monkeypatch, capsys):
+def _put_claude_on_path(monkeypatch, bindir: Path) -> None:
+    bindir.mkdir()
+    (bindir / "claude").write_text("#!/bin/sh\nexit 0\n")
+    (bindir / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+
+def test_max_cost_refuses_to_run_when_the_harness_reports_no_cost(monkeypatch, capsys, tmp_path):
     # The cap could never trigger, so running would spend without the bound asked for.
+    _put_claude_on_path(monkeypatch, tmp_path / "bin")
     monkeypatch.setenv("REVIEW_HARNESS", "codex")
 
     def no_review(_fixture):
@@ -86,6 +95,22 @@ def test_max_cost_refuses_to_run_when_the_harness_reports_no_cost(monkeypatch, c
     monkeypatch.setattr(run_eval, "run_review", no_review)
     assert run_eval.main(["--max-cost", "5"]) == 2
     assert "--max-cost" in capsys.readouterr().err
+
+
+def test_no_review_runs_when_the_judge_cannot(monkeypatch, capsys, tmp_path):
+    # A review spends before grading starts, so a judge missing at grading time
+    # would waste the review it was meant to grade.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+
+    def no_review(_fixture):
+        raise AssertionError("a review ran with no judge to grade it")
+
+    monkeypatch.setattr(run_eval, "run_review", no_review)
+    assert run_eval.main([]) == 2
+    assert run_eval.main(["--check-judge"]) == 2
+    assert "claude is not on PATH" in capsys.readouterr().err
 
 
 def test_the_harness_is_resolved_the_way_review_pr_sh_resolves_it(monkeypatch):

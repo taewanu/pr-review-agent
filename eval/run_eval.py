@@ -600,6 +600,16 @@ def main(argv: list[str] | None = None) -> int:
 
     _install_signal_handlers()
 
+    # Checked before any review spends: grading runs on claude -p whichever CLI
+    # reviews, because one fixed judge is what keeps scores comparable.
+    if shutil.which("claude") is None:
+        print(
+            "the judge runs on claude -p, and claude is not on PATH; install Claude Code "
+            "to grade, whichever REVIEW_HARNESS reviews",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.check_judge:
         return 0 if check_judge() else 1
 
