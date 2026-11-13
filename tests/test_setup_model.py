@@ -611,6 +611,14 @@ def test_codex_menu_lists_visible_models_by_priority_and_limits_effort(base):
     assert _resolve("REVIEW_EFFORT", dotenv) == "high"
 
 
+def test_codex_model_menu_asks_again_after_an_out_of_range_number(base):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_CATALOG=_catalog(base))
+    result = _wizard(base, ["codex", "4", "2", "high", "send"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert _resolve("REVIEW_MODEL", dotenv) == "example-second"
+
+
 def test_codex_without_a_catalog_takes_a_typed_model(base):
     dotenv = _dotenv(base)
     result = _wizard(base, ["codex", "example-typed", "max", "send"], dotenv)

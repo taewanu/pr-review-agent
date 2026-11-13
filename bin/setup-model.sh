@@ -491,17 +491,19 @@ if [[ "$cli" == codex ]]; then
     done
     print_options "${model_options[@]}"
     printf '  %d) type a model name\n' "$((${#slugs[@]} + 1))" >&2
-    model="$(ask_model "Model, a number or a name" "${current_model:-1}")"
-    if [[ "$model" =~ ^[0-9]+$ ]]; then
+    while true; do
+      model="$(ask_model "Model, a number or a name" "${current_model:-1}")"
+      [[ "$model" =~ ^[0-9]+$ ]] || break
       pick=$((10#$model))
       if ((pick >= 1 && pick <= ${#slugs[@]})); then
         model="${slugs[$((pick - 1))]}"
+        break
       elif ((pick == ${#slugs[@]} + 1)); then
         model="$(ask_model "Model name" "$current_model")"
-      else
-        fail "there is no model numbered ${model}; nothing was written"
+        break
       fi
-    fi
+      printf 'Choose a number or a name from the list.\n' >&2
+    done
   fi
   REVIEW_MODEL="$model" resolve_review_model "$DOTENV" codex >/dev/null || exit 1
   model_out="$model"
