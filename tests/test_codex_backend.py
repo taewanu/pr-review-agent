@@ -903,15 +903,32 @@ def _check(base: Path, env: dict | None = None) -> subprocess.CompletedProcess:
     )
 
 
-def test_startup_check_sends_the_agent_argv_strictly_with_no_prompt_and_no_credentials(base):
+def _flags_and_keys(argv: list[str]) -> list[str]:
+    """Every flag and `-c` key in order, without the values that vary per call."""
+    return [
+        a.split("=", 1)[0] if prev == "-c" else a
+        for prev, a in zip(["", *argv[:-1]], argv, strict=True)
+        if a.startswith("-") or prev in ("-c", "--disable")
+    ]
+
+
+def test_startup_check_sends_every_flag_and_key_an_agent_call_sends(base):
     result = _check(base)
     assert result.returncode == 0, result.stderr
     [call] = _calls(base)
-    agent_argv = codex_exec.build_argv(str(base / "bin" / "codex"), "W", "R", "M", EFFORT, None)
-    # The same flags and keys as an agent call, apart from where it runs and on what.
-    assert [a for a in call["argv"] if a.startswith("-")] == [
-        a for a in agent_argv[1:] if a.startswith("-")
-    ]
+    system = base / "sys.md"
+    system.write_text(SYSTEM)
+    agent_argv = codex_exec.build_argv(
+        str(base / "bin" / "codex"), "W", "R", "M", EFFORT, str(system)
+    )
+    assert _flags_and_keys(call["argv"]) == _flags_and_keys(agent_argv[1:])
+    assert "developer_instructions" in _config(call["argv"])
+
+
+def test_startup_check_runs_strictly_with_no_prompt_and_no_credentials(base):
+    result = _check(base)
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(base)
     assert "--strict-config" in call["argv"]
     assert call["stdin"] == ""
     # Nothing it does can reach the model on the operator's account.

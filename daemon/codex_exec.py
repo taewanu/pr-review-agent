@@ -157,9 +157,13 @@ def check_accepts_argv(codex_bin: str) -> None:
     """Runs the argv every agent call sends, minus the prompt, or SystemExit with
     what codex said. Codex parses every flag and, under --strict-config, every
     config key before it reads the prompt, and stops at the missing prompt; with
-    no credentials it could not reach the model even if it went on."""
+    no credentials it could not reach the model even if it went on. Every agent
+    call carries a role definition, so the check carries one too."""
     with tempfile.TemporaryDirectory() as work:
-        argv = build_argv(codex_bin, work, os.path.join(work, "raw"), "startup-check", "high", None)
+        Path(system := os.path.join(work, "system.md")).write_text("startup check\n")
+        argv = build_argv(
+            codex_bin, work, os.path.join(work, "raw"), "startup-check", "high", system
+        )
         env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")}
         os.mkdir(home := os.path.join(work, "home"))
         try:
