@@ -1135,13 +1135,17 @@ _state_dir() {
 #
 # Silent until the ledger exists, so a fresh install prints nothing.
 log_route_ledger_rollup() {
-  local ledger total prose spent
+  local ledger total prose spent unknown
   ledger="$(_state_dir)/route-observations.jsonl"
   [[ -r "$ledger" ]] || return 0
   total="$(grep -c . "$ledger" 2>/dev/null || printf 0)"
   [[ "$total" -gt 0 ]] || return 0
   prose="$(grep -c '"verdict":"prose-only"' "$ledger" 2>/dev/null || printf 0)"
-  spent="$(awk -F'"cost_usd":' '/"verdict":"prose-only"/ { sum += $2 + 0 } END { printf "%.2f", sum }' "$ledger")"
+  # A null cost is unknown, not free, so it is counted apart rather than summed.
+  read -r spent unknown < <(awk -F'"cost_usd":' '/"verdict":"prose-only"/ {
+      if ($2 ~ /^null/) unknown++; else sum += $2 + 0
+    } END { printf "%.2f %d\n", sum, unknown }' "$ledger")
+  ((unknown == 0)) || spent="${spent} (cost unknown for ${unknown} of them)"
   log_info "routing ledger (#219): ${prose}/${total} reviews were prose-only, \$${spent} spent on them"
 }
 

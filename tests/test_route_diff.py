@@ -228,6 +228,17 @@ def test_rollup_counts_prose_reviews_and_their_spend(tmp_path):
     assert "$1.00" in out  # only the prose-only rows are summed
 
 
+def test_rollup_counts_an_unreported_cost_as_unknown_not_zero(tmp_path):
+    (tmp_path / "route-observations.jsonl").write_text(
+        '{"ts":"t","pr":"p","sha":"a","verdict":"prose-only","cost_usd":0.42}\n'
+        '{"ts":"t","pr":"p","sha":"b","verdict":"prose-only","cost_usd":null}\n'
+        '{"ts":"t","pr":"p","sha":"c","verdict":"behaviour","cost_usd":null}\n'
+    )
+    out = _rollup(tmp_path)
+    assert "2/3 reviews were prose-only" in out
+    assert "$0.42 (cost unknown for 1 of them)" in out
+
+
 def test_rollup_is_silent_without_a_ledger(tmp_path):
     assert "routing ledger" not in _rollup(tmp_path)
 
