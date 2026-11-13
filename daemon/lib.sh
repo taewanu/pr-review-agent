@@ -2225,14 +2225,20 @@ status_comment_body() {
 # user-visible write in the whole pipeline (the reviewed/failed state an
 # operator actually reads), so it gets a few quick retries for a transient
 # network blip (dogfood-observed: a laptop sleep/resume cycle left `gh api`
-# failing right at this call) before giving up. Still best-effort overall —
-# a review that already landed must never be aborted over a cosmetic status
-# edit, so this always returns 0 — but an exhausted retry is logged, since a
-# silent failure here used to leave a PR's status comment stuck on a stale
-# "Reviewing" state indefinitely (the daemon already marks that SHA reviewed,
-# so nothing else ever retries this specific edit) with no trace in
-# .daemon.log to explain it.
+# failing right at this call) before giving up. Still best-effort overall: a
+# review that already landed must never be aborted over a cosmetic status edit,
+# so this always returns 0. An exhausted retry is logged, since a silent failure
+# here used to leave a PR's status comment stuck on a stale "Reviewing" state
+# indefinitely (the daemon already marks that SHA reviewed, so nothing else ever
+# retries this specific edit) with no trace in .daemon.log to explain it.
 edit_status_comment() {
+  try_edit_status_comment "$@" || true
+}
+
+# try_edit_status_comment <owner> <repo> <comment-id> <body>
+# edit_status_comment's retried write, returning 1 when it did not land, for a
+# caller whose next write must wait on this one.
+try_edit_status_comment() {
   local owner="$1" repo="$2" comment_id="$3" body="$4"
   local attempt sleep_secs="${STATUS_EDIT_RETRY_SLEEP_SECONDS:-2}"
   [[ -n "$comment_id" ]] || return 0
@@ -2243,6 +2249,7 @@ edit_status_comment() {
     [[ "$attempt" -lt 3 ]] && sleep "$sleep_secs"
   done
   log_info "status comment edit failed after 3 attempts (comment ${comment_id})"
+  return 1
 }
 
 # --- checks row (#308) -------------------------------------------------------
@@ -2291,6 +2298,13 @@ start_check_run() {
 # retry is logged: the state it leaves behind is the one an operator has to clear
 # by hand.
 complete_check_run() {
+  try_complete_check_run "$@" || true
+}
+
+# try_complete_check_run <owner> <repo> <check-run-id> <conclusion> <title> <summary>
+# complete_check_run's retried write, returning 1 when it did not land, for a
+# caller that reports whether the run changed.
+try_complete_check_run() {
   local owner="$1" repo="$2" check_run_id="$3" conclusion="$4" title="$5" summary="$6"
   local attempt sleep_secs="${CHECK_RUN_RETRY_SLEEP_SECONDS:-2}" payload
   [[ -n "$check_run_id" ]] || return 0
@@ -2303,16 +2317,17 @@ complete_check_run() {
     [[ "$attempt" -lt 3 ]] && sleep "$sleep_secs"
   done
   log_info "check run ${check_run_id} not concluded after 3 attempts (left in its previous state)"
+  return 1
 }
 
 # conclude_review_check <owner> <repo> <check-run-id> <state>
-# Concludes the `review` run on a block|pass verdict. The titles say which state
-# the row is in and nothing more; the count, the findings, and the trail stay one
-# click away in the status comment.
+# Concludes the `review` run on a block|pass verdict, returning 1 when the write
+# did not land. The titles say which state the row is in and nothing more; the
+# count, the findings, and the trail stay one click away in the status comment.
 conclude_review_check() {
   local title="No findings open on this commit"
   [[ "$4" == "block" ]] && title="Findings open on this commit"
-  complete_check_run "$1" "$2" "$3" "$(check_conclusion_for_state "$4")" "$title" \
+  try_complete_check_run "$1" "$2" "$3" "$(check_conclusion_for_state "$4")" "$title" \
     "The findings index, the review scope, and the reviewed-SHAs trail are in the review status comment."
 }
 
@@ -2367,11 +2382,12 @@ check_conclusion_for_state() {
 }
 
 # refresh_review_verdict <owner> <repo> <pr-number> <head-sha> <head-repo-url>
-# Brings the status comment and the `review` check back to the truth after the
-# PR's open finding threads changed under a completed review, which a reply pass
-# does when it resolves one (ADR 0039 as amended). The verdict is derived as the
-# review derives it, from a fresh thread read, and both surfaces render from that
-# one state. Best-effort like the review's own writes: always returns 0.
+# Brings the status comment and the `review` check to the verdict the PR's finding
+# threads now give, after a reply pass changed them under a completed review (ADR
+# 0039 decision 6). The verdict is derived once, as the review derives it, and
+# each surface is written only where it differs, so a surface an earlier write
+# left stale is repaired even when the other is current. Best-effort like the
+# review's own writes: always returns 0.
 #
 # Takes the review's per-PR lock, without waiting: a review in flight reads the
 # threads itself before it writes both surfaces, and holding the lock keeps one
@@ -2390,7 +2406,7 @@ refresh_review_verdict() {
 _refresh_review_verdict() {
   local owner="$1" repo="$2" pr="$3" head_sha="$4" head_repo_url="$5"
   local comments status comment_id old_body reviewed_sha threads_file body_file
-  local state new_body run_id="" shown="" conclusion
+  local state new_body rc=0
   comments="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
     gh api --paginate "repos/${owner}/${repo}/issues/${pr}/comments" 2>/dev/null)" || return 1
   status="$(flatten_pages <<<"$comments" |
@@ -2422,27 +2438,57 @@ _refresh_review_verdict() {
   new_body="$(python3 "$(dirname "${BASH_SOURCE[0]}")/findings_index.py" \
     --threads "$threads_file" --operator "$PRA_BOT_LOGIN_GQL" --refresh-body "$body_file" \
     --headline "$(render_status_headline "$PRA_BOT_LOGIN_GQL" "$state" \
-      "$(status_sha_link "$head_repo_url" "$head_sha")" "$head_sha")")"
+      "$(status_sha_link "$head_repo_url" "$head_sha")" "$head_sha")")" || rc=$?
   rm -f "$threads_file" "$body_file"
-  [[ -n "$new_body" ]] || return 1
-  if [[ "$new_body" == "$old_body" ]]; then
-    log_info "status comment already matches the finding threads"
+  if [[ "$rc" -eq 3 ]]; then
+    log_info "status comment is in a form the refresh does not rewrite; it and the check stay as posted"
     return 0
   fi
-  edit_status_comment "$owner" "$repo" "$comment_id" "$new_body"
-  log_info "status comment refreshed (${state})"
+  [[ "$rc" -eq 0 && -n "$new_body" ]] || return 1
 
-  # The run is patched, not superseded by a new one, because GitHub's docs do not
-  # say which of several same-name runs on a commit a required check reads.
-  read -r run_id shown < <(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
-    gh api "repos/${owner}/${repo}/commits/${head_sha}/check-runs?check_name=${CHECK_RUN_NAME}&app_id=${PRA_APP_ID}" \
-    --jq '.check_runs | map(select(.status == "completed")) | .[0] // empty | "\(.id) \(.conclusion)"' \
-    2>/dev/null || true) || true
+  # The renderer reads the body with its line endings normalised, so the body
+  # GitHub returned is compared the same way.
+  if [[ "$new_body" == "${old_body//$'\r'/}" ]]; then
+    log_info "status comment already shows ${state}"
+  elif try_edit_status_comment "$owner" "$repo" "$comment_id" "$new_body"; then
+    log_info "status comment refreshed to ${state}"
+  else
+    log_info "status comment not refreshed; the check is left as it is so it never runs ahead of the comment"
+    return 0
+  fi
+  _refresh_review_check "$owner" "$repo" "$head_sha" "$state"
+}
+
+# _refresh_review_check <owner> <repo> <head-sha> <state>
+# Brings the App's newest `review` run on <head-sha>, the one the latest review
+# of it opened, to <state>'s conclusion. Any completed run is brought, `neutral`
+# included: the caller gets here only past the sentinel, so the review finished,
+# and a `neutral` run means it stopped between its comment edit and its conclude.
+# A run still in progress is left to the review that opened it.
+_refresh_review_check() {
+  local owner="$1" repo="$2" head_sha="$3" state="$4"
+  local run run_id run_status shown conclusion
   conclusion="$(check_conclusion_for_state "$state")"
-  if [[ -z "$run_id" ]]; then
-    log_info "no completed review check run on ${head_sha:0:12} to update"
-  elif [[ "$shown" != "$conclusion" ]]; then
-    conclude_review_check "$owner" "$repo" "$run_id" "$state"
-    log_info "check run ${run_id} updated to ${conclusion}"
+  # filter=all because the default, `latest`, is documented only as "the most
+  # recent check runs", which leaves unsaid which same-name runs it drops.
+  if ! run="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/${owner}/${repo}/commits/${head_sha}/check-runs?check_name=${CHECK_RUN_NAME}&app_id=${PRA_APP_ID}&filter=all&per_page=100" \
+    --jq '.check_runs | max_by(.id) // empty | "\(.id) \(.status) \(.conclusion)"' 2>/dev/null)"; then
+    log_info "check run lookup on ${head_sha:0:12} failed; the check is left as it is"
+    return 0
+  fi
+  if [[ -z "$run" ]]; then
+    log_info "no review check run on ${head_sha:0:12} to update"
+    return 0
+  fi
+  read -r run_id run_status shown <<<"$run"
+  if [[ "$run_status" != "completed" ]]; then
+    log_info "check run ${run_id} is ${run_status}; the review that opened it concludes it"
+  elif [[ "$shown" == "$conclusion" ]]; then
+    log_info "check run ${run_id} already ${conclusion}"
+  elif conclude_review_check "$owner" "$repo" "$run_id" "$state"; then
+    log_info "check run ${run_id} updated from ${shown} to ${conclusion}"
+  else
+    log_info "check run ${run_id} not updated; it stays ${shown}"
   fi
 }

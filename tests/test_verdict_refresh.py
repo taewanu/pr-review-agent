@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
 from app_auth_fixture import install_app_stubs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -42,6 +43,7 @@ REVIEWED = "a" * 40
 NEWER = "b" * 40
 STATUS_ID = 900
 RUN_ID = 4242
+APP_ID = 4361858
 PASS_LINE = "you shall pass"
 BLOCK_LINE = "you shall not pass"
 
@@ -98,16 +100,23 @@ def _bash(snippet: str, env: dict | None = None) -> subprocess.CompletedProcess:
     )
 
 
-def _status_body(threads: list[dict], sha: str | None, tmp: Path) -> str:
+def _status_body(
+    threads: list[dict], sha: str | None, tmp: Path, *, with_index: bool = True
+) -> str:
     """The status comment the review posted, rendered by the review's own helpers:
     head-line from the open-thread verdict, the index with a delta line and an
-    outside-the-diff pointer, the trail, and the sentinel when `sha` is given."""
+    outside-the-diff pointer (none when `with_index` is false, as when the
+    review's thread read failed), the trail, and the sentinel when `sha` is given."""
     threads_file = tmp / "review-threads.json"
     threads_file.write_text(json.dumps(_flat(threads)))
     state = "block" if any(not t["isResolved"] for t in threads) else "pass"
-    script = (
+    index_cmd = (
         f'index="$(python3 {DAEMON}/findings_index.py --threads {threads_file} '
         f'--operator {SLUG} --advisory 1 --review-url {PR_URL}#review --new 1 --fixed 0)"; '
+        if with_index
+        else 'index=""; '
+    )
+    script = index_cmd + (
         f'trail="$(printf "" | python3 {DAEMON}/status_trail.py --add-sha {REVIEWED[:7]} '
         '--add-time "2026-11-13 09:00 UTC")"; '
         f'render_status_comment "$(render_status_headline {SLUG} {state} '
@@ -119,20 +128,31 @@ def _status_body(threads: list[dict], sha: str | None, tmp: Path) -> str:
     return result.stdout.rstrip("\n")
 
 
+# The run lookup is served as GitHub would: only the fixture's runs on the URL's
+# commit that match the query's check_name and app_id, so a query that drops a
+# parameter is answered with runs it must not touch.
 _STUB_GH = """#!/usr/bin/env bash
-data="{data}"
+data="@DATA@"
 args="$*"
 printf '%s\\n' "$args" >>"$data/calls.log"
+param() {
+  local v="${query#*&$1=}"
+  [[ "$v" != "$query" ]] && printf '%s' "${v%%&*}"
+}
 case "$args" in
   "pr view"*) cat "$data/meta.json" ;;
   "repo clone"*) mkdir -p "$4" ;;
   *"-X PATCH"*"/issues/comments/"*)
+    [[ -f "$data/comment_patch.FAIL" ]] && exit 1
     for a in "$@"; do
-      [[ "$a" == body=* ]] && printf '%s' "${{a#body=}}" >"$data/comment_patch.txt"
+      [[ "$a" == body=* ]] && printf '%s' "${a#body=}" >"$data/comment_patch.txt"
     done
     ;;
   *"-X PATCH"*"/check-runs/"*)
-    [[ -f "$data/checks.FAIL" ]] && exit 1
+    [[ -f "$data/checks.FAIL" || -f "$data/check_patch.FAIL" ]] && exit 1
+    for a in "$@"; do
+      [[ "$a" == */check-runs/* ]] && printf '%s' "${a##*/}" >"$data/check_patch_id"
+    done
     cat >"$data/check_patch.json"
     ;;
   *"/commits/"*"/check-runs"*)
@@ -140,8 +160,14 @@ case "$args" in
       echo "HTTP 403: Resource not accessible by integration" >&2
       exit 1
     fi
+    sha="${2#*/commits/}"
+    sha="${sha%%/*}"
+    query="&${2#*\\?}&"
+    jq --arg sha "$sha" --arg name "$(param check_name)" --arg app "$(param app_id)" \\
+      '{check_runs: [.[] | select(.head_sha == $sha and .name == $name
+        and (.app.id | tostring) == $app)]}' "$data/check_runs.json" >"$data/served.json"
     while [[ $# -gt 0 && "$1" != "--jq" ]]; do shift; done
-    jq -r "$2" "$data/check_runs.json"
+    jq -r "$2" "$data/served.json"
     ;;
   *"/issues/"*"/comments"*) cat "$data/issue_comments.json" ;;
   *"/pulls/"*"/comments"*) cat "$data/review_comments.json" ;;
@@ -176,6 +202,29 @@ class Fixture:
         f = self.data / "check_patch.json"
         return json.loads(f.read_text()) if f.exists() else None
 
+    def check_patch_id(self) -> int | None:
+        f = self.data / "check_patch_id"
+        return int(f.read_text()) if f.exists() else None
+
+    def set_runs(self, runs: list[dict]) -> None:
+        (self.data / "check_runs.json").write_text(json.dumps(runs))
+
+    def fail(self, write: str) -> None:
+        (self.data / f"{write}.FAIL").touch()
+
+
+def _run(run_id: int, status: str, conclusion: str | None, **overrides) -> dict:
+    """One check run as GitHub lists it, by default the App's `review` run on REVIEWED."""
+    return {
+        "id": run_id,
+        "name": "review",
+        "head_sha": REVIEWED,
+        "app": {"id": APP_ID},
+        "status": status,
+        "conclusion": conclusion,
+        **overrides,
+    }
+
 
 def _fixture(
     tmp_path: Path,
@@ -185,16 +234,17 @@ def _fixture(
     shown_conclusion: str,
     sentinel: str | None = REVIEWED,
     checks_fail: bool = False,
+    body: str | None = None,
 ) -> Fixture:
     """A PR whose review of REVIEWED left the threads `at_review`, its status
     comment and check showing that verdict, and whose threads are `now` when the
-    refresh reads them."""
+    refresh reads them. `body` replaces the rendered status comment."""
     data = tmp_path / "data"
     data.mkdir()
     bindir = tmp_path / "bin"
     bindir.mkdir()
     gh = bindir / "gh"
-    gh.write_text(_STUB_GH.format(data=data))
+    gh.write_text(_STUB_GH.replace("@DATA@", str(data)))
     gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
     env = os.environ.copy()
     env.update(install_app_stubs(bindir))
@@ -203,7 +253,8 @@ def _fixture(
     env["STATUS_EDIT_RETRY_SLEEP_SECONDS"] = "0"
     env["CHECK_RUN_RETRY_SLEEP_SECONDS"] = "0"
 
-    body = _status_body(at_review, sentinel, tmp_path)
+    if body is None:
+        body = _status_body(at_review, sentinel, tmp_path)
     (data / "issue_comments.json").write_text(
         json.dumps(
             [
@@ -213,19 +264,18 @@ def _fixture(
         )
     )
     (data / "graphql.json").write_text(json.dumps(_graphql(now)))
-    (data / "check_runs.json").write_text(
-        json.dumps(
-            {"check_runs": [{"id": RUN_ID, "status": "completed", "conclusion": shown_conclusion}]}
-        )
-    )
+    fx = Fixture(tmp_path, data, bindir, env)
+    fx.set_runs([_run(RUN_ID, "completed", shown_conclusion)])
     if checks_fail:
-        (data / "checks.FAIL").touch()
-    return Fixture(tmp_path, data, bindir, env)
+        fx.fail("checks")
+    return fx
 
 
 def _refresh(fx: Fixture, head: str = REVIEWED) -> subprocess.CompletedProcess:
     env = dict(fx.env, PRA_BOT_LOGIN_REST=BOT_REST, PRA_BOT_LOGIN_GQL=SLUG)
-    return _bash(f"refresh_review_verdict example example 7 {head} {REPO_URL}", env)
+    return _bash(
+        f"PRA_APP_ID={APP_ID}; refresh_review_verdict example example 7 {head} {REPO_URL}", env
+    )
 
 
 # --- resolved to pass --------------------------------------------------------
@@ -358,14 +408,75 @@ def test_a_status_comment_without_a_completed_review_is_left_alone(tmp_path):
     assert fx.check_patch() is None
 
 
-def test_unchanged_threads_write_nothing(tmp_path):
+def test_unchanged_threads_write_nothing_and_cost_three_reads(tmp_path):
+    # When both surfaces already show the verdict, the refresh reads the status
+    # comment, the threads, and the run, and writes nothing.
     fx = _fixture(
         tmp_path, at_review=[_thread(1, False)], now=[_thread(1, False)], shown_conclusion="failure"
     )
-    assert _refresh(fx).returncode == 0
+    result = _refresh(fx)
+    assert result.returncode == 0
     assert fx.comment_patch() is None
     assert fx.check_patch() is None
-    assert "check-runs" not in fx.calls()
+    calls = [c for c in fx.calls().splitlines() if c.startswith("api ")]
+    assert len(calls) == 3, calls
+    assert not any("PATCH" in c for c in calls)
+    assert "already shows block" in result.stderr
+    assert f"check run {RUN_ID} already failure" in result.stderr
+
+
+@pytest.mark.parametrize("stale", ["failure", "neutral"])
+def test_a_current_comment_beside_a_stale_check_gets_the_check_repaired(tmp_path, stale):
+    # The comment edit landed on an earlier pass and the check write did not, or
+    # the review stopped between its comment edit and its conclude and left the
+    # run neutral: the comment's sentinel says the review finished, so the run is
+    # brought to the verdict the threads give.
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, True)], now=[_thread(1, True)], shown_conclusion=stale
+    )
+    result = _refresh(fx)
+    assert result.returncode == 0
+    assert fx.comment_patch() is None
+    check = fx.check_patch()
+    assert check is not None and check["conclusion"] == "success"
+    assert f"check run {RUN_ID} updated from {stale} to success" in result.stderr
+
+
+def test_the_run_lookup_names_the_commit_the_check_and_the_app(tmp_path):
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, False)], now=[_thread(1, True)], shown_conclusion="failure"
+    )
+    _refresh(fx)
+    lookup = next(c for c in fx.calls().splitlines() if "/commits/" in c)
+    url = lookup.split()[1]
+    path, _, query = url.partition("?")
+    assert path == f"repos/example/example/commits/{REVIEWED}/check-runs"
+    params = dict(p.split("=", 1) for p in query.split("&"))
+    assert params["check_name"] == "review"
+    assert params["app_id"] == str(APP_ID)
+    assert params["filter"] == "all"
+
+
+def test_of_several_review_runs_on_the_commit_the_newest_is_updated(tmp_path):
+    # The newest of the App's `review` runs on the commit is the one the latest
+    # review of it opened; an older attempt's run, another App's run, another
+    # check, and a run on another commit are none of the refresh's business.
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, False)], now=[_thread(1, True)], shown_conclusion="failure"
+    )
+    fx.set_runs(
+        [
+            _run(10, "completed", "neutral"),
+            _run(20, "completed", "failure"),
+            _run(30, "completed", "failure", app={"id": 999}),
+            _run(40, "completed", "failure", name="lint"),
+            _run(50, "completed", "failure", head_sha=NEWER),
+        ]
+    )
+    assert _refresh(fx).returncode == 0
+    assert fx.check_patch_id() == 20
+    check = fx.check_patch()
+    assert check is not None and check["conclusion"] == "success"
 
 
 def test_a_review_in_flight_owns_both_surfaces(tmp_path):
@@ -406,35 +517,136 @@ def test_no_checks_permission_still_refreshes_the_comment(tmp_path):
     body = fx.comment_patch()
     assert body is not None and body.splitlines()[0].endswith(PASS_LINE)
     assert fx.check_patch() is None
-    assert "no completed review check run" in result.stderr
+    assert "check run lookup" in result.stderr and "failed" in result.stderr
+    assert "no review check run" not in result.stderr
 
 
-def test_an_in_progress_run_is_never_concluded_by_the_refresh(tmp_path):
-    # ADR 0039 decision 4: the review that opened a run is the one that ends it.
+def test_a_failed_comment_edit_keeps_the_check_from_running_ahead(tmp_path):
+    # The check never shows a verdict the status comment does not; the next pass
+    # finds both stale and brings both.
     fx = _fixture(
         tmp_path, at_review=[_thread(1, False)], now=[_thread(1, True)], shown_conclusion="failure"
     )
-    (fx.data / "check_runs.json").write_text(
-        json.dumps({"check_runs": [{"id": RUN_ID, "status": "in_progress", "conclusion": None}]})
+    fx.fail("comment_patch")
+    result = _refresh(fx)
+    assert result.returncode == 0
+    assert fx.check_patch() is None
+    assert "status comment not refreshed" in result.stderr
+    assert "refreshed to" not in result.stderr
+
+
+def test_a_failed_check_update_is_reported_as_failed(tmp_path):
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, False)], now=[_thread(1, True)], shown_conclusion="failure"
     )
+    fx.fail("check_patch")
+    result = _refresh(fx)
+    assert result.returncode == 0
+    assert f"check run {RUN_ID} not updated; it stays failure" in result.stderr
+    assert "updated from" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        [_run(RUN_ID, "in_progress", None)],
+        [_run(10, "completed", "failure"), _run(20, "in_progress", None)],
+    ],
+)
+def test_an_in_progress_run_is_never_concluded_by_the_refresh(tmp_path, runs):
+    # ADR 0039 decision 4: the review that opened a run is the one that ends it,
+    # and an older completed run is not the one the checks row now reports.
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, False)], now=[_thread(1, True)], shown_conclusion="failure"
+    )
+    fx.set_runs(runs)
     assert _refresh(fx).returncode == 0
     assert fx.check_patch() is None
+
+
+def test_a_comment_from_a_review_that_could_not_read_the_threads_gets_its_index(tmp_path):
+    # A review whose own thread read failed renders no index, and its head-line
+    # may say pass over an open finding; the refresh adds the index the head-line
+    # rests on and brings both surfaces to the threads.
+    fx = _fixture(
+        tmp_path,
+        at_review=[],
+        now=[_thread(1, False)],
+        shown_conclusion="success",
+        body=_status_body([], REVIEWED, tmp_path, with_index=False),
+    )
+    assert _refresh(fx).returncode == 0
+    body = fx.comment_patch()
+    assert body is not None
+    assert body.splitlines()[0].endswith(BLOCK_LINE)
+    assert "_Scope: the scope_\n\n**1 finding · 1 open · 0 resolved**" in body
+    check = fx.check_patch()
+    assert check is not None and check["conclusion"] == "failure"
+
+
+def test_a_comment_in_a_form_the_refresh_does_not_rewrite_is_named_and_left(tmp_path):
+    # A body with the sentinel but neither a rollup nor a scope line to put one under.
+    body = f"edited\n\n<!-- pr-review-agent:sha:{REVIEWED} -->\n\n<!-- pr-review-agent:status -->"
+    fx = _fixture(
+        tmp_path,
+        at_review=[_thread(1, False)],
+        now=[_thread(1, True)],
+        shown_conclusion="failure",
+        body=body,
+    )
+    result = _refresh(fx)
+    assert result.returncode == 0
+    assert "does not rewrite" in result.stderr
+    assert "already" not in result.stderr
+    assert fx.comment_patch() is None and fx.check_patch() is None
+
+
+def test_a_crlf_body_that_matches_the_threads_is_not_rewritten(tmp_path):
+    # GitHub can return a body with CRLF line endings; the comparison must not
+    # count line endings as a difference, or every pass re-edits the comment.
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, True)], now=[_thread(1, True)], shown_conclusion="success"
+    )
+    comments = json.loads((fx.data / "issue_comments.json").read_text())
+    comments[1]["body"] = comments[1]["body"].replace("\n", "\r\n")
+    (fx.data / "issue_comments.json").write_text(json.dumps(comments))
+    result = _refresh(fx)
+    assert result.returncode == 0
+    assert fx.comment_patch() is None
+    assert "already shows pass" in result.stderr
 
 
 # --- refresh_body ------------------------------------------------------------
 
 
-def test_refresh_body_without_a_rollup_is_unchanged():
-    # A degraded review rendered no index; moving only the head-line would show a
-    # verdict with nothing under it to justify it.
+def test_refresh_body_puts_the_rollup_under_the_scope_when_the_body_has_none():
     body = "🛑 x: you shall not pass\n\n_Scope: s_\n\n<!-- pr-review-agent:status -->"
     threads = _flat([_thread(1, True)])
-    assert findings_index.refresh_body(body, threads, SLUG, "new head-line") == body
+    refreshed = findings_index.refresh_body(body, threads, SLUG, "new head-line")
+    assert refreshed is not None
+    assert refreshed.startswith(
+        "new head-line\n\n_Scope: s_\n\n**1 finding · 0 open · 1 resolved**"
+    )
+    assert refreshed.endswith("<!-- pr-review-agent:status -->")
+
+
+def test_refresh_body_returns_none_for_a_body_it_cannot_bring_to_the_threads():
+    threads = _flat([_thread(1, True)])
+    no_scope = "head\n\n<!-- pr-review-agent:status -->"
+    assert findings_index.refresh_body(no_scope, threads, SLUG, "new") is None
+    stale_rollup = "head\n\n**1 finding · 1 open · 0 resolved**\n\n- [`a:1`](u) · open"
+    assert findings_index.refresh_body(stale_rollup, [], SLUG, "new") is None
 
 
 # --- reply-pr.sh end to end ---------------------------------------------------
 
+# Answers the version preflight as the oldest claude the daemon accepts, then
+# stands in for the reply agent.
 _FAKE_CLAUDE = """#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  echo '2.1.281 (Claude Code)'
+  exit 0
+fi
 cat >/dev/null
 printf '%s\\n' '{"type": "result", "result": "replies", "total_cost_usd": 0}'
 """
@@ -449,7 +661,9 @@ sys.exit(int(os.environ.get("FAKE_POST_RC", "0")))
 """
 
 
-def _reply_pass(fx: Fixture, post_rc: int = 0) -> subprocess.CompletedProcess:
+def _reply_pass(
+    fx: Fixture, post_rc: int = 0, *, with_reply: bool = True
+) -> subprocess.CompletedProcess:
     root = fx.root / "checkout"
     shutil.copytree(DAEMON, root / "daemon", ignore=shutil.ignore_patterns("__pycache__"))
     (root / ".claude").symlink_to(REPO_ROOT / ".claude")
@@ -473,7 +687,8 @@ def _reply_pass(fx: Fixture, post_rc: int = 0) -> subprocess.CompletedProcess:
         "user": {"login": "author", "type": "User"},
         "body": "Fixed, the guard is in place now.",
     }
-    (fx.data / "review_comments.json").write_text(json.dumps([finding, reply]))
+    comments = [finding, reply] if with_reply else [finding]
+    (fx.data / "review_comments.json").write_text(json.dumps(comments))
     (fx.data / "graphql_after.json").write_text(json.dumps(_graphql([_thread(1, True)])))
     (fx.data / "meta.json").write_text(
         json.dumps(
@@ -487,7 +702,7 @@ def _reply_pass(fx: Fixture, post_rc: int = 0) -> subprocess.CompletedProcess:
     )
     env = dict(fx.env, FAKE_DATA=str(fx.data), FAKE_POST_RC=str(post_rc))
     return subprocess.run(
-        ["bash", str(root / "daemon" / "reply-pr.sh"), "--app-id", "4361858", PR_URL],
+        ["bash", str(root / "daemon" / "reply-pr.sh"), "--app-id", str(APP_ID), PR_URL],
         capture_output=True,
         text=True,
         env=env,
@@ -535,6 +750,21 @@ def test_reply_pass_refreshes_even_when_posting_fails_partway(tmp_path):
     assert result.returncode == 1
     body = fx.comment_patch()
     assert body is not None and body.splitlines()[0].endswith(PASS_LINE)
+
+
+def test_reply_pass_with_no_reply_makes_no_refresh_call(tmp_path):
+    # The refresh costs a polling cycle nothing unless a reply was answered.
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, False)], now=[_thread(1, False)], shown_conclusion="failure"
+    )
+    _use_canonical_slug(fx)
+    result = _reply_pass(fx, with_reply=False)
+    assert result.returncode == 0, result.stderr
+    assert not (fx.data / "reply_posted").exists()
+    calls = fx.calls()
+    assert "/issues/7/comments" not in calls
+    assert "graphql" not in calls
+    assert "check-runs" not in calls
 
 
 def _use_canonical_slug(fx: Fixture) -> None:

@@ -19,7 +19,8 @@ and resolved. Output is the markdown block `render_status_comment` inserts: the
 findings index, or a `No findings` affirmation when the review surfaced nothing
 (ADR 0020 Decision 6). With `--refresh-body`, the output is instead a posted
 Status comment with its head-line and rollup re-rendered from the threads, for a
-reply pass that changed them after the review (ADR 0039 decision 6).
+reply pass that changed them after the review (ADR 0039 decision 6); exit 3
+means the body is in a form the refresh does not rewrite.
 """
 
 from __future__ import annotations
@@ -115,21 +116,29 @@ _ROLLUP_RE = re.compile(
     r"^\*\*\d+ findings? · \d+ open · \d+ resolved\*\*\n\n(?:- [^\n]*\n)*- [^\n]*$",
     re.MULTILINE,
 )
+# The scope line render_status_comment puts under every head-line.
+_SCOPE_RE = re.compile(r"^_Scope: [^\n]*_$", re.MULTILINE)
 
 
-def refresh_body(body: str, threads: list[dict], operator: str, headline: str) -> str:
+def refresh_body(body: str, threads: list[dict], operator: str, headline: str) -> str | None:
     """The Status comment `body` with its head-line and rollup re-rendered from
     `threads`, every other part kept verbatim: the scope, the per-push delta, the
     outside-the-diff pointer, and the trail describe the review, not the threads.
 
-    Returns `body` unchanged when it carries no rollup to replace (a degraded
-    review rendered none) or the threads hold no Finding, so the head-line never
-    moves without the index that justifies it."""
+    A body without a rollup, which a review renders when its own thread read
+    failed, gets one under its scope line, so the head-line never moves without
+    the index that justifies it. Returns None for a body it cannot bring to the
+    threads: Findings and no scope line to put them under, or a rollup listing
+    Findings the threads no longer hold."""
     findings = daemon_findings(threads, operator)
-    if not findings or not _ROLLUP_RE.search(body):
-        return body
-    spliced = _ROLLUP_RE.sub(lambda _: "\n".join(_rollup(findings)), body, count=1)
-    _, newline, rest = spliced.partition("\n")
+    rollup = "\n".join(_rollup(findings))
+    if findings and _ROLLUP_RE.search(body):
+        body = _ROLLUP_RE.sub(lambda _: rollup, body, count=1)
+    elif findings and _SCOPE_RE.search(body):
+        body = _SCOPE_RE.sub(lambda m: f"{m.group(0)}\n\n{rollup}", body, count=1)
+    elif findings or _ROLLUP_RE.search(body):
+        return None
+    _, newline, rest = body.partition("\n")
     return headline + newline + rest
 
 
@@ -219,7 +228,8 @@ def main() -> int:
     ap.add_argument(
         "--refresh-body",
         default="",
-        help="file holding a posted Status comment body: print it with the rollup re-rendered",
+        help="file holding a posted Status comment body: print it with the rollup re-rendered, "
+        "or exit 3 when it is in a form refresh_body cannot rewrite",
     )
     ap.add_argument("--headline", default="", help="the head-line --refresh-body puts first")
     args = ap.parse_args()
@@ -233,7 +243,10 @@ def main() -> int:
 
     if args.refresh_body:
         body = Path(args.refresh_body).read_text()
-        sys.stdout.write(refresh_body(body, threads, args.operator, args.headline))
+        refreshed = refresh_body(body, threads, args.operator, args.headline)
+        if refreshed is None:
+            return 3
+        sys.stdout.write(refreshed)
         return 0
 
     # Same best-effort read: a missing summary degrades to the bare rollup, never

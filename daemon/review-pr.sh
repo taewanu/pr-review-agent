@@ -1271,7 +1271,7 @@ if [[ $DRY_RUN -eq 0 ]]; then
 
   # Conclude the checks row on the same verdict the head-line above renders
   # (#308), so the two surfaces cannot disagree about whether the review passed.
-  conclude_review_check "$BASE_OWNER" "$BASE_REPO" "$CHECK_RUN_ID" "$review_state"
+  conclude_review_check "$BASE_OWNER" "$BASE_REPO" "$CHECK_RUN_ID" "$review_state" || true
   CHECK_RUN_CONCLUDED=1
 fi
 
