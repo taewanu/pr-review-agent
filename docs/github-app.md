@@ -24,9 +24,11 @@ The daemon posts as the App, under the name `<app-name>[bot]`. You register the 
 
    ```bash
    mkdir -p ~/.pr-review-agent
-   mv ~/Downloads/*.private-key.pem ~/.pr-review-agent/app.pem
+   mv "$(ls -t ~/Downloads/*.private-key.pem | head -1)" ~/.pr-review-agent/app.pem
    chmod 600 ~/.pr-review-agent/app.pem
    ```
+
+   The `mv` line moves the newest key file in `~/Downloads`.
 
    GitHub offers each key for download once. If you lose it, generate a new one on the same page.
 
@@ -36,7 +38,9 @@ The daemon posts as the App, under the name `<app-name>[bot]`. You register the 
 
 A repository you install the App on later is reviewed from the next polling cycle.
 
-At startup, the daemon logs `App not installed on: <repo>` once, as an error. Each polling cycle then skips that repository with `skipped (App not installed): <repo>`.
+At startup, the daemon logs `App not installed on: <repo>` once, as an error. Each polling cycle then skips that repository.
+
+The skip also logs `skipped (App not installed): <repo>`, as an informational line. It appears only when the previous polling cycle had a non-draft pull request without the opt-out label to process. Otherwise the daemon hides the cycle's informational lines.
 
 ## Changing permissions
 

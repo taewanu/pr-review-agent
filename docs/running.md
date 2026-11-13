@@ -7,10 +7,20 @@ This page covers what the daemon needs, how a review runs, foreground and backgr
 - **A machine that stays on.** macOS is the tested platform. CI runs the test suite on Linux. The foreground loop runs without `launchd`. Only background mode needs it.
 - **Claude Code v2.1.281 or later**, as `claude` on your `PATH`, signed in. The daemon passes role definitions to `--agents` as a file, which v2.1.281 added.
 - **`gh`** ([GitHub CLI](https://cli.github.com/)), **`git`**, **`jq`**, **`openssl`**, and **`curl`** on your `PATH`. You do not need `gh auth login`. The daemon signs in as the App.
-- **Python 3.13 or later** as `python3`, with the dependencies in `pyproject.toml` installed (`python3 -m pip install -e .`).
+- **Python 3.13 or later**, with the dependencies in `pyproject.toml` installed in a virtual environment.
 - **A GitHub App you register.** See [Register the GitHub App](github-app.md).
 
-The repository's `mise.toml` pins tools for contributors. The daemon does not need mise.
+The daemon's scripts run the first `python3` on `PATH`. Create the virtual environment in the checkout with a Python 3.13 or later:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+Activate it with `source .venv/bin/activate` in each new shell before you run a daemon script. Homebrew's Python refuses `pip install` outside a virtual environment with `externally-managed-environment`. The `python3` that ships with macOS is 3.9.
+
+If you use mise, `mise install` provides the Python 3.13 pinned in `mise.toml` instead, and you run `pip install -e .` and each daemon script under `mise exec --`.
 
 ## How it works
 
@@ -53,6 +63,7 @@ The daemon answers any reply to a finding from a user who is not a bot, on the n
 ## Foreground
 
 ```bash
+source .venv/bin/activate
 bash daemon/run.sh
 ```
 
@@ -80,15 +91,16 @@ If none of this happens, see [Troubleshooting](troubleshooting.md).
 
 ## Background (optional)
 
-Background mode registers the daemon as a `launchd` job, which needs macOS:
+Background mode registers the daemon as a `launchd` job, which needs macOS. Run `install.sh` with the virtual environment active:
 
 ```bash
+source .venv/bin/activate
 bash bin/install.sh
 ```
 
-This writes `~/Library/LaunchAgents/com.user.pr-review.plist` and starts the same `run.sh` loop. The job starts again at login. `launchd` restarts the loop if it exits with an error. Output goes to `.daemon.log`.
+This writes `~/Library/LaunchAgents/com.user.pr-review.plist` and starts the same `run.sh` loop. The job is a per-user LaunchAgent. It runs while you are logged in and starts again at login. `launchd` restarts the loop if it exits with an error. Output goes to `.daemon.log`.
 
-The job keeps the `PATH` it was installed with. Re-run `install.sh` after changing your `PATH`.
+The job keeps the `PATH` it was installed with. With the virtual environment active, that `PATH` starts with `.venv/bin`, so the job runs the same `python3`. With mise, run `mise exec -- bash bin/install.sh` instead. Re-run `install.sh` after changing your `PATH`.
 
 To remove the job:
 

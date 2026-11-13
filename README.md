@@ -30,6 +30,7 @@ A finding from the `intent` role on this repository's PR #310. The description's
 - **It runs an agent over files any PR author wrote.** See [Security](#security).
 - **It is a `0.x` preview.** Review wording, line anchoring, and re-review skipping still change.
 - **It needs Claude Code, `gh`, `jq`, and Python 3.13.** See [Requirements](docs/running.md#requirements).
+- **The first polling cycle reviews every open non-draft pull request**, `MAX_PARALLEL` at a time. Each review spends Claude usage.
 
 ## Quick start
 
@@ -40,7 +41,9 @@ A finding from the `intent` role on this repository's PR #310. The description's
    ```bash
    git clone https://github.com/taewanu/pr-review-agent.git
    cd pr-review-agent
-   python3 -m pip install -e .
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -e .
    cp templates/.env.example .env
    ```
 
@@ -54,6 +57,7 @@ A finding from the `intent` role on this repository's PR #310. The description's
 4. **Start the daemon.** Then open a non-draft pull request on a watched repository.
 
    ```bash
+   source .venv/bin/activate
    bash daemon/run.sh
    ```
 
@@ -71,13 +75,14 @@ Everything in the per-PR clone is written by the pull request's author. Everythi
 **What a pull request cannot do**
 
 - Configure the review agent. The roles run with `--restricted --strict-mcp-config`: no settings, hooks, MCP servers, or `CLAUDE.md` instructions load from the clone. The `code` role still reads the clone's `CLAUDE.md` and ADRs as conventions to review against.
-- Run a shell command that needs approval. The daemon runs unattended and passes no flag that skips the prompt, so Claude Code refuses it.
+- Run a shell command outside a fixed set. The daemon runs unattended, so Claude Code denies any command that needs approval. Read-only commands need none. The review call's `acceptEdits` mode also approves file edits and `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed` inside the per-PR clone.
 - Reach the App's token. It is attached to one `gh` call at a time and never enters the roles' environment.
 - Plant files under the daemon's working-file names. Every `.pr-review-*` entry at the clone's root is deleted before the daemon writes.
 
 **What this does not protect against**
 
 - Prompt injection. PR text can steer a role into a wrong or empty review. The limits above bound what a role can do, not what it says.
+- Changes inside the per-PR clone. During the review call, a steered role can edit or delete files there, including the other role's output.
 - Anything Claude Code itself allows. No OS-level sandbox surrounds the roles' commands.
 - Disclosure to the model provider. The PR's files go to the provider behind your Claude Code sign-in. Training use follows your account settings.
 
