@@ -34,6 +34,9 @@ _FAKE = r"""#!/usr/bin/env python3
 import json, os, sys
 name, args = os.path.basename(sys.argv[0]), sys.argv[1:]
 env = os.environ.get
+# Like codex, an exec with no prompt stops before any model call, so it is not logged as one.
+if name == "codex" and args[:1] == ["exec"] and not sys.stdin.read():
+    sys.exit("No prompt provided via stdin.")
 if env("FAKE_CALLS"):
     with open(env("FAKE_CALLS"), "a") as f:
         f.write(" ".join([name] + args) + "\n")
