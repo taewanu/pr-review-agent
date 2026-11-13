@@ -76,7 +76,7 @@ With `REVIEW_HARNESS=codex` in `.env`, every agent call runs on the Codex CLI in
 - **Cost:** Codex reports no dollar cost. The routing ledger and `eval/run_eval.py` show it as unknown, and `eval/run_eval.py --max-cost` refuses to run.
 - **Roles:** each role runs as its own `codex exec` process, holding one slot of `CLAUDE_SLOT_POOL_SIZE`, instead of as a subagent of one session. Codex's own subagent tools are off.
 - **Sandbox:** each role's shell commands can read the per-PR clone, the Codex install, and system paths, write nothing, and reach no network. The clone's skills, rules, and hooks do not load. The sandbox is tested on macOS only.
-- **Your repo's `AGENTS.md`:** the reviewer does not load it as instructions, because it comes from the PR's own head. The `code` role reads it, with `CLAUDE.md`, as your repo's conventions and judges the change against it.
+- **Your repo's `AGENTS.md`:** the review agent does not load it as instructions, because it comes from the PR's own head. The `code` role reads it, with `CLAUDE.md`, as your repo's conventions and judges the change against it.
 - **Temp directories:** the sandbox denies `/tmp` and `/var/tmp` to every command, so the daemon refuses a per-PR clone under them. Where `mktemp` uses `/tmp`, as on Linux, set `TMPDIR` to a private directory.
 
 ## The `review` check

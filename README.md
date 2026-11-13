@@ -74,7 +74,7 @@ The PR's author writes everything in the per-PR clone; everything else on the ma
 
 **What a pull request cannot do**
 
-- Configure the review agent. The roles run with `--restricted --strict-mcp-config`: no settings, hooks, MCP servers, or `CLAUDE.md` instructions load from the clone. The `code` role still reads the clone's `CLAUDE.md`, `AGENTS.md`, and ADRs as conventions.
+- Configure the review agent. The roles run with `--restricted --strict-mcp-config`: no settings, hooks, MCP servers, or `CLAUDE.md` or `AGENTS.md` instructions load from the clone. The `code` role still reads the clone's `CLAUDE.md`, `AGENTS.md`, and ADRs as conventions.
 - Run a shell command outside a fixed set. Claude Code, running unattended, denies any command that needs approval. Read-only commands need none, and the review call's `acceptEdits` mode approves file edits and `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed` inside the per-PR clone.
 - Read your home directory, the daemon's files, or another PR's clone from a shell command, write in the clone, or reach the network. The roles' commands run in Claude Code's OS sandbox; without it, no review starts.
 - Reach the App's token, which goes to one `gh` call at a time, never into the roles' environment.
