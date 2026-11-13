@@ -184,6 +184,19 @@ def _catalog(base: Path, catalog: dict = CATALOG) -> str:
     return str(path)
 
 
+def _temp_root_under_tmp(base: Path) -> None:
+    """Moves the temp root to /tmp by answering make_temp_dir's -u probe there,
+    because macOS mktemp -t ignores TMPDIR; every other call runs unchanged."""
+    real_mktemp = shutil.which("mktemp")
+    assert real_mktemp
+    fake_mktemp = base / "fakebin" / "mktemp"
+    fake_mktemp.write_text(
+        f'#!/bin/sh\n[ "$1" = -u ] && exec "{real_mktemp}" -u /tmp/pr-review-test.XXXXXX\n'
+        f'exec "{real_mktemp}" "$@"\n'
+    )
+    fake_mktemp.chmod(0o755)
+
+
 def _lib(script: str, env: dict | None = None, stdin: str = "") -> subprocess.CompletedProcess:
     return subprocess.run(
         _lib_args(script),
@@ -650,12 +663,7 @@ def test_codex_with_the_temp_root_under_tmp_stops_before_the_model_question(base
     dotenv = _dotenv(base)
     calls = base / "calls.log"
     env = _env(base, FAKE_CATALOG=_catalog(base), FAKE_CALLS=str(calls))
-    # macOS mktemp -t ignores TMPDIR, so the temp root is moved under /tmp directly.
-    real_mktemp = shutil.which("mktemp")
-    assert real_mktemp
-    fake_mktemp = base / "fakebin" / "mktemp"
-    fake_mktemp.write_text(f'#!/bin/sh\nexec "{real_mktemp}" -d /tmp/pr-review-test.XXXXXX\n')
-    fake_mktemp.chmod(0o755)
+    _temp_root_under_tmp(base)
     result = _wizard(base, ["codex", "1", "high", "send"], dotenv, env)
     assert result.returncode == 1
     assert "Codex refuses to run in" in result.stderr
@@ -915,6 +923,20 @@ def test_warn_env_drift_does_not_flag_the_empty_template_keys(tmp_path):
     assert result.stderr == ""
 
 
+def test_make_temp_dir_makes_one_directory_with_a_random_suffix(tmp_path):
+    name = f"pr-review-make-temp-dir-{os.getpid()}"
+    result = _lib(f"make_temp_dir {name}", {**os.environ, "TMPDIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    made = Path(result.stdout.strip())
+    assert made.name.startswith(f"{name}."), result.stdout
+    try:
+        assert made.is_dir()
+        assert "XXXXXX" not in made.name
+        assert [p.name for p in made.parent.glob(f"{name}.*")] == [made.name]
+    finally:
+        made.rmdir()
+
+
 # The flag form
 
 
@@ -1050,6 +1072,26 @@ def test_codex_flag_form_writes_the_effort_explicitly_even_at_the_default(base):
     assert result.returncode == 0, result.stderr
     assert result.stdout == "REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\nREVIEW_EFFORT=high\n"
     assert "Improve the model for everyone" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("cli", "model", "closing"),
+    [
+        ("claude", "claude-example-model", r"done · \d+s"),
+        ("codex", "example-first", r"done · \d+s · 2 tokens"),
+    ],
+)
+def test_test_call_closes_with_one_line_on_stderr_and_names_no_unknown_cost(
+    base, cli, model, closing
+):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_CATALOG=_catalog(base))
+    result = _run(base, ["--harness", cli, "--model", model], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[:2] == [f"REVIEW_HARNESS={cli}", f"REVIEW_MODEL={model}"]
+    agent_lines = [line for line in result.stderr.splitlines() if "test call" in line]
+    assert len(agent_lines) == 1, result.stderr
+    assert re.fullmatch(rf"\[pr-review-agent\] test call  {closing}", agent_lines[0])
 
 
 def test_codex_flag_form_refuses_a_default_effort_the_model_does_not_list(base):
@@ -1188,15 +1230,6 @@ def _check(
     dotenv = base / ".env"
     dotenv.write_text(body)
     return _run(base, ["--check", *extra], dotenv, env), dotenv
-
-
-def _temp_root_under_tmp(base: Path) -> None:
-    # macOS mktemp -t ignores TMPDIR, so the temp root is moved under /tmp directly.
-    real_mktemp = shutil.which("mktemp")
-    assert real_mktemp
-    fake_mktemp = base / "fakebin" / "mktemp"
-    fake_mktemp.write_text(f'#!/bin/sh\nexec "{real_mktemp}" -d /tmp/pr-review-test.XXXXXX\n')
-    fake_mktemp.chmod(0o755)
 
 
 PASSING_CHECKS = {

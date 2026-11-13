@@ -15,6 +15,7 @@ log_* emitters print to stderr.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -125,3 +126,89 @@ def test_log_failure_stays_machine_readable_under_context_and_colour():
         "pr=https://x/pull/1 sha=deadbeef reason=agent exceeded cap" in err
     )
     assert ESC not in err
+
+
+# --- one PR's run: pipeline lines and agent activity --------------------------
+
+_FAKE_CLAUDE = """#!/usr/bin/env python3
+import json, sys
+sys.stdin.read()
+for event in (
+    {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}}]}},
+    {"type": "result", "result": "partial", "num_turns": 2, "total_cost_usd": 0.5},
+    {"type": "assistant", "message": {"content": [{"type": "text", "text": "all done"}]}},
+    {"type": "result", "result": "final", "num_turns": 1, "total_cost_usd": 0.5},
+):
+    print(json.dumps(event), flush=True)
+"""
+
+
+def _pr_run(tmp_path: Path, colour: str) -> list[str]:
+    """One PR's lines: every per-PR log_* emitter around one run_agent call."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "claude").write_text(_FAKE_CLAUDE)
+    (bindir / "claude").chmod(0o755)
+    (tmp_path / "prompt.txt").write_text("prompt\n")
+    script = (
+        "set -euo pipefail; log_set_pr_context example 7; "
+        'REVIEW_MODEL=m; REVIEW_EFFORT=e; cd "$1"; '
+        'log_info "head: example/example@main"; log_step "fetching diff"; '
+        "run_agent read-only 30 prompt.txt raw.txt review; "
+        'log_ok "submitted review"; log_err "status comment edit failed"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", f"source {LIB}\n{script}", "_", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "PR_LOG_COLOR": colour,
+        },
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stderr.splitlines()
+
+
+def test_every_line_of_a_pr_run_starts_its_message_in_one_column(tmp_path):
+    lines = _pr_run(tmp_path, "never")
+    words = ["head:", "fetching", "review", "review", "review", "submitted", "status"]
+    assert len(lines) == len(words), lines
+    assert all(line.startswith("  example#7  ") for line in lines)
+    assert len({line.index(word) for line, word in zip(lines, words, strict=True)}) == 1, lines
+
+
+def test_an_agent_call_closes_with_one_line(tmp_path):
+    lines = _pr_run(tmp_path, "never")
+    closing = [line for line in lines if "done ·" in line]
+    assert len(closing) == 1, lines
+    assert re.search(r" review +done · 3 turns · \d+s · \$0\.500$", closing[0]), closing
+
+
+def test_pipeline_lines_align_their_elapsed_time(tmp_path):
+    lines = [line for line in _pr_run(tmp_path, "never") if " review  " not in line]
+    assert all(re.search(r" \+\d+s$", line) for line in lines), lines
+    assert len({len(line) for line in lines}) == 1, lines
+
+
+def test_a_long_message_still_carries_its_elapsed_time():
+    _, err, _ = _run(f'log_set_pr_context example 7; log_info "{"x" * 120}"', PR_LOG_COLOR="never")
+    assert re.search(r"x +\+\d+s$", err.rstrip("\n"))
+
+
+def test_a_multi_line_message_puts_its_elapsed_time_after_the_last_line_unpadded():
+    _, err, _ = _run(
+        "log_set_pr_context example 7; log_info \"$(printf 'first\\nsecond')\"",
+        PR_LOG_COLOR="never",
+    )
+    assert re.fullmatch(r"  example#7  • first\nsecond {4,5}\+\d+s\n", err), err
+
+
+def test_non_terminal_output_carries_no_colour_codes(tmp_path):
+    # stderr is a pipe here, so the auto mode must fall back to plain text.
+    lines = _pr_run(tmp_path, "auto")
+    assert lines
+    assert not any(ESC in line for line in lines)

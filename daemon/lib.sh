@@ -22,7 +22,7 @@ log_set_pr_context() {
 
 log_info() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
-    log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*"
+    log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*" "$SECONDS"
   elif [[ "$_LOG_QUIET" != "1" ]]; then
     printf '[pr-review-agent] %s\n' "$*" >&2
   fi
@@ -30,15 +30,16 @@ log_info() {
 
 log_err() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
-    log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_FAIL" "$*"
+    log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_FAIL" "$*" "$SECONDS"
   else
     printf '[pr-review-agent] ERROR: %s\n' "$*" >&2
   fi
 }
 
-# log_step <message> — a phase line with elapsed. $SECONDS is the calling
+# log_step <message>: a phase line with elapsed. $SECONDS is the calling
 # process's own clock: in review-pr.sh that is the per-PR review time (each PR
-# runs in its own process), in poll.sh/run.sh the cycle clock.
+# runs in its own process), in poll.sh/run.sh the cycle clock. In per-PR mode
+# every log_* line carries it, so log_step and log_info print alike there.
 log_step() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*" "$SECONDS"
@@ -47,7 +48,7 @@ log_step() {
   fi
 }
 
-# log_ok <message> — a success phase line (✓ in per-PR mode). Same elapsed rule
+# log_ok <message>: a success phase line (✓ in per-PR mode). Same elapsed rule
 # as log_step.
 log_ok() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
@@ -194,21 +195,42 @@ pr_prefix() {
   _sgr 0
 }
 
+# Width the per-PR message is padded to, so the elapsed times of one PR's lines
+# line up; a longer message pushes its time right instead of being cut.
+LOG_MSG_WIDTH=48
+
 # log_pr <repo-name> <pr-number> <glyph> <message> [elapsed-seconds]
-# Emit one styled per-PR line: "  repo#pr  <glyph> message   +Ns". The coloured
-# prefix tells interleaved parallel lines apart; the elapsed suffix is dimmed and
-# omitted when empty.
+# Emit one styled per-PR line: "  repo#pr  <glyph> message      +Ns". The
+# coloured prefix tells interleaved parallel lines apart; the elapsed time is
+# dimmed, right-aligned past LOG_MSG_WIDTH, and omitted when empty. A message of
+# several lines gets no padding, because its last line starts in no column the
+# others share.
 log_pr() {
-  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}"
+  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}" pad
   {
     printf '  %s  %s %s' "$(pr_prefix "$repo" "$pr")" "$glyph" "$msg"
     if [[ -n "$elapsed" ]]; then
+      pad=$((LOG_MSG_WIDTH - ${#msg}))
+      if ((pad < 0)) || [[ "$msg" == *$'\n'* ]]; then
+        pad=0
+      fi
       _sgr 2
-      printf '   +%ss' "$elapsed"
+      printf '%*s' $((pad + 8)) "+${elapsed}s"
       _sgr 0
     fi
     printf '\n'
   } >&2
+}
+
+# log_agent_prefix <phase>: the text run_agent starts each agent activity line
+# with. It puts the phase where log_pr puts the message, padded to the longest
+# phase name, so the lines of agents running side by side for one PR align.
+log_agent_prefix() {
+  if [[ -n "$_LOG_PR_REPO" ]]; then
+    printf '  %s    %-9s  ' "$(pr_prefix "$_LOG_PR_REPO" "$_LOG_PR_NUM")" "$1"
+  else
+    printf '[pr-review-agent] %-9s  ' "$1"
+  fi
 }
 
 # Exit status run_with_timeout returns on timeout, and the status the shell
@@ -812,15 +834,16 @@ agent_system_prompt() {
   write_run_file "$2" "$(agent_body "$agent_file")"
 }
 
-# run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <label> [agent-name]
+# run_agent <mode> <timeout-secs> <prompt-file> <raw-out> <phase> [agent-name]
 # The daemon's one way to run an agent: feeds <prompt-file> on stdin, streams
-# labelled activity lines to the terminal, and leaves the agent's final text in
-# <raw-out> (empty on timeout), its token count in <raw-out>.tokens, its cost in
-# <raw-out>.cost when the CLI reports one (codex does not), and its own stderr
-# in <raw-out>.stderr. Drives the CLI $REVIEW_HARNESS names (claude when unset)
-# and pins $REVIEW_MODEL and $REVIEW_EFFORT, all three resolved by the caller.
-# Returns the agent's exit status, $TIMEOUT_EXIT past the cap, or the
-# formatter's status, under the daemon's `set -o pipefail`.
+# its activity lines to the terminal under the PR and <phase>, and leaves the
+# agent's final text in <raw-out> (empty on timeout), its token count in
+# <raw-out>.tokens, its cost in <raw-out>.cost when the CLI reports one (codex
+# does not), and its own stderr in <raw-out>.stderr. Drives the CLI
+# $REVIEW_HARNESS names (claude when unset) and pins $REVIEW_MODEL and
+# $REVIEW_EFFORT, all three resolved by the caller. Returns the agent's exit
+# status, $TIMEOUT_EXIT past the cap, or the formatter's status, under the
+# daemon's `set -o pipefail`.
 #
 # <mode> says what the agent may do:
 #   read-only    inspect the clone and answer in its final message, with the body
@@ -856,7 +879,7 @@ run_agent() {
 }
 
 run_agent_claude() {
-  local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" agent="${6:-}"
+  local mode="$1" secs="$2" prompt="$3" raw="$4" phase="$5" agent="${6:-}"
   local args=(-p)
   if [[ -n "$agent" ]]; then
     agent_system_prompt "$agent" "$raw.system.md" || return 1
@@ -917,7 +940,7 @@ run_agent_claude() {
     GIT_CONFIG_KEY_1=core.attributesFile GIT_CONFIG_VALUE_1=/dev/null \
     claude "${args[@]}" <"$prompt" 2>"$raw.stderr" |
     python3 "$(dirname "${BASH_SOURCE[0]}")/stream_format.py" --raw-out "$raw" \
-      --label "$label" --cost-out "$raw.cost" || rc=$?
+      --prefix "$(log_agent_prefix "$phase")" --cost-out "$raw.cost" || rc=$?
   rm -rf "$agent_tmp"
   trap - INT TERM
   eval "$traps"
@@ -928,7 +951,7 @@ run_agent_claude() {
 # each flag is there. Its sandbox shares the system temp roots between every
 # command it runs, so a clone under them is refused rather than exposed.
 run_agent_codex() {
-  local mode="$1" secs="$2" prompt="$3" raw="$4" label="$5" agent="${6:-}"
+  local mode="$1" secs="$2" prompt="$3" raw="$4" phase="$5" agent="${6:-}"
   local here workdir arg argv=() pid rc=0 format_rc=0
   # Each output name is cleared as write_run_file clears it, so nothing the clone
   # carries there is written through or read back as output, then <raw> and the
@@ -967,35 +990,35 @@ run_agent_codex() {
     <"$prompt" >"$raw.events" 2>"$raw.stderr" &
   pid=$!
   python3 "$here/codex_exec.py" format --events "$raw.events" --while-pid "$pid" \
-    --label "$label" --tokens-out "$raw.tokens" || format_rc=$?
+    --prefix "$(log_agent_prefix "$phase")" --tokens-out "$raw.tokens" || format_rc=$?
   wait "$pid" || rc=$?
   # The formatter's status first, as pipefail would report it.
   ((format_rc == 0)) || return "$format_rc"
   return "$rc"
 }
 
-# run_role_agents <timeout-secs> {<role> <activity-label> <prompt-file> <raw-out> <agent-name>}...
+# run_role_agents <timeout-secs> {<role> <prompt-file> <raw-out> <agent-name>}...
 # Runs each role as its own read-only agent, in parallel, one slot each, for a
-# harness whose subagents are disabled. Waits for every role, not just the first to
-# fail, because a role still running when this returns races the caller's
-# scratch cleanup (ADR 0026). A failed role is tolerated: its raw file stays
-# empty and merge_findings.py drops it. Returns $TIMEOUT_EXIT when any role hit
-# the cap, else the last failed role's status, else 0. Run it from inside the
-# per-PR clone.
+# harness whose subagents are disabled, with the role's name as its lines'
+# phase. Waits for every role, not just the first to fail, because a role still
+# running when this returns races the caller's scratch cleanup (ADR 0026). A
+# failed role is tolerated: its raw file stays empty and merge_findings.py drops
+# it. Returns $TIMEOUT_EXIT when any role hit the cap, else the last failed
+# role's status, else 0. Run it from inside the per-PR clone.
 run_role_agents() {
   local secs="$1" i rc status=0 pids=() roles=()
   shift
-  while (($# >= 5)); do
+  while (($# >= 4)); do
     (
       slot="$(acquire_claude_slot "$1 role")"
       rc=0
-      run_agent read-only "$secs" "$3" "$4" "$2" "$5" || rc=$?
+      run_agent read-only "$secs" "$2" "$3" "$1" "$4" || rc=$?
       release_claude_slot "$slot"
       exit "$rc"
     ) &
     pids+=("$!")
     roles+=("$1")
-    shift 5
+    shift 4
   done
   for ((i = 0; i < ${#pids[@]}; i++)); do
     rc=0
@@ -1034,6 +1057,16 @@ print_role_task() {
     printf 'Write your complete output, the ```json fenced payload your instructions require, to a new file named %s. ' "$5"
     printf 'Your final reply must not restate the payload; one line confirming the write is enough.\n'
   fi
+}
+
+# make_temp_dir <name>
+# Creates and prints a fresh directory <name>.XXXXXX where `mktemp -t` puts its
+# files, with a full template because BSD mktemp keeps a -t argument's XXXXXX
+# literally in the name.
+make_temp_dir() {
+  local probe
+  probe="$(mktemp -u -t "$1.XXXXXX")" || return 1
+  mktemp -d "$(dirname "$probe")/$1.XXXXXX"
 }
 
 # clear_reserved_names <clone>
@@ -1963,8 +1996,8 @@ _slot_pool_size() {
 # is the backstop if every slot stays held past its stale window without ever
 # clearing, matching how other unbounded waits in this pipeline are bounded.
 #
-# label, when given, logs which slot was claimed and how long the wait was
-# (nothing printed when it's empty, e.g. from a caller that doesn't pass one).
+# label, when given, logs the claim against the pool size and how long the wait
+# was (nothing printed when it's empty, e.g. from a caller that doesn't pass one).
 # A dogfood round showed lens completion times of 35-519s with no way to tell
 # whether a slow one was genuinely complex work or blocked on slot contention;
 # this splits the two apart. The log call is safe inside `slot="$(...)"`:
@@ -1992,7 +2025,7 @@ acquire_claude_slot() {
             waited=$(($(date +%s) - start_ts))
             suffix=" (waited ${waited}s)"
           fi
-          log_info "${label}: acquired slot ${i}/${pool_size}${suffix}"
+          log_info "${label}: acquired 1 of ${pool_size} slots${suffix}"
         fi
         printf '%s\n' "$slot_path"
         return 0
@@ -2056,7 +2089,7 @@ acquire_claude_slots() {
           waited=$(($(date +%s) - start_ts))
           suffix=" (waited ${waited}s)"
         fi
-        log_info "${label}: acquired ${count}/${pool_size} slots${suffix}"
+        log_info "${label}: acquired ${count} of ${pool_size} slots${suffix}"
       fi
       printf '%s\n' "${claimed[@]}"
       return 0

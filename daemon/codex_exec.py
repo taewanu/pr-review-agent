@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The codex side of lib.sh's run_agent: builds the `codex exec` argv, and renders
-its `--json` events as the same labelled activity lines stream_format.py prints
-for claude.
+its `--json` events as the same activity lines and closing line stream_format.py
+prints for claude.
 
 `argv` prints the argv NUL-separated, so a path or prompt holding a newline
 survives the trip into a bash array. `format` follows the events file codex
@@ -22,7 +22,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from stream_format import emit, truncate
+from stream_format import clone_roots, closing_line, describe_tool, emit, prose, truncate
 
 PROFILE = "pr-review-agent"
 # What codex exec prints, after validating its arguments, when stdin is empty.
@@ -213,18 +213,16 @@ def sandbox_config(install_root: str) -> list[str]:
     ]
 
 
-def render_event(event: dict) -> str | None:
-    """Map one `codex exec --json` event to a progress line, or None to skip it."""
+def render_event(event: dict, roots: tuple[str, ...] = ()) -> str | None:
+    """Map one `codex exec --json` event to a progress line, or None to skip it. A
+    completed turn renders nothing here; format_stream closes the call once."""
     etype = event.get("type")
     if etype == "item.completed":
         item = event.get("item") or {}
         if item.get("type") == "command_execution":
-            return f"→ {truncate(str(item.get('command', '')))}"
+            return f"→ {describe_tool('Shell', str(item.get('command', '')), roots)}"
         if item.get("type") == "agent_message":
-            text = str(item.get("text", "")).strip()
-            return truncate(text) if text else None
-    elif etype == "turn.completed":
-        return f"done · {usage_tokens(event)} tokens"
+            return prose(str(item.get("text", "")), roots)
     elif etype in ("turn.failed", "error"):
         error = event.get("error") if etype == "turn.failed" else event
         return f"{etype}: {truncate(str((error or {}).get('message', '')))}"
@@ -268,9 +266,11 @@ def _alive(pid: int) -> bool:
     return True
 
 
-def format_stream(lines, label: str | None, tokens_out: Path) -> int:
+def format_stream(lines, prefix: str, tokens_out: Path, clock=time.monotonic) -> int:
     """Exits 1 on turn.failed so a failure surfaces even if codex exits 0; on a
     timeout run_agent returns codex's own status."""
+    start = clock()
+    roots = clone_roots()
     failed = False
     tokens = None
     for line in lines:
@@ -283,12 +283,14 @@ def format_stream(lines, label: str | None, tokens_out: Path) -> int:
         if event.get("type") == "turn.completed":
             tokens = (tokens or 0) + usage_tokens(event)
         failed = failed or event.get("type") == "turn.failed"
-        rendered = render_event(event)
+        rendered = render_event(event, roots)
         if rendered is not None:
-            emit(rendered, label=label)
-    # Written only on a completed turn, so a timeout leaves no sidecar, as on claude.
+            emit(rendered, prefix)
+    # Written only on a completed turn, so a timeout leaves no sidecar and no
+    # closing line, as on claude. Codex reports no cost, so the line names none.
     if tokens is not None:
         tokens_out.write_text(str(tokens))
+        emit(closing_line(None, clock() - start, None, tokens), prefix)
     return 1 if failed else 0
 
 
@@ -304,12 +306,12 @@ def main() -> int:
     fmt_p = sub.add_parser("format")
     fmt_p.add_argument("--events", type=Path, required=True)
     fmt_p.add_argument("--while-pid", type=int, required=True)
-    fmt_p.add_argument("--label")
+    fmt_p.add_argument("--prefix", default="[pr-review-agent] ")
     fmt_p.add_argument("--tokens-out", type=Path, required=True)
     sub.add_parser("check")
     args = parser.parse_args()
     if args.cmd == "format":
-        return format_stream(follow(args.events, args.while_pid), args.label, args.tokens_out)
+        return format_stream(follow(args.events, args.while_pid), args.prefix, args.tokens_out)
     codex, skipped = find_codex(os.environ.get("PATH", os.defpath))
     if args.cmd == "check":
         check_accepts_argv(codex)

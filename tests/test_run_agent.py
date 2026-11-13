@@ -87,10 +87,9 @@ def _orchestrate_argv(raw: Path) -> list[str]:
     ]
 
 
-def _site(script: Path, label: str) -> CallSite:
-    suffix = f":{label}${{PR_COLOR_RESET}}"
-    matches = [s for s in map(call_site, run_agent_calls(script)) if s.label.endswith(suffix)]
-    assert len(matches) == 1, f"{script.name}: expected one run_agent call labelled {label}"
+def _site(script: Path, phase: str) -> CallSite:
+    matches = [s for s in map(call_site, run_agent_calls(script)) if s.phase == phase]
+    assert len(matches) == 1, f"{script.name}: expected one run_agent call for phase {phase}"
     return matches[0]
 
 
@@ -112,19 +111,19 @@ _READ_ONLY_SITES = [
 
 
 @pytest.mark.parametrize(
-    ("script", "label", "mode", "agent", "argv"),
+    ("script", "phase", "mode", "agent", "argv"),
     [
         *(
-            (script, label, "read-only", agent, _read_only_argv)
-            for script, label, agent in _READ_ONLY_SITES
+            (script, phase, "read-only", agent, _read_only_argv)
+            for script, phase, agent in _READ_ONLY_SITES
         ),
         # The orchestrator alone names no agent: its roles' prompts come from
         # the definitions handed over with --agents.
         (REVIEW_PR, "review", "orchestrate", None, _orchestrate_argv),
     ],
 )
-def test_each_call_site_sends_its_exact_argv(tmp_path, script, label, mode, agent, argv):
-    site = _site(script, label)
+def test_each_call_site_sends_its_exact_argv(tmp_path, script, phase, mode, agent, argv):
+    site = _site(script, phase)
     assert (site.mode, site.agent) == (mode, agent)
     run = run_agent(tmp_path, site.mode, agent=site.agent)
     assert run.rc == 0, run.stderr
@@ -281,13 +280,13 @@ def test_git_inside_the_agent_skips_its_config_under_the_home_directory(tmp_path
     }
 
 
-@pytest.mark.parametrize(("script", "label", "agent"), _READ_ONLY_SITES)
-def test_read_only_system_prompt_is_the_daemon_definitions_body(tmp_path, script, label, agent):
+@pytest.mark.parametrize(("script", "phase", "agent"), _READ_ONLY_SITES)
+def test_read_only_system_prompt_is_the_daemon_definitions_body(tmp_path, script, phase, agent):
     # The clone is the PR head, so a definition it carries is the PR author's.
     planted = tmp_path / "clone" / ".claude" / "agents" / f"{agent}.md"
     planted.parent.mkdir(parents=True)
     planted.write_text("---\nname: planted\n---\nPLANTED INSTRUCTIONS\n")
-    run = run_agent(tmp_path, "read-only", agent=_site(script, label).agent)
+    run = run_agent(tmp_path, "read-only", agent=_site(script, phase).agent)
     assert run.rc == 0, run.stderr
     system = _flag_value(run.argv, "--append-system-prompt-file").read_text()
     assert system.strip() == _definition(AGENTS / f"{agent}.md")[1].strip()

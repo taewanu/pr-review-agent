@@ -13,7 +13,9 @@ matter and are pinned here:
      the formatter exits 0. The shell test below pins that end to end.
 
 The render layer is editorial, not load-bearing: tool actions and the agent's prose
-get a line, reasoning/hook/rate-limit noise is dropped.
+get a line, reasoning/hook/rate-limit noise is dropped, and a stream that holds a
+result closes with one summary line; one that holds none (a timeout or a crash)
+gets no closing line, and the caller's own line reports the exit.
 """
 
 from __future__ import annotations
@@ -42,14 +44,21 @@ def test_tool_use_renders_name_and_key_arg():
     line = sf.render_event(
         _assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "a/b.py"}})
     )
-    assert line == "→ Read: a/b.py"
+    assert line == "→ Read a/b.py"
 
 
-def test_result_renders_closing_summary():
-    line = sf.render_event(
-        {"type": "result", "num_turns": 3, "duration_ms": 8200, "total_cost_usd": 0.1914}
-    )
-    assert line == "done · 3 turns · 8s · $0.191"
+def test_result_event_renders_no_line_of_its_own():
+    # One call can emit several result events; run() closes the call once.
+    assert sf.render_event({"type": "result", "num_turns": 3, "total_cost_usd": 0.19}) is None
+
+
+def test_closing_line_counts_turns_in_the_singular():
+    assert sf.closing_line(1, 8.2, 0.1914) == "done · 1 turn · 8s · $0.191"
+    assert sf.closing_line(3, 8.2, 0.1914) == "done · 3 turns · 8s · $0.191"
+
+
+def test_closing_line_omits_fields_the_stream_did_not_report():
+    assert sf.closing_line(None, 8.2, None) == "done · 8s"
 
 
 def test_text_block_is_shown_truncated():
@@ -83,7 +92,12 @@ def test_multiple_blocks_join_one_per_line():
             {"type": "text", "text": "found it"},
         )
     )
-    assert line == "→ Grep: TODO\nfound it"
+    assert line == "→ Grep TODO\nfound it"
+
+
+def test_multi_line_prose_keeps_a_separator_between_lines():
+    line = sf.render_event(_assistant({"type": "text", "text": "first: ok\nsecond: ok\n"}))
+    assert line == "first: ok · second: ok"
 
 
 # --- helpers ----------------------------------------------------------------
@@ -92,7 +106,47 @@ def test_multiple_blocks_join_one_per_line():
 def test_summarize_tool_first_present_key_wins():
     # Bash has no file_path, so the loop falls through to command.
     block = {"name": "Bash", "input": {"command": "gh pr diff 1", "timeout": 5}}
-    assert sf._summarize_tool(block) == "Bash: gh pr diff 1"
+    assert sf._summarize_tool(block) == "Bash gh pr diff 1"
+
+
+def test_subagent_dispatch_names_the_subagent():
+    block = {"name": "Agent", "input": {"prompt": "long task text", "subagent_type": "role-a"}}
+    assert sf._summarize_tool(block) == "Agent role-a"
+
+
+def test_path_under_the_clone_is_shown_relative_to_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    roots = sf.clone_roots()
+    clone = str(tmp_path.resolve())
+    read = {"name": "Read", "input": {"file_path": f"{clone}/src/module.py"}}
+    bash = {"name": "Bash", "input": {"command": f"ls {clone}/src"}}
+    assert sf._summarize_tool(read, roots) == "Read src/module.py"
+    assert sf._summarize_tool(bash, roots) == "Bash ls src"
+
+
+def test_a_sibling_path_that_shares_the_clones_prefix_stays_whole():
+    roots = ("/work/clone",)
+    bash = {"name": "Bash", "input": {"command": "ls /work/clone-other/x /work/clone/y"}}
+    assert sf._summarize_tool(bash, roots) == "Bash ls /work/clone-other/x y"
+
+
+def test_the_clone_named_by_its_shell_spelling_is_shown_relative_too(tmp_path, monkeypatch):
+    # The shell keeps the symlinked spelling in PWD while the agent may print it.
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    monkeypatch.chdir(real)
+    monkeypatch.setenv("PWD", str(link))
+    read = {"name": "Read", "input": {"file_path": f"{link}/src/module.py"}}
+    assert sf._summarize_tool(read, sf.clone_roots()) == "Read src/module.py"
+
+
+def test_long_path_keeps_its_file_name():
+    deep = "/outside/" + "nested/" * 20 + "target_file.py"
+    summary = sf._summarize_tool({"name": "Read", "input": {"file_path": deep}})
+    assert summary.endswith("target_file.py")
+    assert len(summary) <= len("Read ") + 80
 
 
 def test_summarize_tool_unknown_tool_shows_name_only():
@@ -222,29 +276,79 @@ def test_run_timeout_leaves_cost_out_unwritten(tmp_path):
     assert not cost.exists()
 
 
-def test_run_without_label_emits_unprefixed_lines(tmp_path, capsys):
-    # Default (ADR 0023): every existing caller (editor, reply-pr.sh) omits
-    # --label, so its progress lines must read exactly as before this change.
+def test_run_without_prefix_marks_lines_as_the_daemons(tmp_path, capsys):
     raw = tmp_path / "raw.txt"
     sf.run(
         _ndjson(_assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}})),
         raw,
     )
     err = capsys.readouterr().err
-    assert err == "[pr-review-agent]   → Read: a.py\n"
+    assert err == "[pr-review-agent] → Read a.py\n"
 
 
-def test_run_with_label_tags_each_line(tmp_path, capsys):
-    # Concurrent lenses (ADR 0023) share one terminal; a label distinguishes
-    # which lens a given line came from.
+def test_run_starts_every_line_with_the_prefix(tmp_path, capsys):
+    # Several PRs share one terminal and log file, so a line that lost its
+    # prefix (the second block of a multi-block event) would be unattributable.
     raw = tmp_path / "raw.txt"
     sf.run(
-        _ndjson(_assistant({"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}})),
+        _ndjson(
+            _assistant(
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}},
+                {"type": "text", "text": "read it"},
+            ),
+            {"type": "result", "result": "ok", "num_turns": 1, "total_cost_usd": 0.1},
+        ),
         raw,
-        label="perf",
+        prefix="P> ",
     )
-    err = capsys.readouterr().err
-    assert err == "[pr-review-agent]   [perf] → Read: a.py\n"
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 3
+    assert all(line.startswith("P> ") for line in lines)
+
+
+def _ticking_clock(*readings: float):
+    it = iter(readings)
+    return lambda: next(it)
+
+
+def _segment(result: str, turns: int, duration_ms: int, cost: float) -> dict:
+    return {
+        "type": "result",
+        "result": result,
+        "num_turns": turns,
+        "duration_ms": duration_ms,
+        "total_cost_usd": cost,
+    }
+
+
+def test_a_stream_of_several_results_closes_with_one_line_of_the_calls_totals(tmp_path, capsys):
+    # Each result is one segment of the session: its own turns and active time,
+    # and the session's cost so far, so only the sum, the last, and the clock
+    # describe the whole call.
+    raw = tmp_path / "raw.txt"
+    cost = tmp_path / "raw.txt.cost"
+    sf.run(
+        _ndjson(
+            _segment("first", 3, 2775, 0.1048),
+            _assistant({"type": "text", "text": "waiting"}),
+            _segment("second", 1, 1317, 0.1048),
+            _segment("final", 1, 1405, 0.1059),
+        ),
+        raw,
+        prefix="",
+        cost_out=cost,
+        clock=_ticking_clock(100.0, 345.4),
+    )
+    closing = [line for line in capsys.readouterr().err.splitlines() if line.startswith("done")]
+    assert closing == ["done · 5 turns · 245s · $0.106"]
+    assert raw.read_text() == "final"
+    assert cost.read_text() == "0.1059"
+
+
+def test_a_stream_with_no_result_prints_no_closing_line(tmp_path, capsys):
+    raw = tmp_path / "raw.txt"
+    sf.run(_ndjson(_assistant({"type": "text", "text": "working"})), raw, prefix="")
+    assert capsys.readouterr().err == "working\n"
 
 
 def test_run_truncated_stream_leaves_raw_out_empty(tmp_path):
