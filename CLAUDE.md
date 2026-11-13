@@ -22,7 +22,7 @@ The daemon is the `daemon/run.sh` polling loop (ADR 0009): each cycle drives `da
 
 **Manual one-shot** (debugging or single-PR runs): `bash daemon/review-pr.sh <pr-url>` runs the review pipeline once without polling. `bash daemon/reply-pr.sh <pr-url>` runs the operator-reply ack pass once without polling. Reviews submit immediately under the App identity (ADR 0036), so there is no separate submit step.
 
-Prereqs: a registered GitHub App the daemon authenticates as (its id in `GITHUB_APP_ID`, its private key at `~/.pr-review-agent/app.pem`), so no `gh auth login` (ADR 0036); `gh`, `claude`, `openssl`, `curl` on PATH; `jq`; `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing. README's "Register the GitHub App" is the registration walkthrough: permissions (`contents: write` buys thread resolution alone), webhook off, key at mode 0600, install per watched repo.
+Prereqs: a registered GitHub App the daemon authenticates as (its id in `GITHUB_APP_ID`, its private key at `~/.pr-review-agent/app.pem`), so no `gh auth login` (ADR 0036); `gh`, `claude`, `openssl`, `curl` on PATH; `jq`; `python3` 3.13+. Scripts preflight and bail with an actionable hint if any are missing. `docs/github-app.md` is the registration walkthrough: permissions (`contents: write` buys thread resolution alone), webhook off, key at mode 0600, install per watched repo.
 
 The daemon supplies every agent definition from its own `.claude/agents/` (ADR 0007), so target repos carry nothing and cannot override a role, and nothing in the per-PR clone configures the agent; `run_agent` in `daemon/lib.sh` is where that is enforced.
 
