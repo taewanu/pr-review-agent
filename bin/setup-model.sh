@@ -140,15 +140,43 @@ ask() {
   printf '%s' "${answer:-$2}"
 }
 
-# choose <prompt> <default> <allowed, space-separated>: asks until the answer is allowed.
-choose() {
-  local answer
-  while true; do
-    answer="$(ask "$1" "$2")" || exit
-    [[ " $3 " == *" $answer "* ]] && break
-    printf 'Choose one of: %s\n' "$3" >&2
+# print_options <name> <description> ...: prints one numbered line per pair, with
+# the descriptions starting in one column.
+print_options() {
+  local options=("$@") width=0 k
+  for ((k = 0; k < ${#options[@]}; k += 2)); do
+    ((${#options[$k]} <= width)) || width=${#options[$k]}
   done
-  printf '%s' "$answer"
+  for ((k = 0; k < ${#options[@]}; k += 2)); do
+    if [[ -n "${options[$((k + 1))]}" ]]; then
+      printf '  %d) %-*s  %s\n' "$((k / 2 + 1))" "$width" "${options[$k]}" "${options[$((k + 1))]}" >&2
+    else
+      printf '  %d) %s\n' "$((k / 2 + 1))" "${options[$k]}" >&2
+    fi
+  done
+}
+
+# menu <heading> <question> <default> <name> <description> ...: lists the options
+# and asks until the answer is one of them, by number or by name.
+menu() {
+  local heading="$1" question="$2" default="$3" answer k
+  shift 3
+  local options=("$@")
+  printf '%s\n' "$heading" >&2
+  print_options "$@"
+  while true; do
+    answer="$(ask "$question, a number or a name" "$default")" || exit
+    if [[ "$answer" =~ ^[0-9]{1,3}$ ]] && ((10#$answer >= 1 && 10#$answer * 2 <= ${#options[@]})); then
+      answer="${options[$((10#$answer * 2 - 2))]}"
+    fi
+    for ((k = 0; k < ${#options[@]}; k += 2)); do
+      [[ "${options[$k]}" != "$answer" ]] || {
+        printf '%s' "$answer"
+        return
+      }
+    done
+    printf 'Choose a number or a name from the list.\n' >&2
+  done
 }
 
 # ask_model <prompt> <default>: asks until the answer is a name .env can hold,
@@ -168,12 +196,17 @@ ask_model() {
   printf '%s' "$answer"
 }
 
+cli_label() {
+  case "$1" in
+    claude) printf 'Claude Code' ;;
+    codex) printf 'Codex CLI' ;;
+  esac
+}
+
 set_cli() {
   cli="$1"
-  case "$cli" in
-    claude) product="Claude Code" ;;
-    codex) product="the Codex CLI" ;;
-  esac
+  product="$(cli_label "$cli")"
+  [[ "$cli" == claude ]] || product="the $product"
 }
 
 check_on_path() {
@@ -412,7 +445,8 @@ if ! current_harness="$(resolve_review_harness "$DOTENV" 2>/dev/null)"; then
   current_harness=claude
 fi
 if [[ "$mode" == wizard ]]; then
-  cli="$(choose "Agent CLI to review with, claude or codex" "$current_harness" "claude codex")"
+  cli="$(menu "Agent CLI:" "Agent CLI" "$current_harness" \
+    claude "$(cli_label claude)" codex "$(cli_label codex)")"
   set_cli "$cli"
 else
   set_cli "${harness_arg:-$current_harness}"
@@ -447,13 +481,15 @@ if [[ "$cli" == codex ]]; then
   if [[ "$mode" == flags ]]; then
     model="$model_arg"
   elif ((${#slugs[@]} == 0)); then
-    printf 'codex debug models listed no models, so type a model name the codex CLI accepts.\n' >&2
+    printf '\ncodex debug models listed no models, so type a model name the codex CLI accepts.\n' >&2
     model="$(ask_model "Model" "$current_model")"
   else
-    printf 'Models your codex account lists:\n' >&2
+    printf '\nModels your codex account lists:\n' >&2
+    model_options=()
     for i in "${!slugs[@]}"; do
-      printf '  %d) %s  %s\n' "$((i + 1))" "${slugs[$i]}" "${descriptions[$i]}" >&2
+      model_options+=("${slugs[$i]}" "${descriptions[$i]}")
     done
+    print_options "${model_options[@]}"
     printf '  %d) type a model name\n' "$((${#slugs[@]} + 1))" >&2
     model="$(ask_model "Model, a number or a name" "${current_model:-1}")"
     if [[ "$model" =~ ^[0-9]+$ ]]; then
@@ -474,7 +510,7 @@ else
   if [[ "$mode" == flags ]]; then
     model="${model_arg:-$daemon_model}"
   else
-    printf 'Model the claude CLI runs; the default is %s. From claude --help:\n' "$daemon_model" >&2
+    printf '\nModel the claude CLI runs; the default is %s. From claude --help:\n' "$daemon_model" >&2
     claude --help 2>/dev/null | awk '/^ +--model /{on=1; print; next} on && /^   /{print; next} {on=0}' |
       LC_ALL=C tr -d '\000-\011\013-\037\177' >&2 || true
     model="$(ask_model "Model" "${current_model:-$daemon_model}")"
@@ -501,7 +537,17 @@ if [[ "$mode" == flags ]]; then
 else
   default_effort="$(resolve_review_effort "$DOTENV" 2>/dev/null)"
   [[ " $levels " == *" $default_effort "* ]] || default_effort="${levels%% *}"
-  effort="$(choose "Effort, one of: $levels" "$default_effort" "$levels")"
+  effort_options=()
+  for level in $levels; do
+    # Descriptions reach the terminal, so control characters are stripped.
+    description=""
+    [[ -z "$catalog" ]] || description="$(jq -r --arg m "$model" --arg l "$level" 'first(.models[]?
+      | select(.slug == $m) | .supported_reasoning_levels[]? | objects | select(.effort == $l)
+      | .description | strings | gsub("[[:cntrl:]]"; "")) // ""' <<<"$catalog" 2>/dev/null)" || description=""
+    effort_options+=("$level" "$description")
+  done
+  printf '\n' >&2
+  effort="$(menu "Effort levels $model takes:" "Effort" "$default_effort" "${effort_options[@]}")"
 fi
 effort_out="$effort"
 # Under codex the effort stays written, because a later default might be a level
@@ -521,8 +567,9 @@ printf '\n' >&2
 
 if [[ "$mode" == wizard ]]; then
   test_call=0
-  answer="$(ask "Send one test call (the prompt \"Reply with OK\") to ${model} on ${cli}?" Y Y/n)"
-  [[ "$answer" != [Yy]* ]] || test_call=1
+  answer="$(menu 'Test call (the prompt "Reply with OK"):' "Test call" send \
+    send "Check that ${model} answers on ${cli}" skip "Write the settings without checking")"
+  [[ "$answer" != send ]] || test_call=1
 fi
 if [[ "$test_call" == 1 ]]; then
   run_test_call || exit 1

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import pty
+import re
 import shutil
 import signal
 import subprocess
@@ -335,7 +336,7 @@ def test_writer_writes_through_a_symlinked_dotenv(tmp_path):
 
 def test_claude_run_writes_the_three_keys_and_prints_nothing_else_from_dotenv(base):
     dotenv = _dotenv(base)
-    result = _wizard(base, ["claude", "claude-example-model", "medium", "y"], dotenv)
+    result = _wizard(base, ["claude", "claude-example-model", "medium", "send"], dotenv)
     assert result.returncode == 0, result.stderr
     assert (
         dotenv.read_bytes()
@@ -355,7 +356,7 @@ def test_claude_run_writes_the_three_keys_and_prints_nothing_else_from_dotenv(ba
 
 def test_claude_short_name_is_accepted_with_a_note_that_it_may_be_an_alias(base):
     dotenv = _dotenv(base)
-    result = _wizard(base, ["claude", "example-alias", "high", "y"], dotenv)
+    result = _wizard(base, ["claude", "example-alias", "high", "send"], dotenv)
     assert result.returncode == 0, result.stderr
     assert "example-alias is not a full model name; if it is an alias" in result.stderr
     assert _resolve("REVIEW_MODEL", dotenv) == "example-alias"
@@ -367,7 +368,7 @@ def test_accepting_the_defaults_writes_empty_values_that_follow_the_daemon_defau
     env = _env(base, FAKE_CALLS=str(calls))
     default_model = _lib("resolve_review_model /dev/null", env).stdout
     default_effort = _lib("resolve_review_effort /dev/null", env).stdout
-    result = _wizard(base, ["claude", "", "", "y"], dotenv, env)
+    result = _wizard(base, ["claude", "", "", "send"], dotenv, env)
     assert result.returncode == 0, result.stderr
     assert (
         dotenv.read_bytes()
@@ -386,7 +387,7 @@ def test_a_bad_model_name_is_asked_again_before_any_call(base, bad):
     dotenv = _dotenv(base)
     calls = base / "calls.log"
     env = _env(base, FAKE_CALLS=str(calls))
-    result = _wizard(base, ["claude", bad, "claude-example-model", "high", "y"], dotenv, env)
+    result = _wizard(base, ["claude", bad, "claude-example-model", "high", "send"], dotenv, env)
     assert result.returncode == 0, result.stderr
     assert "A model name holds only" in result.stderr
     test_calls = [c for c in calls.read_text().splitlines() if c.startswith("claude -p")]
@@ -408,7 +409,7 @@ def test_a_bad_model_name_with_no_second_answer_never_reaches_the_cli(base):
 def test_wizard_refuses_a_read_only_dotenv_before_any_question(base):
     dotenv = _dotenv(base)
     dotenv.chmod(0o400)
-    result = _wizard(base, ["claude", "claude-example-model", "high", "y"], dotenv)
+    result = _wizard(base, ["claude", "claude-example-model", "high", "send"], dotenv)
     assert result.returncode == 1
     assert "not writable" in result.stderr
     assert "Agent CLI" not in result.stderr
@@ -418,7 +419,7 @@ def test_wizard_refuses_a_read_only_dotenv_before_any_question(base):
 def test_shell_environment_override_is_named_after_writing(base):
     dotenv = _dotenv(base)
     env = _env(base, REVIEW_EFFORT="low")
-    result = _wizard(base, ["claude", "claude-example-model", "medium", "y"], dotenv, env)
+    result = _wizard(base, ["claude", "claude-example-model", "medium", "send"], dotenv, env)
     assert result.returncode == 0, result.stderr
     assert "REVIEW_EFFORT is also set in your shell environment, which overrides .env." in (
         result.stderr
@@ -441,7 +442,7 @@ def test_wizard_on_a_silent_terminal_stops_at_the_timeout_and_writes_nothing(bas
 def test_failed_test_call_with_no_stderr_prints_no_stderr_heading(base):
     dotenv = _dotenv(base)
     env = _env(base, FAKE_AGENT_FAIL="silent")
-    result = _wizard(base, ["claude", "claude-example-model", "high", "y"], dotenv, env)
+    result = _wizard(base, ["claude", "claude-example-model", "high", "send"], dotenv, env)
     assert result.returncode == 1
     assert "did not answer on claude" in result.stderr
     assert "stderr lines" not in result.stderr
@@ -451,7 +452,7 @@ def test_failed_test_call_with_no_stderr_prints_no_stderr_heading(base):
 def test_failed_test_call_shows_the_agent_stderr_and_writes_nothing(base):
     dotenv = _dotenv(base)
     env = _env(base, FAKE_AGENT_FAIL="1")
-    result = _wizard(base, ["claude", "claude-example-model", "high", "y"], dotenv, env)
+    result = _wizard(base, ["claude", "claude-example-model", "high", "send"], dotenv, env)
     assert result.returncode == 1
     assert "claude-example-model did not answer on claude" in result.stderr
     assert "agent error line 7" in result.stderr
@@ -462,7 +463,7 @@ def test_failed_test_call_shows_the_agent_stderr_and_writes_nothing(base):
 def test_declined_test_call_writes_and_says_not_verified(base):
     dotenv = _dotenv(base)
     env = _env(base, FAKE_AGENT_FAIL="1")
-    result = _wizard(base, ["claude", "claude-example-model", "high", "n"], dotenv, env)
+    result = _wizard(base, ["claude", "claude-example-model", "high", "skip"], dotenv, env)
     assert result.returncode == 0, result.stderr
     assert "not verified" in result.stderr
     assert _resolve("REVIEW_MODEL", dotenv) == "claude-example-model"
@@ -471,10 +472,120 @@ def test_declined_test_call_writes_and_says_not_verified(base):
 @pytest.mark.parametrize("answered", range(4))
 def test_end_of_input_at_any_prompt_writes_nothing(base, answered):
     dotenv = _dotenv(base)
-    answers = ["claude", "claude-example-model", "high", "y"][:answered]
+    answers = ["claude", "claude-example-model", "high", "send"][:answered]
     result = _wizard(base, answers, dotenv)
     assert result.returncode != 0
     assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def _menu_lines(stderr: str) -> list[str]:
+    return [line for line in stderr.splitlines() if re.match(r"  \d+\) ", line)]
+
+
+CLI_PICKS = {
+    "a number": ("1", "claude"),
+    "a name": ("claude", "claude"),
+    "an empty answer takes the default": ("", "claude"),
+    "another number": ("2", "codex"),
+    "another name": ("codex", "codex"),
+}
+REST = {"claude": ["claude-example-model", "high", "send"], "codex": ["1", "high", "send"]}
+
+
+@pytest.mark.parametrize("case", CLI_PICKS)
+def test_cli_menu_takes_a_number_or_a_name_and_lists_each_cli_by_its_product_name(base, case):
+    typed, cli = CLI_PICKS[case]
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_CATALOG=_catalog(base))
+    result = _wizard(base, [typed, *REST[cli]], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert "Agent CLI:\n  1) claude  Claude Code\n  2) codex   Codex CLI\n" in result.stderr
+    assert "Agent CLI, a number or a name [claude]: " in result.stderr
+    assert _resolve("REVIEW_HARNESS", dotenv) == cli
+
+
+def test_cli_menu_asks_again_after_an_out_of_range_number_or_an_unknown_name(base):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_CATALOG=_catalog(base))
+    result = _wizard(base, ["3", "0", "example-cli", *["codex", *REST["codex"]]], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.count("Choose a number or a name from the list.") == 3
+    assert _resolve("REVIEW_HARNESS", dotenv) == "codex"
+
+
+EFFORT_PICKS = {
+    "a number": ("2", "medium"),
+    "a name": ("xhigh", "xhigh"),
+    "an empty answer takes the default": ("", ""),
+}
+
+
+@pytest.mark.parametrize("case", EFFORT_PICKS)
+def test_effort_menu_takes_a_number_or_a_name(base, case):
+    typed, written = EFFORT_PICKS[case]
+    dotenv = _dotenv(base)
+    result = _wizard(base, ["claude", "claude-example-model", typed, "send"], dotenv)
+    assert result.returncode == 0, result.stderr
+    assert "Effort, a number or a name [high]: " in result.stderr
+    assert f"REVIEW_EFFORT={written}\n" in result.stdout
+
+
+def test_effort_menu_asks_again_after_an_out_of_range_number_or_an_unknown_name(base):
+    dotenv = _dotenv(base)
+    answers = ["claude", "claude-example-model", "6", "example-level", "low", "send"]
+    result = _wizard(base, answers, dotenv)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.count("Choose a number or a name from the list.") == 2
+    assert _resolve("REVIEW_EFFORT", dotenv) == "low"
+
+
+def test_claude_effort_menu_lists_the_daemon_levels_without_descriptions(base):
+    dotenv = _dotenv(base)
+    levels = _lib('printf %s "$REVIEW_EFFORT_LEVELS"', _env(base)).stdout.split()
+    result = _wizard(base, ["claude", "claude-example-model", "", "send"], dotenv)
+    assert result.returncode == 0, result.stderr
+    menu = "".join(f"  {i}) {level}\n" for i, level in enumerate(levels, 1))
+    assert f"Effort levels claude-example-model takes:\n{menu}" in result.stderr
+
+
+TEST_CALL_PICKS = {
+    "an empty answer sends": ("", 1),
+    "the number of send": ("1", 1),
+    "send": ("send", 1),
+    "the number of skip": ("2", 0),
+    "skip": ("skip", 0),
+}
+
+
+@pytest.mark.parametrize("case", TEST_CALL_PICKS)
+def test_test_call_menu_sends_or_skips_and_writes_either_way(base, case):
+    typed, sent = TEST_CALL_PICKS[case]
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CALLS=str(calls))
+    result = _wizard(base, ["claude", "claude-example-model", "high", typed], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert (
+        'Test call (the prompt "Reply with OK"):\n'
+        "  1) send  Check that claude-example-model answers on claude\n"
+        "  2) skip  Write the settings without checking\n"
+        "Test call, a number or a name [send]: "
+    ) in result.stderr
+    assert len(_model_calls(calls)) == sent
+    assert ("not verified" in result.stderr) == (not sent)
+    assert _resolve("REVIEW_MODEL", dotenv) == "claude-example-model"
+
+
+def test_test_call_menu_asks_again_after_an_unknown_answer(base):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CALLS=str(calls))
+    answers = ["claude", "claude-example-model", "high", "y", "3", "skip"]
+    result = _wizard(base, answers, dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.count("Choose a number or a name from the list.") == 2
+    assert _model_calls(calls) == []
+    assert _resolve("REVIEW_MODEL", dotenv) == "claude-example-model"
 
 
 # The wizard on codex
@@ -483,13 +594,14 @@ def test_end_of_input_at_any_prompt_writes_nothing(base, answered):
 def test_codex_menu_lists_visible_models_by_priority_and_limits_effort(base):
     dotenv = _dotenv(base)
     env = _env(base, FAKE_CATALOG=_catalog(base))
-    result = _wizard(base, ["codex", "1", "low", "high", "y"], dotenv, env)
+    result = _wizard(base, ["codex", "1", "low", "high", "send"], dotenv, env)
     assert result.returncode == 0, result.stderr
     assert "example-hidden" not in result.stderr
     assert result.stderr.index("1) example-first") < result.stderr.index("2) example-second")
     assert "3) type a model name" in result.stderr
-    assert "Effort, one of: medium high [high]" in result.stderr
-    assert "Choose one of: medium high" in result.stderr
+    assert "Effort levels example-first takes:\n  1) medium\n  2) high\n" in result.stderr
+    assert "Effort, a number or a name [high]" in result.stderr
+    assert "Choose a number or a name from the list." in result.stderr
     assert "Improve the model for everyone" in result.stderr
     assert _resolve("REVIEW_HARNESS", dotenv) == "codex"
     assert _resolve("REVIEW_MODEL", dotenv) == "example-first"
@@ -498,7 +610,7 @@ def test_codex_menu_lists_visible_models_by_priority_and_limits_effort(base):
 
 def test_codex_without_a_catalog_takes_a_typed_model(base):
     dotenv = _dotenv(base)
-    result = _wizard(base, ["codex", "example-typed", "max", "y"], dotenv)
+    result = _wizard(base, ["codex", "example-typed", "max", "send"], dotenv)
     assert result.returncode == 0, result.stderr
     assert "type a model name" in result.stderr
     assert _resolve("REVIEW_MODEL", dotenv) == "example-typed"
@@ -508,7 +620,7 @@ def test_codex_without_a_catalog_takes_a_typed_model(base):
 def test_codex_refuses_a_claude_model(base):
     dotenv = _dotenv(base)
     env = _env(base, FAKE_CATALOG=_catalog(base))
-    result = _wizard(base, ["codex", "claude-example", "high", "y"], dotenv, env)
+    result = _wizard(base, ["codex", "claude-example", "high", "send"], dotenv, env)
     assert result.returncode != 0
     assert "is a Claude model" in result.stderr
     assert dotenv.read_bytes() == ENV_BODY.encode()
@@ -516,7 +628,7 @@ def test_codex_refuses_a_claude_model(base):
 
 def test_codex_empty_model_is_asked_again_because_codex_has_no_default(base):
     dotenv = _dotenv(base)
-    result = _wizard(base, ["codex", "", "example-typed", "high", "y"], dotenv)
+    result = _wizard(base, ["codex", "", "example-typed", "high", "send"], dotenv)
     assert result.returncode == 0, result.stderr
     assert "A model name is required." in result.stderr
     assert "Claude model" not in result.stderr
@@ -533,7 +645,7 @@ def test_codex_with_the_temp_root_under_tmp_stops_before_the_model_question(base
     fake_mktemp = base / "fakebin" / "mktemp"
     fake_mktemp.write_text(f'#!/bin/sh\nexec "{real_mktemp}" -d /tmp/pr-review-test.XXXXXX\n')
     fake_mktemp.chmod(0o755)
-    result = _wizard(base, ["codex", "1", "high", "y"], dotenv, env)
+    result = _wizard(base, ["codex", "1", "high", "send"], dotenv, env)
     assert result.returncode == 1
     assert "Codex refuses to run in" in result.stderr
     assert 'export TMPDIR="$HOME/.pr-review-agent/tmp"' in result.stderr
@@ -571,20 +683,66 @@ def test_codex_catalog_drops_unsafe_slugs_strips_control_characters_and_reads_pl
         )
     )
     env = _env(base, FAKE_CATALOG=str(catalog))
-    result = _wizard(base, ["codex", "1", "high", "y"], dotenv, env)
+    result = _wizard(base, ["codex", "1", "high", "send"], dotenv, env)
     assert result.returncode == 0, result.stderr
     assert "\x1b" not in result.stderr and "\x07" not in result.stderr
     assert "example ok" not in result.stderr
     assert "a newline" not in result.stderr
-    assert "1) example-plain  plain]0;title levels" in result.stderr
-    assert "2) example-unreadable" in result.stderr
+    assert "1) example-plain       plain]0;title levels" in result.stderr
+    assert "2) example-unreadable  unreadable levels" in result.stderr
     assert "3) type a model name" in result.stderr
-    assert "Effort, one of: low high [high]" in result.stderr
+    assert "Effort levels example-plain takes:\n  1) low\n  2) high\n" in result.stderr
     assert _resolve("REVIEW_MODEL", dotenv) == "example-plain"
 
-    result = _wizard(base, ["codex", "2", "max", "y"], dotenv, env)
+    result = _wizard(base, ["codex", "2", "max", "send"], dotenv, env)
     assert result.returncode == 0, result.stderr
-    assert "Effort, one of: low medium high xhigh max" in result.stderr
+    assert "  1) low\n  2) medium\n  3) high\n  4) xhigh\n  5) max\n" in result.stderr
+
+
+def test_codex_effort_menu_shows_each_catalog_description_stripped_of_control_characters(base):
+    dotenv = _dotenv(base)
+    levels = [
+        {"effort": "low", "description": "example low text"},
+        "medium",
+        {"effort": "high", "description": "example\x1b[31m high\x07 text"},
+        {"effort": "beyond-max", "description": "example unused"},
+    ]
+    entry = {"visibility": "list", "priority": 1, "supported_reasoning_levels": levels}
+    catalog = {"models": [{**entry, "slug": "example-model", "description": "example"}]}
+    env = _env(base, FAKE_CATALOG=_catalog(base, catalog))
+    result = _wizard(base, ["codex", "1", "", "send"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert (
+        "Effort levels example-model takes:\n"
+        "  1) low     example low text\n"
+        "  2) medium\n"
+        "  3) high    example[31m high text\n"
+        "Effort, a number or a name [high]: "
+    ) in result.stderr
+    assert "\x1b" not in result.stderr and "\x07" not in result.stderr
+    assert _resolve("REVIEW_EFFORT", dotenv) == "high"
+
+
+def test_codex_model_and_effort_menus_start_every_description_in_one_column(base):
+    dotenv = _dotenv(base)
+    levels = [{"effort": e, "description": f"example {e} text"} for e in ("low", "medium")]
+    entry = {"visibility": "list", "supported_reasoning_levels": levels}
+    catalog = {
+        "models": [
+            {**entry, "slug": "example-a", "description": "example short", "priority": 1},
+            {**entry, "slug": "example-longer-name", "description": "example long", "priority": 2},
+        ]
+    }
+    env = _env(base, FAKE_CATALOG=_catalog(base, catalog))
+    result = _wizard(base, ["codex", "1", "", "skip"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    lines = _menu_lines(result.stderr)
+    assert all(not line.endswith(" ") for line in lines)
+    models = [line for line in lines if ") example-" in line]
+    efforts = [line for line in lines if line.endswith(" text")]
+    assert len(models) == 2 and len(efforts) == 2
+    for menu in (models, efforts):
+        assert len({line.index("example ") for line in menu}) == 1
 
 
 # The checks
@@ -629,7 +787,7 @@ CHECKS = {
 def test_each_failed_check_says_what_to_do_and_leaves_dotenv(base, case):
     cli, make_env, message = CHECKS[case]
     dotenv = _dotenv(base)
-    result = _wizard(base, [cli, "example-model", "high", "y"], dotenv, make_env(base))
+    result = _wizard(base, [cli, "example-model", "high", "send"], dotenv, make_env(base))
     assert result.returncode == 1
     assert message in result.stderr
     assert dotenv.read_bytes() == ENV_BODY.encode()
@@ -690,9 +848,9 @@ def test_offer_outside_a_fresh_setup_prints_and_reads_nothing(base, case, termin
 
 def test_offer_yes_runs_the_wizard_on_the_terminal(base):
     dotenv = _fresh(base)
-    result = _offer(dotenv, _env(base), "y\nclaude\n\n\nn\n")
+    result = _offer(dotenv, _env(base), "y\nclaude\n\n\nskip\n")
     assert result.returncode == 0, result.stderr
-    assert "Agent CLI to review with" in result.stderr
+    assert "Agent CLI, a number or a name" in result.stderr
     assert dotenv.read_text() == FRESH_BODY.replace(
         "REVIEW_HARNESS=", "REVIEW_HARNESS=claude"
     ).replace("REVIEW_EFFORT=high", "REVIEW_EFFORT=")
