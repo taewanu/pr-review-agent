@@ -49,7 +49,7 @@ These are read from the shell environment only, not from `.env`. Set them in the
 | `FIX_CHECK_AGENT_TIMEOUT` | `180` | each check of whether a later commit fixed a finding |
 | `REPLY_AGENT_TIMEOUT` | `300` | the reply pass |
 | `PER_PR_TIMEOUT` | `1800` | one PR's review or reply step in a polling cycle |
-| `GH_API_CALL_TIMEOUT` | `90` | fetching a PR's diff |
+| `GH_API_CALL_TIMEOUT` | `90` | fetching a PR's diff, and re-reading its head before a reply pass updates the review verdict |
 | `RESOLVE_TOUCHED_CAP` | `10` | open findings on changed lines checked for a fix, per review |
 | `RESOLVE_UNTOUCHED_CAP` | `5` | other open findings checked for a fix, per review |
 | `SESSION_PAUSE_FALLBACK_SECONDS` | `3600` | the pause after a Claude usage limit with no readable reset time |

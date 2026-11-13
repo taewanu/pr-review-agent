@@ -171,6 +171,11 @@ case "$args" in
     ;;
   *"/issues/"*"/comments"*) cat "$data/issue_comments.json" ;;
   *"/pulls/"*"/comments"*) cat "$data/review_comments.json" ;;
+  *"/pulls/"*)
+    [[ -f "$data/pull.FAIL" ]] && exit 1
+    while [[ $# -gt 0 && "$1" != "--jq" ]]; do shift; done
+    jq -r "$2" "$data/pull.json"
+    ;;
   *graphql*)
     if [[ -f "$data/resolved_by_reply" ]]; then
       cat "$data/graphql_after.json"
@@ -211,6 +216,10 @@ class Fixture:
 
     def fail(self, write: str) -> None:
         (self.data / f"{write}.FAIL").touch()
+
+    def set_head(self, sha: str) -> None:
+        """What the PR's head is when the refresh re-reads it."""
+        (self.data / "pull.json").write_text(json.dumps({"head": {"sha": sha}}))
 
 
 def _run(run_id: int, status: str, conclusion: str | None, **overrides) -> dict:
@@ -266,6 +275,7 @@ def _fixture(
     (data / "graphql.json").write_text(json.dumps(_graphql(now)))
     fx = Fixture(tmp_path, data, bindir, env)
     fx.set_runs([_run(RUN_ID, "completed", shown_conclusion)])
+    fx.set_head(REVIEWED)
     if checks_fail:
         fx.fail("checks")
     return fx
@@ -393,6 +403,24 @@ def test_head_moved_past_the_reviewed_commit_leaves_both_surfaces_to_the_next_re
     assert "graphql" not in fx.calls()
 
 
+@pytest.mark.parametrize("reread", ["moved", "failed"])
+def test_a_head_that_moved_or_cannot_be_reread_before_the_writes_blocks_them(tmp_path, reread):
+    # A push between the pass's first read of HEAD and the refresh makes the
+    # reviewed commit stale, and a failed re-read cannot rule that out.
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, False)], now=[_thread(1, True)], shown_conclusion="failure"
+    )
+    if reread == "moved":
+        fx.set_head(NEWER)
+    else:
+        fx.fail("pull")
+    result = _refresh(fx)
+    assert result.returncode == 0
+    assert fx.comment_patch() is None
+    assert fx.check_patch() is None
+    assert "PATCH" not in fx.calls()
+
+
 def test_a_status_comment_without_a_completed_review_is_left_alone(tmp_path):
     # The Reviewing and failed renders carry no sentinel: a review is running or
     # failed, and the next one to finish writes both surfaces.
@@ -408,9 +436,9 @@ def test_a_status_comment_without_a_completed_review_is_left_alone(tmp_path):
     assert fx.check_patch() is None
 
 
-def test_unchanged_threads_write_nothing_and_cost_three_reads(tmp_path):
+def test_unchanged_threads_write_nothing_and_cost_four_reads(tmp_path):
     # When both surfaces already show the verdict, the refresh reads the status
-    # comment, the threads, and the run, and writes nothing.
+    # comment, the threads, the PR's head, and the run, and writes nothing.
     fx = _fixture(
         tmp_path, at_review=[_thread(1, False)], now=[_thread(1, False)], shown_conclusion="failure"
     )
@@ -419,7 +447,7 @@ def test_unchanged_threads_write_nothing_and_cost_three_reads(tmp_path):
     assert fx.comment_patch() is None
     assert fx.check_patch() is None
     calls = [c for c in fx.calls().splitlines() if c.startswith("api ")]
-    assert len(calls) == 3, calls
+    assert len(calls) == 4, calls
     assert not any("PATCH" in c for c in calls)
     assert "already shows block" in result.stderr
     assert f"check run {RUN_ID} already failure" in result.stderr
@@ -750,6 +778,22 @@ def test_reply_pass_refreshes_even_when_posting_fails_partway(tmp_path):
     assert result.returncode == 1
     body = fx.comment_patch()
     assert body is not None and body.splitlines()[0].endswith(PASS_LINE)
+
+
+def test_reply_pass_leaves_the_verdict_when_a_push_lands_during_the_pass(tmp_path):
+    # The pass reads HEAD as the reviewed commit before its agent runs; a push
+    # before the refresh moves HEAD, and the reviewed commit's verdict must not
+    # be rewritten from threads the new commit's review now owns.
+    fx = _fixture(
+        tmp_path, at_review=[_thread(1, False)], now=[_thread(1, False)], shown_conclusion="failure"
+    )
+    _use_canonical_slug(fx)
+    fx.set_head(NEWER)
+    result = _reply_pass(fx)
+    assert result.returncode == 0, result.stderr
+    assert (fx.data / "reply_posted").exists()
+    assert fx.comment_patch() is None
+    assert fx.check_patch() is None
 
 
 def test_reply_pass_with_no_reply_makes_no_refresh_call(tmp_path):

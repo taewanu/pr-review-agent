@@ -2406,7 +2406,7 @@ refresh_review_verdict() {
 _refresh_review_verdict() {
   local owner="$1" repo="$2" pr="$3" head_sha="$4" head_repo_url="$5"
   local comments status comment_id old_body reviewed_sha threads_file body_file
-  local state new_body rc=0
+  local state new_body current_head rc=0
   comments="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
     gh api --paginate "repos/${owner}/${repo}/issues/${pr}/comments" 2>/dev/null)" || return 1
   status="$(flatten_pages <<<"$comments" |
@@ -2445,6 +2445,20 @@ _refresh_review_verdict() {
     return 0
   fi
   [[ "$rc" -eq 0 && -n "$new_body" ]] || return 1
+
+  # The caller read HEAD before its agent and posting phases, so a push since then
+  # would let this write the verdict of a commit that is no longer HEAD.
+  if ! current_head="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    --timeout "${GH_API_CALL_TIMEOUT:-90}" \
+    gh api "repos/${owner}/${repo}/pulls/${pr}" --jq '.head.sha' 2>/dev/null)" ||
+    [[ -z "$current_head" ]]; then
+    log_info "PR head re-read failed; the verdict is left to the next pass"
+    return 0
+  fi
+  if [[ "$current_head" != "$head_sha" ]]; then
+    log_info "PR head moved to ${current_head:0:12} during the pass; the next review sets the verdict"
+    return 0
+  fi
 
   # The renderer reads the body with its line endings normalised, so the body
   # GitHub returned is compared the same way.
