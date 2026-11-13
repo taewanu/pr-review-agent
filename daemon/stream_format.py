@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 
-def _truncate(text: str, limit: int = 80) -> str:
+def truncate(text: str, limit: int = 80) -> str:
     """Flatten to one line and cap length, so a long command can't wrap the view."""
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -40,7 +40,7 @@ def _summarize_tool(block: dict) -> str:
     inp = block.get("input", {})
     for key in ("file_path", "command", "pattern", "path", "url", "prompt"):
         if key in inp:
-            return f"{name}: {_truncate(str(inp[key]))}"
+            return f"{name}: {truncate(str(inp[key]))}"
     return name
 
 
@@ -68,7 +68,7 @@ def render_event(event: dict) -> str | None:
             # Narrate the agent's prose live (it also reappears in the final result).
             text = block.get("text", "").strip()
             if text:
-                lines.append(_truncate(text))
+                lines.append(truncate(text))
         # btype == "thinking": skip (reasoning noise)
     return "\n".join(lines) if lines else None
 
@@ -76,7 +76,7 @@ def render_event(event: dict) -> str | None:
 PREFIX = "[pr-review-agent]   "  # indent under the log_step markers (lib.sh)
 
 
-def _emit(line: str, label: str | None = None) -> None:
+def emit(line: str, label: str | None = None) -> None:
     # label (ADR 0023 revision): concurrent lenses stream to the same terminal
     # at once now, so their live lines interleave; a label tags each line with
     # its source (e.g. "[intent]") so a reader can still follow one lens.
@@ -141,7 +141,7 @@ def run(stream, raw_out: Path, label: str | None = None, cost_out: Path | None =
                 cost_out.with_suffix(".tokens").write_text(str(int(tokens)))
         rendered = render_event(event)
         if rendered is not None:
-            _emit(rendered, label=label)
+            emit(rendered, label=label)
     return 0
 
 

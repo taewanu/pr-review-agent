@@ -38,6 +38,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REVIEW_PR = REPO_ROOT / "daemon" / "review-pr.sh"
+LIB = REPO_ROOT / "daemon" / "lib.sh"
+DOTENV = REPO_ROOT / ".env"
 DEFAULT_FIXTURES = REPO_ROOT / "eval" / "fixtures.jsonl"
 
 JUDGE_MODEL = "opus"
@@ -59,12 +61,17 @@ def parse_dryrun_contract(stdout: str) -> dict[str, str]:
     return out
 
 
-def sum_cost(scratch_dir: Path) -> float:
+def sum_cost(scratch_dir: Path) -> float | None:
     """Sum the `.cost` sidecars review-pr.sh leaves in the scratch, one per
     claude -p session (the generation orchestrator, the editor, each judge-fix
-    call; per-role costs are not separable under the orchestrator dispatch, #299)."""
+    call; per-role costs are not separable under the orchestrator dispatch).
+    None when there is no sidecar at all: the harness reported no cost (codex
+    never does), and a $0 would read as a free review."""
+    cost_files = list(Path(scratch_dir).glob("*.cost"))
+    if not cost_files:
+        return None
     total = 0.0
-    for cost_file in Path(scratch_dir).glob("*.cost"):
+    for cost_file in cost_files:
         text = cost_file.read_text().strip()
         try:
             total += float(text or 0)
@@ -92,10 +99,11 @@ def sum_tokens(scratch_dir: Path) -> int:
 
 # The dials that select which review config runs. The role set is fixed (ADR
 # 0038: code + intent, no REVIEW_MODE or REVIEW_LENSES), so what remains
-# recordable is the model, its effort, the editor skip, and the gates. Recording
-# the resolved dials makes each results JSON self-describing.
+# recordable is the agent CLI, the model, its effort, the editor skip, and the
+# gates. Recording the resolved dials makes each results JSON self-describing.
 REVIEW_CONFIG_VARS = (
     "REVIEW_FANOUT",
+    "REVIEW_HARNESS",
     "REVIEW_MODEL",
     "REVIEW_EFFORT",
     "SKIP_EDITOR",
@@ -147,12 +155,68 @@ def summarize_finding(finding: dict) -> dict:
     }
 
 
-def review_config_env(environ: dict) -> dict:
-    """The review-selecting env vars that are set, as they reach review-pr.sh.
-    Unset vars are omitted rather than recorded as null: review-pr.sh defaults on
-    absence (size-based routing, the full lens set), so a null would read as a
-    value someone chose."""
-    return {name: environ[name] for name in REVIEW_CONFIG_VARS if environ.get(name)}
+# The dials review-pr.sh reads through lib.sh's resolve_tunable, which falls back
+# to .env when the environment leaves one unset.
+DOTENV_DIALS = (
+    "REVIEW_HARNESS",
+    "REVIEW_MODEL",
+    "REVIEW_EFFORT",
+    "CONFIDENCE_THRESHOLD",
+    "MAX_FINDINGS",
+)
+
+
+def review_config_env(environ: dict, dotenv: Path = DOTENV) -> dict:
+    """The review-selecting dials that are set, as they reach review-pr.sh: from
+    the environment, or from .env for DOTENV_DIALS, read by lib.sh itself so the
+    two cannot disagree. Unset dials are omitted rather than recorded as null:
+    review-pr.sh defaults on absence, so a null would read as a value someone
+    chose."""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; for key in "${@:3}"; do\n'
+            '  printf "%s\\0" "$(resolve_tunable "$key" "$2")"\n'
+            "done",
+            "_",
+            str(LIB),
+            str(dotenv),
+            *DOTENV_DIALS,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PATH": os.environ.get("PATH", os.defpath), **environ},
+    )
+    resolved = dict(zip(DOTENV_DIALS, result.stdout.split("\0"), strict=False))
+    return {
+        name: value
+        for name in REVIEW_CONFIG_VARS
+        if (value := resolved.get(name) or environ.get(name))
+    }
+
+
+def mean_cost(costs: list[float | None]) -> float | None:
+    """Mean of the runs whose cost is known, or None when none is."""
+    known = [c for c in costs if c is not None]
+    return round(sum(known) / len(known), 4) if known else None
+
+
+def dollars(cost: float | None) -> str:
+    return "unknown" if cost is None else f"${cost}"
+
+
+def resolved_harness() -> str:
+    """REVIEW_HARNESS as review-pr.sh resolves it, asked of lib.sh itself so the
+    two cannot disagree; empty when the value is invalid, which review-pr.sh
+    reports on its own."""
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1" && resolve_review_harness "$2"', "_", str(LIB), str(DOTENV)],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout if result.returncode == 0 else ""
 
 
 def should_stop_for_cost(total_cost: float, max_cost: float | None) -> bool:
@@ -319,7 +383,7 @@ def run_review(fixture: dict) -> dict:
             "ok": False,
             "findings": [],
             "diff": "",
-            "cost": 0.0,
+            "cost": None,
             "tokens": 0,
             "count": 0,
             "scratch": None,
@@ -329,7 +393,7 @@ def run_review(fixture: dict) -> dict:
     contract = parse_dryrun_contract(stdout)
     payload_path = contract.get("dryrun_payload")
     findings: list[dict] = []
-    cost = 0.0
+    cost: float | None = None
     tokens = 0
     scratch: Path | None = None
     diff = ""
@@ -570,8 +634,27 @@ def main(argv: list[str] | None = None) -> int:
 
     _install_signal_handlers()
 
+    # Checked before any review spends: grading runs on claude -p whichever CLI
+    # reviews, because one fixed judge is what keeps scores comparable.
+    if shutil.which("claude") is None:
+        print(
+            "the judge runs on claude -p, and claude is not on PATH; install Claude Code "
+            "to grade, whichever REVIEW_HARNESS reviews",
+            file=sys.stderr,
+        )
+        return 2
+
     if args.check_judge:
         return 0 if check_judge() else 1
+
+    if args.max_cost is not None and resolved_harness() == "codex":
+        print(
+            "--max-cost needs a per-review dollar cost, which REVIEW_HARNESS=codex never "
+            "reports, so the cap could never stop the run; drop --max-cost and bound the "
+            "spend with --repeats and --filter instead",
+            file=sys.stderr,
+        )
+        return 2
 
     fixtures = load_fixtures(args.fixtures, args.id_filter)
     if not fixtures:
@@ -602,6 +685,7 @@ def main(argv: list[str] | None = None) -> int:
 
     results = []
     total_cost = 0.0
+    runs_costed = 0
     total_tokens = 0
     runs_done = 0
     runs_errored = 0
@@ -617,7 +701,9 @@ def main(argv: list[str] | None = None) -> int:
             review = run_review(fixture)
             costs.append(review["cost"])
             tokens_list.append(review["tokens"])
-            total_cost += review["cost"]
+            if review["cost"] is not None:
+                total_cost += review["cost"]
+                runs_costed += 1
             total_tokens += review["tokens"]
             runs_done += 1
             if not review["ok"]:
@@ -690,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
                 shutil.rmtree(review["scratch"], ignore_errors=True)
             print(
                 f"  {fixture['id']} run{run_i + 1}/{args.repeats}: "
-                f"{label} tokens={review['tokens']} cost=${review['cost']} "
+                f"{label} tokens={review['tokens']} cost={dollars(review['cost'])} "
                 f"(total {total_tokens} tok / ${round(total_cost, 2)})",
                 file=sys.stderr,
             )
@@ -703,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
                 stopped_early = True
                 break
         if verdicts:
-            avg_cost = round(sum(costs) / len(costs), 4)
+            avg_cost = mean_cost(costs)
             avg_tokens = round(sum(tokens_list) / len(tokens_list))
             if is_precision:
                 results.append(
@@ -746,7 +832,7 @@ def main(argv: list[str] | None = None) -> int:
         if fp_scored
         else None
     )
-    avg_cost_per_pr = round(total_cost / max(1, runs_done), 3)
+    avg_cost_per_pr = round(total_cost / runs_costed, 3) if runs_costed else None
     avg_tokens_per_pr = round(total_tokens / max(1, runs_done))
 
     print("\n=== eval summary ===")
@@ -763,16 +849,21 @@ def main(argv: list[str] | None = None) -> int:
             noise = "-" if r.get("noise_beside_bug") is None else f"{r['noise_beside_bug']:.2f}"
             print(
                 f"  recall    {rec}  noise {noise:>5}  "
-                f"{r['avg_tokens']:>8} tok  ${r['avg_cost']:<7} {r['id']}"
+                f"{r['avg_tokens']:>8} tok  {dollars(r['avg_cost']):<8} {r['id']}"
             )
     if precision_results:
         print(f"mean judged-noise findings/PR: {mean_fp} (lower is better; 0 ideal)")
         for r in precision_results:
             fp = "ERR " if r["false_positives"] is None else f"{r['false_positives']:.2f}"
-            print(f"  precision {fp}  {r['avg_tokens']:>8} tok  ${r['avg_cost']:<7} {r['id']}")
+            print(
+                f"  precision {fp}  {r['avg_tokens']:>8} tok  {dollars(r['avg_cost']):<8} {r['id']}"
+            )
     # Tokens are the rate-limit metric (#209); dollars are secondary (model-priced).
     print(f"avg tokens/review: {avg_tokens_per_pr} | total: {total_tokens}")
-    print(f"avg cost/review: ${avg_cost_per_pr} | total: ${round(total_cost, 3)}")
+    if runs_costed:
+        print(f"avg cost/review: ${avg_cost_per_pr} | total: ${round(total_cost, 3)}")
+    else:
+        print("avg cost/review: unknown (the harness reported no cost)")
 
     if args.out:
         args.out.write_text(

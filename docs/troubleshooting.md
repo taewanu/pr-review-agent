@@ -18,6 +18,6 @@ This page maps the daemon's error messages and common symptoms to their fixes.
 
 Without a readable key, the daemon prints `could not sign the App JWT` and openssl's error once at startup. It keeps running. Each polling cycle then prints `App private key not readable at …` and `poll cycle exited non-zero`. The next polling cycle after you place the key runs normally, without a restart.
 
-When your Claude usage limit is reached, the daemon pauses polling until the limit resets. If it cannot read the reset time, it pauses for one hour.
+When your Claude usage limit is reached, the daemon pauses polling until the limit resets. If it cannot read the reset time, it pauses for one hour. A Codex usage limit does not pause polling: the review fails, and the next polling cycle retries it.
 
 After granting a permission to an installed App, [approve the change](github-app.md#changing-permissions). See [Configuration](configuration.md) for the settings.

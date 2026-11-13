@@ -169,6 +169,24 @@ def test_ledger_record_is_appended_and_parseable(tmp_path):
     assert records[0]["sha"] == "abc123"
 
 
+def test_ledger_records_an_unreported_cost_as_unknown_not_zero(tmp_path):
+    lib = REPO_ROOT / "daemon" / "lib.sh"
+    subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"set -euo pipefail; export PR_REVIEW_STATE_DIR={tmp_path}; source {lib}; "
+            "record_route_observation 'https://example/pull/1' abc123 behaviour ''",
+        ],
+        check=True,
+    )
+    [record] = [
+        json.loads(line)
+        for line in (tmp_path / "route-observations.jsonl").read_text().splitlines()
+    ]
+    assert record["cost_usd"] is None
+
+
 def test_ledger_write_is_best_effort(tmp_path):
     # An absent state dir must not fail a review that otherwise succeeded.
     lib = REPO_ROOT / "daemon" / "lib.sh"
@@ -208,6 +226,17 @@ def test_rollup_counts_prose_reviews_and_their_spend(tmp_path):
     out = _rollup(tmp_path)
     assert "2/3 reviews were prose-only" in out
     assert "$1.00" in out  # only the prose-only rows are summed
+
+
+def test_rollup_counts_an_unreported_cost_as_unknown_not_zero(tmp_path):
+    (tmp_path / "route-observations.jsonl").write_text(
+        '{"ts":"t","pr":"p","sha":"a","verdict":"prose-only","cost_usd":0.42}\n'
+        '{"ts":"t","pr":"p","sha":"b","verdict":"prose-only","cost_usd":null}\n'
+        '{"ts":"t","pr":"p","sha":"c","verdict":"behaviour","cost_usd":null}\n'
+    )
+    out = _rollup(tmp_path)
+    assert "2/3 reviews were prose-only" in out
+    assert "$0.42 (cost unknown for 1 of them)" in out
 
 
 def test_rollup_is_silent_without_a_ledger(tmp_path):

@@ -4,7 +4,7 @@ Reviews pull requests from your machine. Posts findings as inline comments under
 
 ## What it does
 
-- Runs on your Claude Code sign-in. No hosted service.
+- Runs on your Claude Code or Codex sign-in. No hosted service.
 - Reviews each PR with two roles. `code` reads the code, not the PR description or commits. `intent` checks the description and commits against the diff.
 - Drops findings below a confidence threshold (default 60 of 100). An editor pass removes weak or inaccurate ones.
 - When a reply claims a fix, checks the file at the current commit. Confirms the fix or names the mismatch.
@@ -29,8 +29,8 @@ A finding from the `intent` role on this repository's PR #310. The description's
 - **It polls.** A review starts on the next polling cycle (default 5 minutes) and takes several minutes.
 - **It runs an agent over files any PR author wrote.** See [Security](#security).
 - **It is a `0.x` preview.** Review wording, line anchoring, and re-review skipping still change.
-- **It needs Claude Code, `gh`, `jq`, and Python 3.13.** See [Requirements](docs/running.md#requirements).
-- **The first polling cycle reviews every open non-draft pull request**, `MAX_PARALLEL` at a time. Each review spends Claude usage.
+- **It needs Claude Code or the Codex CLI, `gh`, `jq`, and Python 3.13.** See [Requirements](docs/running.md#requirements).
+- **The first polling cycle reviews every open non-draft pull request**, `MAX_PARALLEL` at a time. Each review spends agent CLI usage.
 
 ## Quick start
 
@@ -70,27 +70,27 @@ Press Ctrl-C to stop. If nothing appears, see [Troubleshooting](docs/troubleshoo
 
 ## Security
 
-Everything in the per-PR clone is written by the pull request's author. Everything else on the machine is yours.
+The PR's author writes everything in the per-PR clone; everything else on the machine is yours. Below are Claude Code's limits; [Codex](docs/running.md#codex) has its own.
 
 **What a pull request cannot do**
 
-- Configure the review agent. The roles run with `--restricted --strict-mcp-config`: no settings, hooks, MCP servers, or `CLAUDE.md` instructions load from the clone. The `code` role still reads the clone's `CLAUDE.md` and ADRs as conventions to review against.
-- Run a shell command outside a fixed set. The daemon runs unattended, so Claude Code denies any command that needs approval. Read-only commands need none. The review call's `acceptEdits` mode also approves file edits and `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed` inside the per-PR clone.
-- Read your home directory, the daemon's files, or another PR's clone from a shell command, write in the clone, or reach the network. The roles' commands run in Claude Code's OS sandbox, and a review does not start if the sandbox is unavailable.
-- Reach the App's token. It is attached to one `gh` call at a time and never enters the roles' environment.
-- Plant files under the daemon's working-file names. Every `.pr-review-*` entry at the clone's root is deleted before the daemon writes.
+- Configure the review agent. The roles run with `--restricted --strict-mcp-config`: no settings, hooks, MCP servers, or `CLAUDE.md` instructions load from the clone. The `code` role still reads the clone's `CLAUDE.md` and ADRs as conventions.
+- Run a shell command outside a fixed set. Claude Code, running unattended, denies any command that needs approval. Read-only commands need none, and the review call's `acceptEdits` mode approves file edits and `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed` inside the per-PR clone.
+- Read your home directory, the daemon's files, or another PR's clone from a shell command, write in the clone, or reach the network. The roles' commands run in Claude Code's OS sandbox; without it, no review starts.
+- Reach the App's token, which goes to one `gh` call at a time, never into the roles' environment.
+- Plant files under the daemon's working-file names. The daemon deletes every `.pr-review-*` entry at the clone's root before it writes.
 
 **What this does not protect against**
 
-- Prompt injection. PR text can steer a role into a wrong or empty review. The limits above bound what a role can do, not what it says.
-- Changes inside the per-PR clone. During the review call, a steered role can overwrite files there with the Write tool, including the other role's output. The sandbox stops shell commands from writing, not the file tools.
-- Reads outside the denied locations. A role's shell command can still read system paths such as `/etc`.
+- Prompt injection. PR text can steer a role into a wrong or empty review. The limits above bound a role's actions, not its words.
+- Changes inside the per-PR clone. In the review call, a steered role can overwrite files there with the Write tool, including the other role's output. The sandbox blocks shell writes, not the file tools.
+- Reads outside the denied locations. A role's shell command can still read system paths like `/etc`.
 - Linux. The sandbox is tested on macOS only.
-- Disclosure to the model provider. The PR's files go to the provider behind your Claude Code sign-in. Training use follows your account settings.
+- Disclosure to the model provider. The PR's files go to your agent CLI's provider, under your account's training settings.
 
-The App holds the [five permissions](docs/github-app.md#steps) ([why Contents: write](docs/github-app.md#why-contents-needs-write-access)). Its private key stays on your machine at mode 0600.
+The App holds the [five permissions](docs/github-app.md#steps) ([why Contents: write](docs/github-app.md#why-contents-needs-write-access)). Its private key stays on your machine.
 
-Report a vulnerability with "Report a vulnerability" on the repository's Security tab, not in a public issue.
+Use "Report a vulnerability" on this repository's Security tab, not a public issue.
 
 ## Documentation
 

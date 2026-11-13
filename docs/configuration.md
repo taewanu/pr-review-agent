@@ -18,11 +18,12 @@ For the other keys, a shell variable overrides `.env`.
 | `GITHUB_APP_ID` | required | the App to post as |
 | `POLL_INTERVAL_SECONDS` | `300` | seconds between polling cycles |
 | `MAX_PARALLEL` | `1` (template: `3`) | PRs reviewed at once, 1 to 16 |
-| `CLAUDE_SLOT_POOL_SIZE` | `3` (template: `10`) | concurrent `claude` calls, clamped to 16 |
+| `CLAUDE_SLOT_POOL_SIZE` | `3` (template: `10`) | concurrent agent calls, clamped to 16 |
 | `OPT_OUT_LABEL` | `no-ai-review` | label that skips a PR |
 | `CONFIDENCE_THRESHOLD` | `60` | minimum finding confidence, 0 to 100 |
 | `MAX_FINDINGS` | `10` | findings per review |
-| `REVIEW_MODEL` | `claude-opus-5-5` | model for every role |
+| `REVIEW_HARNESS` | `claude` | agent CLI every role runs on, `claude` or `codex` ([Codex](running.md#codex)) |
+| `REVIEW_MODEL` | `claude-opus-5-5` | model for every role; required with `codex` |
 | `REVIEW_EFFORT` | `high` | `low`, `medium`, `high`, `xhigh`, or `max` |
 
 The default applies when a key is absent or empty. The template sets some keys to other values. At startup the daemon logs any template key your `.env` lacks.

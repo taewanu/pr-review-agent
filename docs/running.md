@@ -1,11 +1,11 @@
 # Running the daemon
 
-This page covers what the daemon needs, how a review runs, foreground and background operation, one-shot commands, replies to findings, and forking.
+This page covers what the daemon needs, how a review runs, running on Codex, foreground and background operation, one-shot commands, replies to findings, and forking.
 
 ## Requirements
 
 - **A machine that stays on.** macOS is the tested platform. CI runs the test suite on Linux. The foreground loop runs without `launchd`. Only background mode needs it.
-- **Claude Code v2.1.281 or later**, as `claude` on your `PATH`, signed in. The daemon passes role definitions to `--agents` as a file, which v2.1.281 added. The daemon checks the version before each review.
+- **Claude Code v2.1.281 or later**, as `claude` on your `PATH`, signed in. The daemon passes role definitions to `--agents` as a file, which v2.1.281 added. The daemon checks the version before each review. To review with the Codex CLI instead, see [Codex](#codex).
 - **On Linux, `bubblewrap` and `socat`.** Claude Code's sandbox needs both there.
 - **`gh`** ([GitHub CLI](https://cli.github.com/)), **`git`**, **`jq`**, **`openssl`**, and **`curl`** on your `PATH`. You do not need `gh auth login`. The daemon signs in as the App.
 - **Python 3.13 or later**, with the dependencies in `pyproject.toml` installed in a virtual environment.
@@ -30,7 +30,7 @@ Each polling cycle, the daemon lists open PRs on each watched repository. It ski
 For each remaining PR, the daemon:
 
 1. Makes a per-PR clone.
-2. Runs the `code` and `intent` roles through `claude -p` ([ADR 0038](adr/0038-review-roles-from-contamination-isolation.md)).
+2. Runs the `code` and `intent` roles through `claude -p`, or `codex exec` under [Codex](#codex) ([ADR 0038](adr/0038-review-roles-from-contamination-isolation.md)).
 3. Drops findings below the confidence threshold ([ADR 0022](adr/0022-confidence-scored-generate-verify.md)), then runs the editor pass ([ADR 0016](adr/0016-editorial-pass-over-review-content.md)).
 4. Posts the remaining findings as one `COMMENT` review.
 5. Concludes the `review` check ([ADR 0039](adr/0039-review-state-on-the-checks-row.md)).
@@ -38,6 +38,16 @@ For each remaining PR, the daemon:
 On later commits, the daemon reviews only the new changes. It resolves threads whose findings the new code fixed ([ADR 0017](adr/0017-commit-driven-thread-resolution.md)).
 
 Role definitions come from `.claude/agents/` in the daemon's checkout, not from the per-PR clone ([ADR 0007](adr/0007-operator-bundled-agents.md)). To change how reviews behave, edit those files.
+
+## Codex
+
+With `REVIEW_HARNESS=codex` in `.env`, every agent call runs on the Codex CLI instead of Claude Code.
+
+- **Requirements:** `codex` on your `PATH`, signed in, and `REVIEW_MODEL` set to a model Codex accepts. An unset or `claude-` model fails at startup. Before each review or reply run, the daemon runs `codex exec` once with no prompt and no credentials, so a `codex` that rejects one of the daemon's flags or config keys fails there.
+- **Cost:** Codex reports no dollar cost. The routing ledger and `eval/run_eval.py` show it as unknown, and `eval/run_eval.py --max-cost` refuses to run.
+- **Roles:** each role runs as its own `codex exec` process, holding one slot of `CLAUDE_SLOT_POOL_SIZE`, instead of as a subagent of one session. Codex's own subagent tools are off.
+- **Sandbox:** each role's shell commands can read the per-PR clone, the Codex install, and system paths, write nothing, and reach no network. The clone's `AGENTS.md`, skills, rules, and hooks do not load. The sandbox is tested on macOS only.
+- **Temp directories:** the sandbox denies `/tmp` and `/var/tmp` to every command, so the daemon refuses a per-PR clone under them. Where `mktemp` uses `/tmp`, as on Linux, set `TMPDIR` to a private directory.
 
 ## The `review` check
 

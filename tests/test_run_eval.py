@@ -8,6 +8,7 @@ spend tokens and are exercised by a real operator-triggered run, not here.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -65,8 +66,75 @@ def test_sum_tokens_tolerates_empty_or_garbage(tmp_path):
     assert run_eval.sum_tokens(tmp_path) == 500
 
 
-def test_sum_cost_zero_when_no_sidecars(tmp_path):
-    assert run_eval.sum_cost(tmp_path) == 0.0
+def test_sum_cost_is_unknown_when_no_agent_reported_one(tmp_path):
+    # A harness that reports no cost must not read as a free review.
+    assert run_eval.sum_cost(tmp_path) is None
+
+
+def test_mean_cost_counts_only_runs_with_a_known_cost():
+    assert run_eval.mean_cost([1.0, None, 3.0]) == 2.0
+    assert run_eval.mean_cost([None, None]) is None
+    assert run_eval.dollars(None) == "unknown"
+
+
+def _put_claude_on_path(monkeypatch, bindir: Path) -> None:
+    bindir.mkdir()
+    (bindir / "claude").write_text("#!/bin/sh\nexit 0\n")
+    (bindir / "claude").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+
+
+def test_max_cost_refuses_to_run_when_the_harness_reports_no_cost(monkeypatch, capsys, tmp_path):
+    # The cap could never trigger, so running would spend without the bound asked for.
+    _put_claude_on_path(monkeypatch, tmp_path / "bin")
+    monkeypatch.setenv("REVIEW_HARNESS", "codex")
+
+    def no_review(_fixture):
+        raise AssertionError("a review ran despite an unenforceable cap")
+
+    monkeypatch.setattr(run_eval, "run_review", no_review)
+    assert run_eval.main(["--max-cost", "5"]) == 2
+    assert "--max-cost" in capsys.readouterr().err
+
+
+def test_no_review_runs_when_the_judge_cannot(monkeypatch, capsys, tmp_path):
+    # A review spends before grading starts, so a judge missing at grading time
+    # would waste the review it was meant to grade.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+
+    def no_review(_fixture):
+        raise AssertionError("a review ran with no judge to grade it")
+
+    monkeypatch.setattr(run_eval, "run_review", no_review)
+    assert run_eval.main([]) == 2
+    assert run_eval.main(["--check-judge"]) == 2
+    assert "claude is not on PATH" in capsys.readouterr().err
+
+
+def test_the_config_record_reads_dotenv_dials_the_way_review_pr_sh_does(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("REVIEW_HARNESS=codex\nREVIEW_MODEL=example-model\nSKIP_EDITOR=1\n")
+    config = run_eval.review_config_env({"REVIEW_EFFORT": "low"}, dotenv)
+    # SKIP_EDITOR is read from the environment only, so .env does not set it.
+    assert config == {
+        "REVIEW_HARNESS": "codex",
+        "REVIEW_MODEL": "example-model",
+        "REVIEW_EFFORT": "low",
+    }
+    # The environment wins over .env, as it does for review-pr.sh.
+    assert (
+        run_eval.review_config_env({"REVIEW_HARNESS": "claude"}, dotenv)["REVIEW_HARNESS"]
+        == "claude"
+    )
+
+
+def test_the_harness_is_resolved_the_way_review_pr_sh_resolves_it(monkeypatch):
+    monkeypatch.setenv("REVIEW_HARNESS", "claude")
+    assert run_eval.resolved_harness() == "claude"
+    monkeypatch.setenv("REVIEW_HARNESS", "codex")
+    assert run_eval.resolved_harness() == "codex"
 
 
 def test_extract_json_object_from_fenced_reply():
