@@ -27,6 +27,9 @@ from stream_format import emit, truncate
 PROFILE = "pr-review-agent"
 # What codex exec prints, after validating its arguments, when stdin is empty.
 NO_PROMPT = "No prompt provided via stdin."
+# The shared temp roots on Linux and their real paths on macOS, where /tmp and
+# /var/tmp are symlinks into /private.
+TEMP_ROOTS = ("/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp")
 
 
 def _toml_string(text: str) -> str:
@@ -184,9 +187,7 @@ def sandbox_config(install_root: str) -> list[str]:
     # writable and the network is off, because the clone is the PR author's.
     # :minimal grants read and write on the system temp roots, which only a glob
     # deny overrides: `X*` hides the root's listing and `X/**` its contents.
-    temp_denies = "".join(
-        f'"{root}*"="deny", "{root}/**"="deny", ' for root in ("/private/tmp", "/private/var/tmp")
-    )
+    temp_denies = "".join(f'"{root}*"="deny", "{root}/**"="deny", ' for root in TEMP_ROOTS)
     profile = (
         f'permissions.{PROFILE}={{filesystem={{":minimal"="read", {temp_denies}'
         f'{_toml_string(install_root)}="read", ":workspace_roots"={{"."="read"}}}}, '

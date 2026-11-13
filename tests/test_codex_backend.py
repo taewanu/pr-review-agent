@@ -681,10 +681,16 @@ def _installed_codex() -> str | None:
         return None
 
 
+@pytest.mark.parametrize("root", ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"])
+def test_the_profile_denies_each_shared_temp_root_and_its_contents(root):
+    # Linux names the roots directly and macOS reaches them through /private; the
+    # runtime test below can only run where codex is installed.
+    profile = _config(codex_exec.sandbox_config("/opt/codex"))["permissions.pr-review-agent"]
+    assert profile["filesystem"][f"{root}*"] == "deny"
+    assert profile["filesystem"][f"{root}/**"] == "deny"
+
+
 @pytest.mark.skipif(_installed_codex() is None, reason="codex is not installed (CI has none)")
-@pytest.mark.skipif(
-    sys.platform != "darwin", reason="the profile's temp-root denies name macOS paths"
-)
 def test_the_profile_confines_real_commands(base):
     codex = _installed_codex()
     clone = base / "clone"
