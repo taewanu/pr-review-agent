@@ -2,16 +2,20 @@
 
 Fake `claude` and `codex` binaries stand first on a PATH that holds nothing else
 but jq, python3, and the system directories, so no real agent CLI is reached.
-Answers are piped on stdin, so no terminal is involved.
+Answers are piped on stdin, except where a test needs a terminal and gets a
+pseudo-terminal from the pty module.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import pty
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -23,11 +27,15 @@ TEMPLATE = REPO_ROOT / "templates" / ".env.example"
 
 SECRET = "planted-app-id-4242"
 ENV_BODY = f"REPOS=example/example\nGITHUB_APP_ID={SECRET}\n# a comment\r\nMAX_FINDINGS=10\n"
+FRESH_BODY = "REPOS=example/example\nREVIEW_HARNESS=\nREVIEW_MODEL=\nREVIEW_EFFORT=high\n"
 
 _FAKE = r"""#!/usr/bin/env python3
 import json, os, sys
 name, args = os.path.basename(sys.argv[0]), sys.argv[1:]
 env = os.environ.get
+if env("FAKE_CALLS"):
+    with open(env("FAKE_CALLS"), "a") as f:
+        f.write(" ".join([name] + args) + "\n")
 if name == "claude":
     if args == ["--version"]:
         print(env("FAKE_CLAUDE_VERSION", "999.0.0") + " (Claude Code)")
@@ -38,6 +46,8 @@ if name == "claude":
               "                    An alias or a full name.\n  -n, --name <name> Other.")
     elif args[:1] == ["-p"]:
         sys.stdin.read()
+        if env("FAKE_AGENT_FAIL") == "silent":
+            sys.exit(1)
         if env("FAKE_AGENT_FAIL") == "1":
             for i in range(1, 8):
                 print(f"agent error line {i}", file=sys.stderr)
@@ -169,13 +179,30 @@ def _catalog(base: Path) -> str:
 
 def _lib(script: str, env: dict | None = None, stdin: str = "") -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", "-c", f'set -euo pipefail; source "{LIB}"; {script}'],
+        _lib_args(script),
         input=stdin,
         capture_output=True,
         text=True,
         env=env,
         timeout=30,
     )
+
+
+def _on_terminal(args: list[str], env: dict, typed: str = "") -> subprocess.CompletedProcess:
+    """Runs args with a pseudo-terminal on stdin, the typed lines already queued."""
+    master, slave = pty.openpty()
+    try:
+        os.write(master, typed.encode())
+        return subprocess.run(
+            args, stdin=slave, capture_output=True, text=True, env=env, timeout=30
+        )
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def _lib_args(script: str) -> list[str]:
+    return ["bash", "-c", f'set -euo pipefail; source "{LIB}"; {script}']
 
 
 def _resolve(key: str, dotenv: Path) -> str:
@@ -215,12 +242,77 @@ def test_writer_starts_a_missing_dotenv_from_the_template(tmp_path):
     )
 
 
-@pytest.mark.parametrize("value", ["has space", "semi;colon", "dollar$x", "quote'", ""])
+@pytest.mark.parametrize("value", ["has space", "semi;colon", "dollar$x", "quote'", "esc\x1b[2J"])
 def test_writer_refuses_a_value_outside_the_alphabet_and_leaves_the_file(tmp_path, value):
     dotenv = tmp_path / ".env"
     dotenv.write_bytes(ENV_BODY.encode())
     result = _lib(f"set_dotenv_keys \"{dotenv}\" REVIEW_EFFORT=high 'REVIEW_MODEL={value}'")
     assert result.returncode != 0
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_writer_writes_an_empty_value_that_resolves_to_the_default(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_bytes(b"REVIEW_MODEL=example-model\n")
+    assert _lib(f'set_dotenv_keys "{dotenv}" REVIEW_MODEL=').returncode == 0
+    assert dotenv.read_bytes() == b"REVIEW_MODEL=\n"
+    env = {k: v for k, v in os.environ.items() if k != "REVIEW_MODEL"}
+    default = _lib("resolve_review_model /dev/null", env).stdout
+    assert default
+    assert _lib(f'resolve_review_model "{dotenv}"', env).stdout == default
+
+
+def test_writer_refuses_a_read_only_dotenv_and_leaves_it(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_bytes(ENV_BODY.encode())
+    dotenv.chmod(0o400)
+    result = _lib(f'set_dotenv_keys "{dotenv}" REVIEW_MODEL=example-model')
+    assert result.returncode != 0
+    assert "not writable" in result.stderr
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+    assert dotenv.stat().st_mode & 0o777 == 0o400
+
+
+def test_writer_leaves_no_temporary_file_after_success_or_failure(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_bytes(ENV_BODY.encode())
+    assert _lib(f'set_dotenv_keys "{dotenv}" REVIEW_MODEL=example-model').returncode == 0
+    assert _lib(f'set_dotenv_keys "{dotenv}" "REVIEW_MODEL=has space"').returncode != 0
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".env"]
+
+
+def test_writer_interrupted_mid_write_leaves_dotenv_and_no_temporary_file(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_bytes(ENV_BODY.encode())
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    started = tmp_path / "started"
+    real_python = os.path.realpath(shutil.which("python3"))
+    # physical_path still resolves; the write itself hangs until the signal.
+    (fakebin / "python3").write_text(
+        f'#!/bin/sh\ncase "$2" in *realpath*) exec "{real_python}" "$@" ;; esac\n'
+        f'touch "{started}"\nexec sleep 30\n'
+    )
+    (fakebin / "python3").chmod(0o755)
+    env = {**os.environ, "PATH": f"{fakebin}{os.pathsep}{os.environ['PATH']}"}
+    proc = subprocess.Popen(
+        _lib_args(f'set_dotenv_keys "{dotenv}" REVIEW_MODEL=example-model'),
+        env=env,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 20
+    while not started.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert started.exists()
+    os.killpg(proc.pid, signal.SIGTERM)
+    proc.wait(timeout=20)
+    # The writer's subshell can outlive the shell that started it by its cleanup.
+    expected = [".env", "bin", "started"]
+    deadline = time.monotonic() + 20
+    while sorted(p.name for p in tmp_path.iterdir()) != expected and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert sorted(p.name for p in tmp_path.iterdir()) == expected
     assert dotenv.read_bytes() == ENV_BODY.encode()
 
 
@@ -255,12 +347,99 @@ def test_claude_run_writes_the_three_keys_and_prints_nothing_else_from_dotenv(ba
     assert "next cycle without a restart" in result.stdout
 
 
-def test_claude_alias_is_accepted_with_a_note(base):
+def test_claude_short_name_is_accepted_with_a_note_that_it_may_be_an_alias(base):
     dotenv = _dotenv(base)
     result = _wizard(base, ["claude", "example-alias", "high", "y"], dotenv)
     assert result.returncode == 0, result.stderr
-    assert "example-alias is an alias" in result.stderr
+    assert "example-alias is not a full model name; if it is an alias" in result.stderr
     assert _resolve("REVIEW_MODEL", dotenv) == "example-alias"
+
+
+def test_accepting_the_defaults_writes_empty_values_that_follow_the_daemon_default(base):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CALLS=str(calls))
+    default_model = _lib("resolve_review_model /dev/null", env).stdout
+    default_effort = _lib("resolve_review_effort /dev/null", env).stdout
+    result = _wizard(base, ["claude", "", "", "y"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert (
+        dotenv.read_bytes()
+        == (ENV_BODY + "REVIEW_HARNESS=claude\nREVIEW_MODEL=\nREVIEW_EFFORT=\n").encode()
+    )
+    assert f"follow the daemon default, now {default_model}" in result.stderr
+    assert _lib(f'resolve_review_model "{dotenv}"', env).stdout == default_model
+    assert _lib(f'resolve_review_effort "{dotenv}"', env).stdout == default_effort
+    test_call = [c for c in calls.read_text().splitlines() if c.startswith("claude -p")]
+    assert len(test_call) == 1
+    assert f"--model {default_model} --effort {default_effort}" in test_call[0]
+
+
+@pytest.mark.parametrize("bad", ["has space", "esc\x1b[2Jape"])
+def test_a_bad_model_name_is_asked_again_before_any_call(base, bad):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CALLS=str(calls))
+    result = _wizard(base, ["claude", bad, "claude-example-model", "high", "y"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert "A model name holds only" in result.stderr
+    test_calls = [c for c in calls.read_text().splitlines() if c.startswith("claude -p")]
+    assert len(test_calls) == 1
+    assert "--model claude-example-model" in test_calls[0]
+    assert _resolve("REVIEW_MODEL", dotenv) == "claude-example-model"
+
+
+def test_a_bad_model_name_with_no_second_answer_never_reaches_the_cli(base):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CALLS=str(calls))
+    result = _wizard(base, ["claude", "has space"], dotenv, env)
+    assert result.returncode != 0
+    assert "claude -p" not in calls.read_text()
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_wizard_refuses_a_read_only_dotenv_before_any_question(base):
+    dotenv = _dotenv(base)
+    dotenv.chmod(0o400)
+    result = _wizard(base, ["claude", "claude-example-model", "high", "y"], dotenv)
+    assert result.returncode == 1
+    assert "not writable" in result.stderr
+    assert "Agent CLI" not in result.stderr
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_shell_environment_override_is_named_after_writing(base):
+    dotenv = _dotenv(base)
+    env = _env(base, REVIEW_EFFORT="low")
+    result = _wizard(base, ["claude", "claude-example-model", "medium", "y"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert "REVIEW_EFFORT is also set in your shell environment, which overrides .env." in (
+        result.stdout
+    )
+    assert "REVIEW_MODEL is also set" not in result.stdout
+    assert "REVIEW_HARNESS is also set" not in result.stdout
+
+
+def test_wizard_on_a_silent_terminal_stops_at_the_timeout_and_writes_nothing(base):
+    dotenv = _dotenv(base)
+    env = _env(base, PR_REVIEW_ANSWER_TIMEOUT_SECONDS="1")
+    started = time.monotonic()
+    result = _on_terminal(["bash", str(SETUP), str(dotenv)], env)
+    assert time.monotonic() - started < 15
+    assert result.returncode != 0
+    assert "no answer within 1 seconds" in result.stderr
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_failed_test_call_with_no_stderr_prints_no_stderr_heading(base):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_AGENT_FAIL="silent")
+    result = _wizard(base, ["claude", "claude-example-model", "high", "y"], dotenv, env)
+    assert result.returncode == 1
+    assert "did not answer on claude" in result.stderr
+    assert "stderr lines" not in result.stderr
+    assert dotenv.read_bytes() == ENV_BODY.encode()
 
 
 def test_failed_test_call_shows_the_agent_stderr_and_writes_nothing(base):
@@ -329,6 +508,79 @@ def test_codex_refuses_a_claude_model(base):
     assert dotenv.read_bytes() == ENV_BODY.encode()
 
 
+def test_codex_empty_model_is_asked_again_because_codex_has_no_default(base):
+    dotenv = _dotenv(base)
+    result = _wizard(base, ["codex", "", "example-typed", "high", "y"], dotenv)
+    assert result.returncode == 0, result.stderr
+    assert "A model name is required." in result.stderr
+    assert "Claude model" not in result.stderr
+    assert _resolve("REVIEW_MODEL", dotenv) == "example-typed"
+
+
+def test_codex_with_the_temp_root_under_tmp_stops_before_the_model_question(base):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CATALOG=_catalog(base), FAKE_CALLS=str(calls))
+    # macOS mktemp -t ignores TMPDIR, so the temp root is moved under /tmp directly.
+    real_mktemp = shutil.which("mktemp")
+    assert real_mktemp
+    fake_mktemp = base / "fakebin" / "mktemp"
+    fake_mktemp.write_text(f'#!/bin/sh\nexec "{real_mktemp}" -d /tmp/pr-review-test.XXXXXX\n')
+    fake_mktemp.chmod(0o755)
+    result = _wizard(base, ["codex", "1", "high", "y"], dotenv, env)
+    assert result.returncode == 1
+    assert "Codex refuses to run in" in result.stderr
+    assert 'export TMPDIR="$HOME/.pr-review-agent/tmp"' in result.stderr
+    assert "Model" not in result.stderr
+    assert "debug models" not in calls.read_text()
+    assert "exec" not in calls.read_text()
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_codex_catalog_drops_unsafe_slugs_strips_control_characters_and_reads_plain_levels(base):
+    dotenv = _dotenv(base)
+    catalog = base / "catalog.json"
+    entry = {"visibility": "list", "priority": 1}
+    catalog.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {**entry, "slug": "example ok", "description": "a space"},
+                    {**entry, "slug": "example-esc\x1b[2J", "description": "an escape"},
+                    {**entry, "slug": "example\nline", "description": "a newline"},
+                    {
+                        **entry,
+                        "slug": "example-plain",
+                        "description": "plain\x1b]0;title\x07 levels",
+                        "supported_reasoning_levels": ["low", "high"],
+                    },
+                    {
+                        **entry,
+                        "slug": "example-unreadable",
+                        "description": "unreadable levels",
+                        "supported_reasoning_levels": 5,
+                    },
+                ]
+            }
+        )
+    )
+    env = _env(base, FAKE_CATALOG=str(catalog))
+    result = _wizard(base, ["codex", "1", "high", "y"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert "\x1b" not in result.stderr and "\x07" not in result.stderr
+    assert "example ok" not in result.stderr
+    assert "a newline" not in result.stderr
+    assert "1) example-plain  plain]0;title levels" in result.stderr
+    assert "2) example-unreadable" in result.stderr
+    assert "3) type a model name" in result.stderr
+    assert "Effort, one of: low high [high]" in result.stderr
+    assert _resolve("REVIEW_MODEL", dotenv) == "example-plain"
+
+    result = _wizard(base, ["codex", "2", "max", "y"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert "Effort, one of: low medium high xhigh max" in result.stderr
+
+
 # The checks
 
 
@@ -380,25 +632,99 @@ def test_each_failed_check_says_what_to_do_and_leaves_dotenv(base, case):
 # offer_model_setup
 
 
-def test_offer_without_a_terminal_logs_a_hint_and_reads_nothing(tmp_path):
-    dotenv = tmp_path / ".env"
-    dotenv.write_text("REVIEW_MODEL=\n")
-    env = {k: v for k, v in os.environ.items() if k != "REVIEW_MODEL"}
-    result = _lib(f'offer_model_setup "{dotenv}"; cat', env, stdin="y\nclaude\n")
+def _offer(dotenv: Path, env: dict, typed: str) -> subprocess.CompletedProcess:
+    """Runs the offer on a terminal, then prints the first line it left unread."""
+    script = (
+        f'offer_model_setup "{dotenv}"; left=""; IFS= read -t 1 -r left || true; printf %s "$left"'
+    )
+    return _on_terminal(_lib_args(script), env, typed)
+
+
+def _fresh(base: Path) -> Path:
+    dotenv = base / ".env"
+    dotenv.write_text(FRESH_BODY)
+    return dotenv
+
+
+def test_offer_without_a_terminal_logs_a_hint_and_reads_nothing(base):
+    dotenv = _fresh(base)
+    result = _lib(f'offer_model_setup "{dotenv}"; cat', _env(base), stdin="y\nclaude\n")
     assert result.returncode == 0
     assert "bash bin/setup-model.sh" in result.stderr
     assert result.stdout == "y\nclaude\n"
-    assert dotenv.read_text() == "REVIEW_MODEL=\n"
+    assert dotenv.read_text() == FRESH_BODY
 
 
-def test_offer_with_a_model_configured_is_silent(tmp_path):
-    dotenv = tmp_path / ".env"
-    dotenv.write_text("REVIEW_MODEL=example-model\n")
-    env = {k: v for k, v in os.environ.items() if k != "REVIEW_MODEL"}
-    result = _lib(f'offer_model_setup "{dotenv}"; cat', env, stdin="y\n")
+SILENT_OFFERS = {
+    "no REVIEW_HARNESS line": ("REVIEW_MODEL=\nREVIEW_EFFORT=high\n", {}),
+    "REVIEW_HARNESS in the environment": (FRESH_BODY, {"REVIEW_HARNESS": "claude"}),
+    "REVIEW_MODEL in the environment": (FRESH_BODY, {"REVIEW_MODEL": "example-model"}),
+    "no .env": (None, {}),
+}
+
+
+@pytest.mark.parametrize("terminal", [True, False], ids=["terminal", "no-terminal"])
+@pytest.mark.parametrize("case", SILENT_OFFERS)
+def test_offer_outside_a_fresh_setup_prints_and_reads_nothing(base, case, terminal):
+    body, extra = SILENT_OFFERS[case]
+    dotenv = base / ".env"
+    if body is not None:
+        dotenv.write_text(body)
+    env = _env(base, **extra)
+    if terminal:
+        result = _offer(dotenv, env, "y\n")
+        assert result.stdout == "y"
+    else:
+        result = _lib(f'offer_model_setup "{dotenv}"; cat', env, stdin="y\n")
+        assert result.stdout == "y\n"
     assert result.returncode == 0
     assert result.stderr == ""
-    assert result.stdout == "y\n"
+    assert (dotenv.read_text() if body is not None else None) == body
+
+
+def test_offer_yes_runs_the_wizard_on_the_terminal(base):
+    dotenv = _fresh(base)
+    result = _offer(dotenv, _env(base), "y\nclaude\n\n\nn\n")
+    assert result.returncode == 0, result.stderr
+    assert "Agent CLI to review with" in result.stderr
+    assert dotenv.read_text() == FRESH_BODY.replace(
+        "REVIEW_HARNESS=", "REVIEW_HARNESS=claude"
+    ).replace("REVIEW_EFFORT=high", "REVIEW_EFFORT=")
+
+
+def test_offer_no_writes_the_default_harness_and_is_not_asked_again(base):
+    dotenv = _fresh(base)
+    env = _env(base)
+    first = _offer(dotenv, env, "n\n")
+    assert first.returncode == 0, first.stderr
+    assert "not asked again" in first.stderr
+    after_no = FRESH_BODY.replace("REVIEW_HARNESS=", "REVIEW_HARNESS=claude")
+    assert dotenv.read_text() == after_no
+    second = _offer(dotenv, env, "y\n")
+    assert second.returncode == 0
+    assert second.stderr == ""
+    assert second.stdout == "y"
+    assert dotenv.read_text() == after_no
+
+
+def test_offer_fails_when_the_wizard_fails_so_run_sh_stops(base):
+    dotenv = _fresh(base)
+    result = _offer(dotenv, _env(base, FAKE_LOGGED_IN="0"), "y\nclaude\n")
+    assert result.returncode != 0
+    assert "Claude Code is not logged in" in result.stderr
+    assert dotenv.read_text() == FRESH_BODY
+
+
+@pytest.mark.parametrize("typed", ["", "y\n"], ids=["at the offer", "inside the wizard"])
+def test_offer_unanswered_continues_on_the_defaults_and_writes_nothing(base, typed):
+    dotenv = _fresh(base)
+    env = _env(base, PR_REVIEW_OFFER_TIMEOUT_SECONDS="1", PR_REVIEW_ANSWER_TIMEOUT_SECONDS="1")
+    started = time.monotonic()
+    result = _offer(dotenv, env, typed)
+    assert time.monotonic() - started < 15
+    assert result.returncode == 0, result.stderr
+    assert "continues on the defaults" in result.stderr
+    assert dotenv.read_text() == FRESH_BODY
 
 
 def test_warn_env_drift_does_not_flag_the_empty_template_keys(tmp_path):

@@ -495,31 +495,40 @@ resolve_review_harness() {
   esac
 }
 
+# The characters a .env value may hold: a plain model-name alphabet, because a
+# value lands unquoted in a file other scripts parse with grep. Empty is allowed
+# and means the daemon's default.
+DOTENV_VALUE_RE='^[]A-Za-z0-9._:/@[-]*$'
+
 # set_dotenv_keys <dotenv-path> KEY=VALUE...
 # Sets each KEY on the first `KEY=` line, the one resolve_tunable reads, or
 # appends it, leaving every other byte as it was. A missing .env starts from the
 # template. The new file replaces the old in one rename beside it, so a reader
 # never sees half a file and a symlinked .env is written through. A value outside
-# a plain model-name alphabet is refused, because it would land unquoted in a
-# file other scripts parse with grep.
-set_dotenv_keys() {
-  local dotenv="$1" pair real src tmp
-  local value_re='^[A-Z_][A-Z0-9_]*=[]A-Za-z0-9._:/@[-]+$'
+# DOTENV_VALUE_RE and a read-only .env are refused. The new file is built as
+# .env inside a new directory beside the old, so an interrupted write leaves
+# only a name .gitignore covers, and the subshell's exit trap removes even that.
+set_dotenv_keys() (
+  dotenv="$1"
   shift
   for pair in "$@"; do
-    if [[ ! "$pair" =~ $value_re ]]; then
-      log_err "not writing ${pair%%=*}: the value is empty or has a character other than letters, digits, and . _ : / @ [ ] -"
-      return 1
+    if [[ "$pair" != *=* || ! "${pair%%=*}" =~ ^[A-Z_][A-Z0-9_]*$ || ! "${pair#*=}" =~ $DOTENV_VALUE_RE ]]; then
+      log_err "not writing ${pair%%=*}: the value has a character other than letters, digits, and . _ : / @ [ ] -"
+      exit 1
     fi
   done
-  real="$(physical_path "$dotenv")" || return 1
+  real="$(physical_path "$dotenv")" || exit 1
   src="$real"
-  [[ -e "$src" ]] || src="$(dirname "${BASH_SOURCE[0]}")/../templates/.env.example"
-  if ! tmp="$(mktemp "$(dirname "$real")/.env.XXXXXX")"; then
-    log_err "could not write ${dotenv}; it is unchanged"
-    return 1
+  if [[ -e "$src" && ! -w "$src" ]]; then
+    log_err "${dotenv} is not writable, so it is unchanged; make it writable with chmod u+w and re-run"
+    exit 1
   fi
-  if python3 -c '
+  [[ -e "$src" ]] || src="$(dirname "${BASH_SOURCE[0]}")/../templates/.env.example"
+  tmpdir=""
+  trap 'rm -rf "$tmpdir"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if tmpdir="$(mktemp -d "$(dirname "$real")/.env.XXXXXX")" && python3 -c '
 import re, sys
 src, out, *pairs = sys.argv[1:]
 data = open(src, "rb").read()
@@ -532,31 +541,53 @@ for pair in pairs:
     else:
         data += (b"" if data.endswith(b"\n") or not data else b"\n") + line + b"\n"
 open(out, "wb").write(data)
-' "$src" "$tmp" "$@" && chmod 600 "$tmp" && mv -f "$tmp" "$real"; then
-    return 0
+' "$src" "$tmpdir/.env" "$@" && chmod 600 "$tmpdir/.env" && mv -f "$tmpdir/.env" "$real"; then
+    exit 0
   fi
-  rm -f "$tmp"
   log_err "could not write ${dotenv}; it is unchanged"
-  return 1
-}
+  exit 1
+)
+
+# Seconds the first-start offer waits for an answer. Override
+# PR_REVIEW_OFFER_TIMEOUT_SECONDS for tests.
+OFFER_TIMEOUT_SECONDS="${PR_REVIEW_OFFER_TIMEOUT_SECONDS:-30}"
 
 # offer_model_setup <dotenv-path>
-# Offers bin/setup-model.sh at an interactive start when neither the environment
-# nor .env names a REVIEW_MODEL, and fails only when that setup fails. Without a
-# terminal it logs a hint and returns 0, because launchd restarts the job on a
-# non-zero exit.
+# Offers bin/setup-model.sh at an interactive start on a fresh setup: the first
+# REVIEW_HARNESS line in .env is empty, as the template ships it, and neither
+# REVIEW_HARNESS nor REVIEW_MODEL is in the environment. A .env without that line
+# predates the setup step and is left alone. Declining writes REVIEW_HARNESS=claude
+# so the offer does not return; no answer writes nothing, so it does. Fails only
+# when the setup itself fails. Without a terminal it logs a hint and returns 0,
+# because launchd restarts the job on a non-zero exit.
 offer_model_setup() {
-  local answer
-  [[ -z "$(resolve_tunable REVIEW_MODEL "$1")" ]] || return 0
+  local answer rc=0
+  [[ -z "${REVIEW_HARNESS:-}" && -z "${REVIEW_MODEL:-}" ]] || return 0
+  [[ "$({ grep -E '^REVIEW_HARNESS=' "$1" 2>/dev/null || true; } | head -1)" == REVIEW_HARNESS= ]] || return 0
   if [[ ! -t 0 ]]; then
-    log_info "no review model chosen, so reviews run on the defaults; run bash bin/setup-model.sh in a terminal to choose one"
+    log_info "no agent CLI or model chosen, so reviews run on the defaults; run bash bin/setup-model.sh in a terminal to choose them"
     return 0
   fi
-  printf 'No review model chosen. Set it up now? [Y/n] ' >&2
-  IFS= read -r answer || answer=n
+  printf 'No agent CLI or model chosen for reviews. Set them up now? [Y/n] ' >&2
+  if ! IFS= read -t "$OFFER_TIMEOUT_SECONDS" -r answer; then
+    printf '\n' >&2
+    log_info "no answer, so the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
+    return 0
+  fi
   case "$answer" in
-    "" | [Yy]*) bash "$(dirname "${BASH_SOURCE[0]}")/../bin/setup-model.sh" "$1" ;;
-    *) log_info "continuing on the defaults; run bash bin/setup-model.sh to choose a model later" ;;
+    "" | [Yy]*)
+      bash "$(dirname "${BASH_SOURCE[0]}")/../bin/setup-model.sh" "$1" || rc=$?
+      # setup-model.sh exits TIMEOUT_EXIT when a prompt goes unanswered.
+      if ((rc == TIMEOUT_EXIT)); then
+        log_info "the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
+        return 0
+      fi
+      return "$rc"
+      ;;
+    *)
+      set_dotenv_keys "$1" REVIEW_HARNESS=claude || return 0
+      log_info "continuing on the defaults; wrote REVIEW_HARNESS=claude to .env so this is not asked again; run bash bin/setup-model.sh to choose later"
+      ;;
   esac
 }
 
