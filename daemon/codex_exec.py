@@ -7,14 +7,17 @@ for claude.
 survives the trip into a bash array. `format` follows the events file codex
 writes until codex's process is gone; codex itself writes the final message to
 the `-o` file, so the formatter only narrates and records the token count.
-`check` resolves codex on PATH the way `argv` does, for a startup check, and
-prints which binary it chose when a shim came first.
+`check` resolves codex on PATH the way `argv` does, for a startup check, checks
+that it accepts that argv, and prints which binary it chose when a shim came
+first.
 """
 
 import argparse
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,6 +25,8 @@ from pathlib import Path
 from stream_format import emit, truncate
 
 PROFILE = "pr-review-agent"
+# What codex exec prints, after validating its arguments, when stdin is empty.
+NO_PROMPT = "No prompt provided via stdin."
 
 
 def _toml_string(text: str) -> str:
@@ -78,6 +83,9 @@ def build_argv(
     argv = [
         codex_bin,
         "exec",
+        # An unknown -c key is otherwise dropped in silence, and the keys below
+        # are what bound the agent.
+        "--strict-config",
         # The operator's own config, execpolicy rules, and session history stay
         # out of the review; --ignore-rules also drops rules files the clone
         # carries, which the PR author controls.
@@ -140,6 +148,33 @@ def build_argv(
         "-",
     ]
     return argv
+
+
+def check_accepts_argv(codex_bin: str) -> None:
+    """Runs the argv every agent call sends, minus the prompt, or SystemExit with
+    what codex said. Codex parses every flag and, under --strict-config, every
+    config key before it reads the prompt, and stops at the missing prompt; with
+    no credentials it could not reach the model even if it went on."""
+    with tempfile.TemporaryDirectory() as work:
+        argv = build_argv(codex_bin, work, os.path.join(work, "raw"), "startup-check", "high", None)
+        env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")}
+        os.mkdir(home := os.path.join(work, "home"))
+        try:
+            proc = subprocess.run(
+                argv,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                cwd=work,
+                env={**env, "CODEX_HOME": home},
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            raise SystemExit(f"{codex_bin} did not answer the startup check within 60s") from None
+    output = proc.stderr + proc.stdout
+    if NO_PROMPT not in output:
+        said = next((line for line in output.splitlines() if line.strip()), "no output")
+        raise SystemExit(f"{codex_bin} rejects what the daemon sends ({said}); run 'codex update'")
 
 
 def sandbox_config(install_root: str) -> list[str]:
@@ -272,6 +307,7 @@ def main() -> int:
         return format_stream(follow(args.events, args.while_pid), args.label, args.tokens_out)
     codex, skipped = find_codex(os.environ.get("PATH", os.defpath))
     if args.cmd == "check":
+        check_accepts_argv(codex)
         if skipped:
             print(f"codex: using {codex}; {skipped} comes first on PATH but is a shim")
         return 0

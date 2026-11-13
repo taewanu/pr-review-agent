@@ -46,7 +46,14 @@ import json, os, subprocess, sys, time
 argv, stdin = sys.argv[1:], sys.stdin.read()
 with open(os.environ["FAKE_CODEX_LOG"], "a") as f:
     f.write(json.dumps({"exe": sys.argv[0], "argv": argv, "stdin": stdin,
-                        "cwd": os.getcwd()}) + "\\n")
+                        "cwd": os.getcwd(), "codex_home": os.environ.get("CODEX_HOME"),
+                        "api_key": "OPENAI_API_KEY" in os.environ}) + "\\n")
+# Like codex, a flag or config key it does not know fails before the prompt is read.
+rejects = os.environ.get("FAKE_CODEX_REJECTS")
+if rejects:
+    sys.exit(f"Error loading config.toml: unknown configuration field `{rejects}`")
+if not stdin:
+    sys.exit("No prompt provided via stdin.")
 def emit(event):
     print(json.dumps(event), flush=True)
 emit({"type": "thread.started", "thread_id": "t1"})
@@ -227,6 +234,7 @@ def test_read_only_sends_the_sandboxed_argv_with_the_prompt_on_stdin(base):
     ]
     assert shape == [
         "exec",
+        "--strict-config",
         "--ignore-user-config",
         "--ignore-rules",
         "--ephemeral",
@@ -812,6 +820,12 @@ def _stub(stubs: Path, *cmds: str) -> None:
         (stubs / cmd).chmod(0o755)
 
 
+def _stub_codex(stubs: Path) -> None:
+    """A codex that accepts any argv: with no prompt it answers as codex does."""
+    _stub(stubs, "codex")
+    (stubs / "codex").write_text(f"#!/bin/sh\necho '{codex_exec.NO_PROMPT}' >&2\nexit 1\n")
+
+
 @pytest.mark.parametrize("script", [REVIEW_PR, REPLY_PR])
 @pytest.mark.parametrize(
     ("harness", "missing", "present"), [("codex", "codex", "claude"), ("claude", "claude", "codex")]
@@ -847,7 +861,7 @@ def test_startup_names_the_real_codex_it_chose_past_a_shim_once(tmp_path, script
     (stubs / "codex").symlink_to(stubs / "manager")
     (stubs / "python3").symlink_to(sys.executable)
     real = tmp_path / "real"
-    _stub(real, "codex")
+    _stub_codex(real)
     result = _run_preflight(tmp_path, script, "codex", stubs, real)
     # The App key check comes after every harness check, so reaching it means they passed.
     assert "App private key not readable" in result.stderr
@@ -857,9 +871,50 @@ def test_startup_names_the_real_codex_it_chose_past_a_shim_once(tmp_path, script
 @pytest.mark.parametrize("script", [REVIEW_PR, REPLY_PR])
 def test_codex_startup_passes_its_harness_checks_without_claude(tmp_path, script):
     stubs = tmp_path / "stubs"
-    _stub(stubs, "gh", "jq", "git", "openssl", "curl", "codex")
+    _stub(stubs, "gh", "jq", "git", "openssl", "curl")
+    _stub_codex(stubs)
     (stubs / "python3").symlink_to(sys.executable)
     result = _run_preflight(tmp_path, script, "codex", stubs)
     # The App key check comes after every harness check, so reaching it means they passed.
     assert "App private key not readable" in result.stderr
     assert "claude" not in result.stderr
+
+
+def _check(base: Path, env: dict | None = None) -> subprocess.CompletedProcess:
+    bindir = _install_fake(base)
+    return subprocess.run(
+        [sys.executable, str(DAEMON / "codex_exec.py"), "check"],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_CODEX_LOG": str(base / "codex-calls.jsonl"),
+            "OPENAI_API_KEY": "example-key",
+            **(env or {}),
+        },
+        timeout=30,
+    )
+
+
+def test_startup_check_sends_the_agent_argv_strictly_with_no_prompt_and_no_credentials(base):
+    result = _check(base)
+    assert result.returncode == 0, result.stderr
+    [call] = _calls(base)
+    agent_argv = codex_exec.build_argv(str(base / "bin" / "codex"), "W", "R", "M", EFFORT, None)
+    # The same flags and keys as an agent call, apart from where it runs and on what.
+    assert [a for a in call["argv"] if a.startswith("-")] == [
+        a for a in agent_argv[1:] if a.startswith("-")
+    ]
+    assert "--strict-config" in call["argv"]
+    assert call["stdin"] == ""
+    # Nothing it does can reach the model on the operator's account.
+    assert not call["api_key"]
+    assert call["codex_home"] != os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))
+
+
+def test_startup_check_fails_with_what_codex_said_when_it_rejects_the_argv(base):
+    result = _check(base, env={"FAKE_CODEX_REJECTS": "project_doc_max_bytes"})
+    assert result.returncode != 0
+    assert "unknown configuration field `project_doc_max_bytes`" in result.stderr
+    assert "codex update" in result.stderr

@@ -634,9 +634,11 @@ require_claude_version() {
 }
 
 # require_real_codex
-# Resolves codex as every agent call does, so a PATH holding only a shim fails
-# here once instead of failing every call, and logs the binary chosen when a
-# shim came first on PATH.
+# Resolves codex as every agent call does and has it validate the argv every
+# call sends, so a PATH holding only a shim, or a codex too old for a flag or
+# config key, fails here once instead of failing every call. Rests on codex's
+# own validation rather than a version floor, because no release note names
+# when each key arrived. Logs the binary chosen when a shim came first on PATH.
 require_real_codex() {
   local note
   note="$(python3 "$(dirname "${BASH_SOURCE[0]}")/codex_exec.py" check)" || return 1
