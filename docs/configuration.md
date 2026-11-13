@@ -1,10 +1,16 @@
 # Configuration
 
-This page lists every setting the daemon reads, with its default, and how to skip a single PR.
+This page lists the daemon's settings with their defaults, and how to skip a single PR. Variables that exist only for the test suite are not listed.
 
 Settings live in `.env` at the repository root. Git ignores the file. `templates/.env.example` documents each key.
 
-`REPOS`, `GITHUB_APP_ID`, `MAX_PARALLEL`, and `OPT_OUT_LABEL` are read from `.env` only. For the other keys, a shell variable overrides `.env`.
+`MAX_PARALLEL` and `OPT_OUT_LABEL` are read from `.env` only. Where `REPOS` and `GITHUB_APP_ID` are read depends on the script:
+
+- **The polling cycle reads both from `.env` only.**
+- **The startup check in `run.sh` reads both from a shell variable first, then `.env`.** This check logs the repositories the App is not installed on.
+- **`review-pr.sh` and `reply-pr.sh` read `GITHUB_APP_ID` from a shell variable first, then `.env`,** when you pass no `--app-id`.
+
+For the other keys, a shell variable overrides `.env`.
 
 | Key | Default | Controls |
 |---|---|---|
@@ -30,7 +36,24 @@ The two concurrency limits fail differently:
 
 An invalid `REVIEW_EFFORT` falls back to `high`, with a log line.
 
-`APP_KEY_PATH` sets the private key's location. The default is `~/.pr-review-agent/app.pem`. It is read from the environment only, not from `.env`.
+## Environment-only settings
+
+These are read from the shell environment only, not from `.env`. Set them in the shell that starts the daemon. The background job cannot set them: it sees only `PATH` and `HOME`. Timeouts are in seconds.
+
+| Variable | Default | Controls |
+|---|---|---|
+| `APP_KEY_PATH` | `~/.pr-review-agent/app.pem` | the App's private key |
+| `PR_REVIEW_STATE_DIR` | `~/.pr-review-agent` | state, locks, heartbeat, and pause files |
+| `REVIEW_AGENT_TIMEOUT` | `600` | the review call that runs both roles |
+| `EDITOR_AGENT_TIMEOUT` | `600` | the editor pass |
+| `FIX_CHECK_AGENT_TIMEOUT` | `180` | each check of whether a later commit fixed a finding |
+| `REPLY_AGENT_TIMEOUT` | `300` | the reply pass |
+| `PER_PR_TIMEOUT` | `1800` | one PR's review or reply step in a polling cycle |
+| `GH_API_CALL_TIMEOUT` | `90` | fetching a PR's diff |
+| `RESOLVE_TOUCHED_CAP` | `10` | open findings on changed lines checked for a fix, per review |
+| `RESOLVE_UNTOUCHED_CAP` | `5` | other open findings checked for a fix, per review |
+| `SESSION_PAUSE_FALLBACK_SECONDS` | `3600` | the pause after a Claude usage limit with no readable reset time |
+| `NO_COLOR` | unset | any value turns off colored terminal output |
 
 ## Skipping a single PR
 
