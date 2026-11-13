@@ -2302,7 +2302,28 @@ complete_check_run() {
       <<<"$payload" >/dev/null 2>&1 && return 0
     [[ "$attempt" -lt 3 ]] && sleep "$sleep_secs"
   done
-  log_info "check run ${check_run_id} not concluded after 3 attempts (left in_progress)"
+  log_info "check run ${check_run_id} not concluded after 3 attempts (left in its previous state)"
+}
+
+# conclude_review_check <owner> <repo> <check-run-id> <state>
+# Concludes the `review` run on a block|pass verdict. The titles say which state
+# the row is in and nothing more; the count, the findings, and the trail stay one
+# click away in the status comment.
+conclude_review_check() {
+  local title="No findings open on this commit"
+  [[ "$4" == "block" ]] && title="Findings open on this commit"
+  complete_check_run "$1" "$2" "$3" "$(check_conclusion_for_state "$4")" "$title" \
+    "The findings index, the review scope, and the reviewed-SHAs trail are in the review status comment."
+}
+
+# count_open_findings <threads-file> <bot-login-gql>
+# The verdict's one input (ADR 0040 decision 4): how many of the bot's finding
+# threads in a fetch_open_review_threads file are still open. Prints 0 when the
+# file is unreadable.
+count_open_findings() {
+  jq --arg op "$2" \
+    '[.[] | select(.root_author == $op and ((.is_resolved // false) | not))] | length' \
+    "$1" 2>/dev/null || printf 0
 }
 
 # review_state_for_open_threads <open-thread-count>
@@ -2343,4 +2364,85 @@ check_conclusion_for_state() {
     block) printf 'failure' ;;
     *) printf 'neutral' ;;
   esac
+}
+
+# refresh_review_verdict <owner> <repo> <pr-number> <head-sha> <head-repo-url>
+# Brings the status comment and the `review` check back to the truth after the
+# PR's open finding threads changed under a completed review, which a reply pass
+# does when it resolves one (ADR 0039 as amended). The verdict is derived as the
+# review derives it, from a fresh thread read, and both surfaces render from that
+# one state. Best-effort like the review's own writes: always returns 0.
+#
+# Takes the review's per-PR lock, without waiting: a review in flight reads the
+# threads itself before it writes both surfaces, and holding the lock keeps one
+# from starting while this rewrites them.
+refresh_review_verdict() {
+  local lock
+  if ! lock="$(acquire_pr_lock "$1" "$2" "$3")"; then
+    log_info "review in progress; it sets the verdict from the threads it reads"
+    return 0
+  fi
+  _refresh_review_verdict "$@" || log_info "verdict refresh failed (non-fatal)"
+  release_pr_lock "$lock"
+  return 0
+}
+
+_refresh_review_verdict() {
+  local owner="$1" repo="$2" pr="$3" head_sha="$4" head_repo_url="$5"
+  local comments status comment_id old_body reviewed_sha threads_file body_file
+  local state new_body run_id="" shown="" conclusion
+  comments="$(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api --paginate "repos/${owner}/${repo}/issues/${pr}/comments" 2>/dev/null)" || return 1
+  status="$(flatten_pages <<<"$comments" |
+    jq -c --arg login "$PRA_BOT_LOGIN_REST" --arg marker "$STATUS_COMMENT_MARKER" \
+      '[.[] | select(.user.login == $login and ((.body // "") | contains($marker)))] | last // empty')" ||
+    return 1
+  if [[ -z "$status" ]]; then
+    log_info "no status comment to refresh"
+    return 0
+  fi
+  comment_id="$(jq -r '.id' <<<"$status")"
+  old_body="$(jq -r '.body' <<<"$status")"
+  # Only the terminal render carries the sentinel (ADR 0024), so it names the
+  # commit whose verdict both surfaces show; a Reviewing or failed render has none.
+  reviewed_sha="$(grep -oE 'pr-review-agent:sha:[0-9a-f]{40}' <<<"$old_body" | head -1 | cut -d: -f3 || true)"
+  if [[ "$reviewed_sha" != "$head_sha" ]]; then
+    log_info "status comment shows no completed review of ${head_sha:0:12}; the next review sets the verdict"
+    return 0
+  fi
+
+  threads_file="$(mktemp -t pr-review-verdict.XXXXXX)"
+  body_file="$(mktemp -t pr-review-verdict.XXXXXX)"
+  if ! fetch_open_review_threads "$owner" "$repo" "$pr" >"$threads_file"; then
+    rm -f "$threads_file" "$body_file"
+    return 1
+  fi
+  state="$(review_state_for_open_threads "$(count_open_findings "$threads_file" "$PRA_BOT_LOGIN_GQL")")"
+  printf '%s' "$old_body" >"$body_file"
+  new_body="$(python3 "$(dirname "${BASH_SOURCE[0]}")/findings_index.py" \
+    --threads "$threads_file" --operator "$PRA_BOT_LOGIN_GQL" --refresh-body "$body_file" \
+    --headline "$(render_status_headline "$PRA_BOT_LOGIN_GQL" "$state" \
+      "$(status_sha_link "$head_repo_url" "$head_sha")" "$head_sha")")"
+  rm -f "$threads_file" "$body_file"
+  [[ -n "$new_body" ]] || return 1
+  if [[ "$new_body" == "$old_body" ]]; then
+    log_info "status comment already matches the finding threads"
+    return 0
+  fi
+  edit_status_comment "$owner" "$repo" "$comment_id" "$new_body"
+  log_info "status comment refreshed (${state})"
+
+  # The run is patched, not superseded by a new one, because GitHub's docs do not
+  # say which of several same-name runs on a commit a required check reads.
+  read -r run_id shown < <(run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+    gh api "repos/${owner}/${repo}/commits/${head_sha}/check-runs?check_name=${CHECK_RUN_NAME}&app_id=${PRA_APP_ID}" \
+    --jq '.check_runs | map(select(.status == "completed")) | .[0] // empty | "\(.id) \(.conclusion)"' \
+    2>/dev/null || true) || true
+  conclusion="$(check_conclusion_for_state "$state")"
+  if [[ -z "$run_id" ]]; then
+    log_info "no completed review check run on ${head_sha:0:12} to update"
+  elif [[ "$shown" != "$conclusion" ]]; then
+    conclude_review_check "$owner" "$repo" "$run_id" "$state"
+    log_info "check run ${run_id} updated to ${conclusion}"
+  fi
 }

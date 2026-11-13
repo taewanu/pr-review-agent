@@ -1244,9 +1244,7 @@ if [[ $DRY_RUN -eq 0 ]]; then
       --advisory "$advisory_count" --review-url "$review_url" \
       --summary-file "$SUMMARY_FILE" \
       ${delta_args[@]+"${delta_args[@]}"} 2>/dev/null || true)"
-    open_findings="$(jq --arg op "$PRA_BOT_LOGIN_GQL" \
-      '[.[] | select(.root_author == $op and ((.is_resolved // false) | not))] | length' \
-      "$index_threads_file" 2>/dev/null || printf 0)"
+    open_findings="$(count_open_findings "$index_threads_file" "$PRA_BOT_LOGIN_GQL")"
   else
     log_info "thread fetch for status index failed (non-fatal)"
     # No thread list to count, so stand in the threads this tick just created. It
@@ -1273,16 +1271,7 @@ if [[ $DRY_RUN -eq 0 ]]; then
 
   # Conclude the checks row on the same verdict the head-line above renders
   # (#308), so the two surfaces cannot disagree about whether the review passed.
-  # The titles say which state the row is in and nothing more; the count, the
-  # findings, and the trail stay one click away in the status comment.
-  if [[ "$review_state" == "block" ]]; then
-    check_title="Findings open on this commit"
-  else
-    check_title="No findings open on this commit"
-  fi
-  complete_check_run "$BASE_OWNER" "$BASE_REPO" "$CHECK_RUN_ID" \
-    "$(check_conclusion_for_state "$review_state")" "$check_title" \
-    "The findings index, the review scope, and the reviewed-SHAs trail are in the review status comment."
+  conclude_review_check "$BASE_OWNER" "$BASE_REPO" "$CHECK_RUN_ID" "$review_state"
   CHECK_RUN_CONCLUDED=1
 fi
 

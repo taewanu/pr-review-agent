@@ -41,13 +41,13 @@ Role definitions come from `.claude/agents/` in the daemon's checkout, not from 
 
 ## The `review` check
 
-Each review concludes the `review` check once:
+Each review concludes the `review` check:
 
 - **failure** when a finding thread is open after the review.
 - **success** when none is open, with "No findings open on this commit".
 - **neutral** when the review stopped before reaching a verdict.
 
-Replies do not update the check. A thread resolved by a reply leaves the check failed until the next commit is reviewed.
+After the daemon answers replies, it updates the check and the status comment if the open finding threads changed, as long as the reviewed commit is still the PR's latest. A thread resolved or reopened in the GitHub UI, with no reply, shows on both when the daemon next answers a reply or reviews a commit on the PR.
 
 To block merges on the review, make `review` a required status check in the repository's branch protection.
 

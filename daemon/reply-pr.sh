@@ -305,14 +305,20 @@ POST_ERR="$(mktemp -t pr-review-reply-post.XXXXXX)"
 # Extract + validate + POST in one Python process (#36); keeps the body bytes
 # intact end to end (see create_reply.py). stderr carries progress, and on
 # failure a `category=` line feeds log_failure.
-if run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
+post_rc=0
+run_with_app_token "$PRA_APP_ID" "$PRA_INSTALLATION_ID" \
   python3 "$SCRIPT_DIR/create_reply.py" \
   --owner "$OWNER" --repo "$REPO" --number "$PR_NUMBER" \
   --head-sha "$HEAD_OID" --head-owner "$HEAD_REPO_OWNER" --head-repo "$HEAD_REPO_NAME" \
-  --raw "$RAW_FILE" --threads "$THREADS_FILE" 2>"$POST_ERR"; then
-  cat "$POST_ERR" >&2
-else
-  cat "$POST_ERR" >&2
+  --raw "$RAW_FILE" --threads "$THREADS_FILE" 2>"$POST_ERR" || post_rc=$?
+cat "$POST_ERR" >&2
+
+# A thread resolved above changes the verdict the status comment and the
+# `review` check show (ADR 0039 as amended), so they follow it, even after a
+# post that failed partway, since the threads it did resolve stay resolved.
+refresh_review_verdict "$OWNER" "$REPO" "$PR_NUMBER" "$HEAD_OID" "https://github.com/${HEAD_REPO}"
+
+if [[ "$post_rc" -ne 0 ]]; then
   category="$(grep -m1 '^category=' "$POST_ERR" | cut -d= -f2 || true)"
   log_failure "${category:-$FAIL_POST_FAILED}" "$PR_URL" "$HEAD_OID" "reply posting failed"
   exit 1

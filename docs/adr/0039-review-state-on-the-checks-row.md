@@ -1,7 +1,7 @@
 # ADR 0039: Review state on the PR's checks row
 
 Date: 2026-07-27
-Status: Accepted. Amends [ADR 0005](./0005-failure-handling-policy.md) (failure table) and [ADR 0036](./0036-github-app-identity.md) (permission set). Decision 3's verdict is narrowed by [ADR 0040](./0040-file-level-findings-and-a-gate-on-threads.md): it reads open finding threads alone, so a review whose only findings are advisory now concludes `success`. The two-surface split and the conclusion mapping stand.
+Status: Accepted. Amends [ADR 0005](./0005-failure-handling-policy.md) (failure table) and [ADR 0036](./0036-github-app-identity.md) (permission set). Decision 3's verdict is narrowed by [ADR 0040](./0040-file-level-findings-and-a-gate-on-threads.md): it reads open finding threads alone, so a review whose only findings are advisory now concludes `success`. The two-surface split and the conclusion mapping stand. Amended 2026-11-13: when the open finding threads change after the review, both surfaces follow them (decision 6), so a reply pass that resolves a thread re-derives the verdict; the consequence that `reply-pr.sh` had nothing to put on this surface is withdrawn.
 
 ## Context
 
@@ -15,7 +15,7 @@ The announcement has since moved once more. The transient comment #48 posted and
 
 The review runs on two surfaces with different jobs.
 
-1. **The checks row carries state, and only state.** One check run named `review`, opened `in_progress` before the multi-minute review and concluded once, with a title naming the state it is in. Everything a reader has to read (the findings index, the scope, the reviewed-SHAs trail, the per-push delta: [ADR 0020](./0020-findings-index-in-status-comment.md), [ADR 0021](./0021-reviewed-shas-trail-in-status-comment.md), [ADR 0033](./0033-per-push-delta-in-status-comment.md)) stays in the status comment, and the run's `details_url` links there. A row that restated the comment would be noise on a surface with room for a handful of entries, and a second copy of facts that would then be free to disagree.
+1. **The checks row carries state, and only state.** One check run named `review`, opened `in_progress` before the multi-minute review and concluded once by the review (*amended 2026-11-13:* then updated only as decision 6 allows), with a title naming the state it is in. Everything a reader has to read (the findings index, the scope, the reviewed-SHAs trail, the per-push delta: [ADR 0020](./0020-findings-index-in-status-comment.md), [ADR 0021](./0021-reviewed-shas-trail-in-status-comment.md), [ADR 0033](./0033-per-push-delta-in-status-comment.md)) stays in the status comment, and the run's `details_url` links there. A row that restated the comment would be noise on a surface with room for a handful of entries, and a second copy of facts that would then be free to disagree.
 
 2. **The `in_progress` run is the pickup announcement, in the shape the surface already has.** Nothing to post and nothing to delete, which is what made the comment form of it awkward. The status comment's `👀 Reviewing …` head-line stays: it anchors the scope and the trail the comment carries, and a reader who opens the comment still needs to see which commit is under review.
 
@@ -28,6 +28,16 @@ The review runs on two surfaces with different jobs.
    `review-pr.sh` also traps `TERM` and `INT` now. A signal kills the shell without running the EXIT trap unless it is trapped, and the signalled death is the case that matters: the per-PR watchdog sends TERM before it escalates, and Ctrl-C on the foreground daemon sends INT.
 
 5. **`checks: write` joins ADR 0036 decision 3's permission set.** It is what the check-run endpoints require and it grants nothing else.
+
+6. **When the open finding threads change after the review, both surfaces follow.** *Added 2026-11-13.* A thread resolved by a reply left the check at `failure`, "Findings open on this commit", and the status comment at "you shall not pass" with `1 open`, until a later commit was reviewed; a repository that requires the check had to push a commit only to be re-reviewed. The verdict reads open finding threads alone ([ADR 0040](./0040-file-level-findings-and-a-gate-on-threads.md) decision 4), and the reply pass changes exactly that input.
+
+   After posting, `reply-pr.sh` calls `refresh_review_verdict` (`lib.sh`). It reads the threads fresh, derives the state with the same `count_open_findings` and `review_state_for_open_threads` the review uses, and renders both surfaces from that one state: first the status comment's head-line and rollup, then, when the run's conclusion differs, the `review` run. The scope, the per-push delta, the outside-the-diff pointer, and the trail describe the review rather than the threads, so they stay as posted.
+
+   - **Only the reviewed commit, and only while it is the PR's HEAD.** The sentinel in the status comment ([ADR 0024](./0024-status-comment-sentinel-for-zero-finding-dedup.md)) names the reviewed commit, and a Reviewing or failed render carries none, so neither is touched. When HEAD has moved, the next review concludes its own run; the older commit's run keeps its conclusion, which gates nothing, because GitHub evaluates required checks on the latest commit ("Troubleshooting required status checks", GitHub Docs, read 2026-11-13).
+   - **The run is updated in place, not superseded.** The refresh finds the App's `review` run on the commit by name and patches its conclusion. A second run of the same name would be one call cheaper, but GitHub's REST reference for check runs (read 2026-11-13) does not say which of several same-name runs a required check reads. Only a `completed` run is patched, so the review stays the one that ends an `in_progress` run (decision 4).
+   - **Only on a reply pass that reached posting, and only what changed.** A thread resolved or reopened in the GitHub UI with no reply shows on both surfaces at the next reply pass or review. Covering it every polling cycle would add a thread read and a comment read per open PR per cycle, each a call that can hang.
+   - **A review in flight owns both surfaces.** The refresh takes the review's per-PR lock without waiting and skips while a review holds it, because that review reads the threads itself before it writes.
+   - **Best-effort, like the writes in decision 4.** A failed refresh logs and returns; the reply pass and its posted replies stand.
 
 ## Boundary
 
@@ -43,6 +53,10 @@ Whether `main` requires the check is branch protection, an operator choice, and 
 
 - **The dry-run paths open no run**, matching how they skip the status comment: `--dry-run` and `--at-sha` post nothing.
 
-- **`reply-pr.sh` is untouched.** The operator-reply ack pass computes no verdict, so it has nothing to put on this surface.
+- ~~**`reply-pr.sh` is untouched.** The operator-reply ack pass computes no verdict, so it has nothing to put on this surface.~~ *Withdrawn 2026-11-13:* the reply pass computes no verdict of its own, but it changes the verdict's only input when it resolves a thread, so it re-derives the verdict (decision 6).
+
+- **A manual run that overlaps a review can leave the older verdict.** Within the daemon the two never overlap: `poll.sh` runs a PR's reply pass before dispatching its review and waits for every review before the cycle ends. A manual one-shot can overlap one; if the review read the threads before the reply resolved one, the refresh skips on the review's lock and the review writes the verdict it read. The next reply pass or review corrects it.
+
+- **A reply pass that posts makes two more reads**: the PR's issue comments and its threads. When a thread changed, it adds the comment edit and the run lookup, and when the verdict changed, the run update. A polling cycle with no reply makes no extra call.
 
 - **Fork PRs are untested here.** The run is created on the base repo, where the installation and the PR's checks row live, and the head commit of a fork PR is reachable there through `refs/pull/<n>/head`; whether the API accepts it in that shape has not been exercised. A rejection degrades to no row, not a failed review.

@@ -17,13 +17,16 @@ file-level comment and appears here as an ordinary entry, keyed on its path.
 Input is the thread array `fetch_open_review_threads` (lib.sh) emits, both open
 and resolved. Output is the markdown block `render_status_comment` inserts: the
 findings index, or a `No findings` affirmation when the review surfaced nothing
-(ADR 0020 Decision 6).
+(ADR 0020 Decision 6). With `--refresh-body`, the output is instead a posted
+Status comment with its head-line and rollup re-rendered from the threads, for a
+reply pass that changed them after the review (ADR 0039 decision 6).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -67,7 +70,7 @@ def _entry(thread: dict) -> str:
     the Finding's location linked to its Inline comment, then its open/resolved state.
 
     Available on `thread`: `_location(thread)` gives the `path:line` label;
-    `thread["root_comment_url"]` is the Inline comment's URL (may be None — fall back
+    `thread["root_comment_url"]` is the Inline comment's URL (may be None; fall back
     to no link); `thread["is_resolved"]` is the open/resolved bool. Keep it a pointer:
     location and state only, never the Finding body (ADR 0020). Wrap the label in
     backticks. Example shape: "- [`daemon/foo.py:16`](https://…) · resolved"
@@ -92,6 +95,42 @@ def _clean_affirmation(summary: str | None) -> str:
         lines.append("")
         lines.extend(f"> {ln}" if ln else ">" for ln in text.splitlines())
     return "\n".join(lines)
+
+
+def _rollup(findings: list[dict]) -> list[str]:
+    """The `total · open · resolved` line and one entry per Finding: the part of
+    the index that follows the threads' state."""
+    total = len(findings)
+    resolved = sum(1 for t in findings if t.get("is_resolved"))
+    noun = "finding" if total == 1 else "findings"
+    return [
+        f"**{total} {noun} · {total - resolved} open · {resolved} resolved**",
+        "",
+        *(_entry(t) for t in _order(findings)),
+    ]
+
+
+# The rollup line through its last entry, as _rollup renders it into a body.
+_ROLLUP_RE = re.compile(
+    r"^\*\*\d+ findings? · \d+ open · \d+ resolved\*\*\n\n(?:- [^\n]*\n)*- [^\n]*$",
+    re.MULTILINE,
+)
+
+
+def refresh_body(body: str, threads: list[dict], operator: str, headline: str) -> str:
+    """The Status comment `body` with its head-line and rollup re-rendered from
+    `threads`, every other part kept verbatim: the scope, the per-push delta, the
+    outside-the-diff pointer, and the trail describe the review, not the threads.
+
+    Returns `body` unchanged when it carries no rollup to replace (a degraded
+    review rendered none) or the threads hold no Finding, so the head-line never
+    moves without the index that justifies it."""
+    findings = daemon_findings(threads, operator)
+    if not findings or not _ROLLUP_RE.search(body):
+        return body
+    spliced = _ROLLUP_RE.sub(lambda _: "\n".join(_rollup(findings)), body, count=1)
+    _, newline, rest = spliced.partition("\n")
+    return headline + newline + rest
 
 
 class Delta(NamedTuple):
@@ -148,12 +187,7 @@ def render_index(
         lines.append(delta_line)
         lines.append("")
     if total > 0:
-        resolved = sum(1 for t in findings if t.get("is_resolved"))
-        open_count = total - resolved
-        noun = "finding" if total == 1 else "findings"
-        lines.append(f"**{total} {noun} · {open_count} open · {resolved} resolved**")
-        lines.append("")
-        lines.extend(_entry(t) for t in _order(findings))
+        lines.extend(_rollup(findings))
 
     if advisory_count > 0:
         pointer = f"+ {advisory_count} outside the diff"
@@ -182,6 +216,12 @@ def main() -> int:
         default=0,
         help="body-only findings this review posted: the outside-diff pointer and the delta bucket",
     )
+    ap.add_argument(
+        "--refresh-body",
+        default="",
+        help="file holding a posted Status comment body: print it with the rollup re-rendered",
+    )
+    ap.add_argument("--headline", default="", help="the head-line --refresh-body puts first")
     args = ap.parse_args()
 
     # Best-effort: an unreadable or malformed thread file yields an empty index
@@ -190,6 +230,11 @@ def main() -> int:
         threads = json.loads(Path(args.threads).read_text() or "[]")
     except (OSError, ValueError):
         threads = []
+
+    if args.refresh_body:
+        body = Path(args.refresh_body).read_text()
+        sys.stdout.write(refresh_body(body, threads, args.operator, args.headline))
+        return 0
 
     # Same best-effort read: a missing summary degrades to the bare rollup, never
     # an abort. Only consulted on the zero-finding path.
