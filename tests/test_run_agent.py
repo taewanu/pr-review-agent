@@ -254,7 +254,7 @@ def _require_claude_version(tmp_path: Path, reported: str) -> subprocess.Complet
     )
 
 
-@pytest.mark.parametrize("reported", ["2.1.248 (Claude Code)", "2.10.0 (Claude Code)", "3.0.0"])
+@pytest.mark.parametrize("reported", ["2.1.281 (Claude Code)", "2.10.0 (Claude Code)", "3.0.0"])
 def test_a_claude_new_enough_for_the_sandbox_settings_passes_the_preflight(tmp_path, reported):
     result = _require_claude_version(tmp_path, reported)
     assert result.returncode == 0, result.stderr

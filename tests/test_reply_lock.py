@@ -41,7 +41,7 @@ def _stub_bin(tmp_path: Path) -> Path:
         "esac\n"
     )
     claude = bin_dir / "claude"
-    claude.write_text("#!/usr/bin/env bash\necho '2.1.248 (Claude Code)'\n")
+    claude.write_text("#!/usr/bin/env bash\necho '2.1.281 (Claude Code)'\n")
     for stub in (gh, claude):
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     install_app_stubs(bin_dir)

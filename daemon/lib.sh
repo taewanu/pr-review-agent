@@ -539,10 +539,11 @@ write_run_file() {
   fi
 }
 
-# The oldest Claude Code that honours what run_agent sends: --restricted needs
-# v2.1.248 and the sandbox's network.strictAllowlist v2.1.219, and a CLI that
-# ignores the latter waits on a network approval nobody can give.
-CLAUDE_MIN_VERSION=2.1.248
+# The oldest Claude Code that honours what run_agent sends: the --agents file
+# form needs v2.1.281, --restricted v2.1.248, and the sandbox's
+# network.strictAllowlist v2.1.219, and a CLI that ignores the last waits on a
+# network approval nobody can give.
+CLAUDE_MIN_VERSION=2.1.281
 
 # require_claude_version
 # Fails with an upgrade hint unless `claude --version` is at least
