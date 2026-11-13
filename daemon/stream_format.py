@@ -21,7 +21,10 @@ left empty in that case, and the call site's existing `[[ -s ]]` check handles i
 
 import argparse
 import json
+import os
+import re
 import sys
+import time
 from pathlib import Path
 
 
@@ -31,65 +34,121 @@ def truncate(text: str, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _summarize_tool(block: dict) -> str:
-    """`→ Read foo.py` / `→ Bash: gh pr diff …`: tool name plus its most telling arg.
+def _truncate_left(text: str, limit: int = 80) -> str:
+    """Cap a path from the left, so the file name at its end stays visible."""
+    return text if len(text) <= limit else "…" + text[-(limit - 1) :]
+
+
+def clone_roots() -> tuple[str, ...]:
+    """Every spelling of the agent's working directory (the per-PR clone), longest first.
+
+    The agent reports resolved paths (/private/var/… on macOS) while the shell's
+    PWD keeps the symlinked one (/var/…), so both are stripped."""
+    cwd = os.getcwd()
+    roots = {cwd, os.path.realpath(cwd)}
+    pwd = os.environ.get("PWD")
+    if pwd and os.path.realpath(pwd) == os.path.realpath(cwd):
+        roots.add(pwd)
+    return tuple(sorted(roots, key=len, reverse=True))
+
+
+def relative(text: str, roots: tuple[str, ...]) -> str:
+    """`text` with each clone root that starts a path made relative: `<root>/x` reads
+    `x` and a bare `<root>` reads `.`, while `<root>-other/x` is another path and stays."""
+    for root in roots:
+        pattern = r"(?<![\w.~/-])" + re.escape(root) + r"(?:(/)|(?=[\s'\"`:;,)\]]|$))"
+        text = re.sub(pattern, lambda m: "" if m.group(1) else ".", text)
+    return text
+
+
+def describe_tool(name: str, arg: str, roots: tuple[str, ...], *, path: bool = False) -> str:
+    """`Read daemon/lib.sh`: a tool name and its argument on one line, a path capped
+    from the left so its file name stays visible."""
+    arg = " ".join(relative(arg, roots).split())
+    return f"{name} {(_truncate_left if path else truncate)(arg)}"
+
+
+def prose(text: str, roots: tuple[str, ...]) -> str | None:
+    """The agent's prose on one line, its own line breaks kept as separators."""
+    text = " · ".join(part.strip() for part in text.splitlines() if part.strip())
+    return truncate(relative(text, roots)) if text else None
+
+
+def _summarize_tool(block: dict, roots: tuple[str, ...] = ()) -> str:
+    """`Read daemon/lib.sh` / `Bash gh pr diff …`: tool name plus its most telling arg.
 
     The informative key differs per tool, so take the first one present rather than
     branching on the tool name (which would need a case per tool we ever see)."""
     name = block.get("name", "tool")
     inp = block.get("input", {})
-    for key in ("file_path", "command", "pattern", "path", "url", "prompt"):
+    for key in ("file_path", "command", "pattern", "path", "url", "subagent_type", "prompt"):
         if key in inp:
-            return f"{name}: {truncate(str(inp[key]))}"
+            return describe_tool(name, str(inp[key]), roots, path=key in ("file_path", "path"))
     return name
 
 
-def render_event(event: dict) -> str | None:
-    """Map one stream-json event to a progress line for stderr, or None to skip it.
+def render_event(event: dict, roots: tuple[str, ...] = ()) -> str | None:
+    """Map one assistant event to progress lines for stderr, or None to skip it.
 
-    The caller adds the prefix and flushes; a returned string may hold several lines
-    joined by "\\n" when one event carries multiple content blocks.
+    A returned string may hold several lines joined by "\\n" when one event carries
+    multiple content blocks. A `result` event renders nothing here: one call can
+    emit several, so run() prints one closing line after the stream ends, and
+    none when the stream held no result (a timeout or a crash), where the
+    caller's own exit line speaks for the call.
     """
-    etype = event.get("type")
-    if etype == "result":
-        turns = event.get("num_turns", "?")
-        secs = event.get("duration_ms", 0) / 1000
-        cost = event.get("total_cost_usd", 0)
-        return f"done · {turns} turns · {secs:.0f}s · ${cost:.3f}"
-    if etype != "assistant":
-        # system/hook_*, user (tool_result), rate_limit_event: noise, skip.
+    if event.get("type") != "assistant":
+        # result, system/hook_*, user (tool_result), rate_limit_event: skip.
         return None
     lines: list[str] = []
     for block in event.get("message", {}).get("content", []):
         btype = block.get("type")
         if btype == "tool_use":
-            lines.append(f"→ {_summarize_tool(block)}")
+            lines.append(f"→ {_summarize_tool(block, roots)}")
         elif btype == "text":
             # Narrate the agent's prose live (it also reappears in the final result).
-            text = block.get("text", "").strip()
+            text = prose(block.get("text", ""), roots)
             if text:
-                lines.append(truncate(text))
+                lines.append(text)
         # btype == "thinking": skip (reasoning noise)
     return "\n".join(lines) if lines else None
 
 
-PREFIX = "[pr-review-agent]   "  # indent under the log_step markers (lib.sh)
+def closing_line(
+    turns: int | None, seconds: float, cost: float | None, tokens: int | None = None
+) -> str:
+    """The one line that closes a call, naming only what the CLI reported."""
+    parts = ["done"]
+    if turns is not None:
+        parts.append(f"{turns} turn" + ("" if turns == 1 else "s"))
+    parts.append(f"{seconds:.0f}s")
+    if tokens is not None:
+        parts.append(f"{tokens:,} tokens")
+    if cost is not None:
+        parts.append(f"${cost:.3f}")
+    return " · ".join(parts)
 
 
-def emit(line: str, label: str | None = None) -> None:
-    # label (ADR 0023 revision): concurrent lenses stream to the same terminal
-    # at once now, so their live lines interleave; a label tags each line with
-    # its source (e.g. "[intent]") so a reader can still follow one lens.
-    # None for every other caller (editor, reply-pr.sh) leaves output unchanged.
-    tag = f"[{label}] " if label else ""
-    print(f"{PREFIX}{tag}{line}", file=sys.stderr, flush=True)
+def emit(text: str, prefix: str) -> None:
+    for line in text.split("\n"):
+        print(f"{prefix}{line}", file=sys.stderr, flush=True)
 
 
-def run(stream, raw_out: Path, label: str | None = None, cost_out: Path | None = None) -> int:
+def run(
+    stream,
+    raw_out: Path,
+    prefix: str = "[pr-review-agent] ",
+    cost_out: Path | None = None,
+    clock=time.monotonic,
+) -> int:
     # Truncate --raw-out up front so it always exists, matching the old
     # `>"$RAW_FILE"` redirect: an empty file on a no-result (timeout) stream, the
     # reconstructed agent text on a complete one.
     raw_out.write_text("")
+    start = clock()
+    roots = clone_roots()
+    saw_result = False
+    turns: int | None = None
+    last_cost: float | None = None
     for line in stream:
         line = line.strip()
         if not line:
@@ -101,6 +160,15 @@ def run(stream, raw_out: Path, label: str | None = None, cost_out: Path | None =
             # rather than corrupting the progress view or the raw reconstruction.
             continue
         if event.get("type") == "result":
+            # A session that waits on subagents emits a result per segment, with
+            # that segment's num_turns, a duration_ms that leaves out the wait,
+            # and the session's total_cost_usd so far, so turns add up, cost
+            # takes the last, and duration is the wall clock.
+            saw_result = True
+            if isinstance(event.get("num_turns"), int):
+                turns = (turns or 0) + event["num_turns"]
+            if isinstance(event.get("total_cost_usd"), (int, float)):
+                last_cost = event["total_cost_usd"]
             result_text = event.get("result")
             if isinstance(result_text, str):
                 raw_out.write_text(result_text)
@@ -139,9 +207,11 @@ def run(stream, raw_out: Path, label: str | None = None, cost_out: Path | None =
                         if isinstance(value, (int, float)):
                             tokens += value
                 cost_out.with_suffix(".tokens").write_text(str(int(tokens)))
-        rendered = render_event(event)
+        rendered = render_event(event, roots)
         if rendered is not None:
-            emit(rendered, label=label)
+            emit(rendered, prefix)
+    if saw_result:
+        emit(closing_line(turns, clock() - start, last_cost), prefix)
     return 0
 
 
@@ -154,9 +224,9 @@ def main() -> int:
         help="path to write the reconstructed agent stdout (the parser's input)",
     )
     parser.add_argument(
-        "--label",
-        help="tag each progress line with this (e.g. a lens name) when concurrent"
-        " callers share one terminal",
+        "--prefix",
+        default="[pr-review-agent] ",
+        help="text to start each progress line with (run_agent passes the PR and phase)",
     )
     parser.add_argument(
         "--cost-out",
@@ -164,7 +234,7 @@ def main() -> int:
         help="path to write this call's total_cost_usd, for the caller to sum across lenses",
     )
     args = parser.parse_args()
-    return run(sys.stdin, args.raw_out, label=args.label, cost_out=args.cost_out)
+    return run(sys.stdin, args.raw_out, prefix=args.prefix, cost_out=args.cost_out)
 
 
 if __name__ == "__main__":

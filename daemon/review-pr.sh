@@ -133,15 +133,6 @@ PR_NUMBER="${BASH_REMATCH[3]}"
 # cycle-level lines in poll.sh/run.sh).
 log_set_pr_context "$BASE_REPO" "$PR_NUMBER"
 
-# Same per-PR colour the daemon-level lines above use (pr_prefix's palette,
-# keyed identically off "repo#pr"), reused for the lens/editor activity labels
-# below so a PR's colour is consistent across both logging subsystems. Only
-# the escape bytes travel through --label; stream_format.py stays colour-blind
-# (it just wraps whatever string it's given in brackets), so _log_color_enabled
-# stays single-sourced here.
-PR_COLOR_START="$(_sgr "${_LOG_PR_PALETTE[$(pr_color_index "${BASE_REPO}#${PR_NUMBER}")]}")"
-PR_COLOR_RESET="$(_sgr 0)"
-
 # Set after derive_pr_metadata; leave blank so a log_failure before it still has
 # the placeholder field populated.
 HEAD_OID=""
@@ -411,7 +402,7 @@ resolution() {
         cd "$SCRATCH"
         inner_rc=0
         run_agent read-only "$fix_check_timeout" "$judge_prompt" "$judge_raw" \
-          "${PR_COLOR_START}pr${PR_NUMBER}:judge-fix${PR_COLOR_RESET}" review-agent-fix-check ||
+          judge-fix review-agent-fix-check ||
           inner_rc=$?
         release_claude_slot "$slot"
         exit "$inner_rc"
@@ -544,11 +535,11 @@ if [[ $DRY_RUN -eq 0 ]] &&
   exit 0
 fi
 
-SCRATCH="$(mktemp -d -t pr-review-agent.XXXXXX)"
+SCRATCH="$(make_temp_dir pr-review-agent)"
 if [[ $KEEP_SCRATCH -eq 1 ]]; then
-  log_info "scratch (will be preserved): $SCRATCH"
+  log_info "per-PR clone (kept): $SCRATCH"
 else
-  log_info "scratch: $SCRATCH"
+  log_info "per-PR clone: $SCRATCH"
 fi
 
 # Bound the https clone/fetch so a stalled connection aborts cleanly instead of
@@ -870,7 +861,7 @@ log_info "effort: ${REVIEW_EFFORT}"
 # things this block used to give per role: its own timeout (REVIEW_AGENT_TIMEOUT
 # now bounds the whole orchestrator; the CLI has no per-subagent cap), its own
 # .cost sidecar (stream-json exposes only the session aggregate), and its own
-# labeled activity stream (one label covers the stage).
+# phase in the activity lines (one phase covers the stage).
 #
 # Each role writes its own fenced payload to its named scratch file, so
 # merge_findings.py keeps reading N raw files exactly as under the process
@@ -888,6 +879,8 @@ role_count="${#LENS_LABELS[@]}"
 
 ORCH_RAW="$SCRATCH/.pr-review-orchestrator.txt"
 orch_rc=0
+roles_list="$(printf '%s, ' "${LENS_LABELS[@]}")"
+log_step "review: running roles ${roles_list%, }"
 if [[ "$REVIEW_HARNESS" == codex ]]; then
   orch_stage="review roles"
   # Codex's subagents are disabled, because a spawned session would hold no
@@ -902,11 +895,9 @@ if [[ "$REVIEW_HARNESS" == codex ]]; then
     role_prompt="$SCRATCH/.pr-review-role-prompt-$role_label.txt"
     print_role_task "$role_label" codex "$NUMBERED_BASENAME" "$INTENT_BASENAME" \
       "$(basename "${LENS_RAW_FILES[$role_i]}")" >"$role_prompt"
-    role_args+=("$role_label" "${PR_COLOR_START}pr${PR_NUMBER}:${role_label}${PR_COLOR_RESET}"
-      "$role_prompt" "${LENS_RAW_FILES[$role_i]}" "review-agent-$role_label")
+    role_args+=("$role_label" "$role_prompt" "${LENS_RAW_FILES[$role_i]}" "review-agent-$role_label")
     role_i=$((role_i + 1))
   done
-  log_step "running review roles (${LENS_LABELS[*]}) via codex exec"
   (
     cd "$SCRATCH" || exit 1
     run_role_agents "$REVIEW_AGENT_TIMEOUT" "${role_args[@]}"
@@ -931,10 +922,9 @@ else
     printf 'Wait for every role to complete. A role that errors or writes nothing is tolerated: never retry it, never write its file yourself, and let its siblings finish. When all roles are done, reply with one line per role: <label>: ok or failed.\n'
   } >"$ORCH_PROMPT"
 
-  log_step "running review orchestrator (${LENS_LABELS[*]}) via claude -p"
   (
     # One slot per hidden role session; released together after the stage.
-    slots="$(acquire_claude_slots "$role_count" "review orchestrator")"
+    slots="$(acquire_claude_slots "$role_count" review)"
     # Explicit exit: the `( ... ) || orch_rc=$?` wrapper suppresses errexit inside
     # this subshell, so an unguarded failed cd would run claude in the daemon's
     # own repo and the roles would write payloads there.
@@ -949,7 +939,7 @@ else
     # run_agent hands to orchestrate, and the prompt file above is the
     # orchestrator's whole instruction.
     run_agent orchestrate "$REVIEW_AGENT_TIMEOUT" "$ORCH_PROMPT" "$ORCH_RAW" \
-      "${PR_COLOR_START}pr${PR_NUMBER}:review${PR_COLOR_RESET}" ||
+      review ||
       rc=$?
     release_claude_slots "$slots"
     exit "$rc"
@@ -991,7 +981,7 @@ CONFIDENCE_THRESHOLD="$(resolve_tunable CONFIDENCE_THRESHOLD "$SCRIPT_DIR/../.en
 MAX_FINDINGS="$(resolve_tunable MAX_FINDINGS "$SCRIPT_DIR/../.env")"
 [[ -n "$MAX_FINDINGS" ]] && export MAX_FINDINGS
 
-log_step "merging lens payloads"
+log_step "merging role findings"
 # --no-style: the voice gate moved behind the editor (ADR 0016). This union
 # only schema-validates each lens's draft, dedupes, and shapes the result to
 # hand to the editor; the final gate runs in apply_edits.py, on what is posted.
@@ -1033,7 +1023,7 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
   AUTHOR_INDEXED_BASENAME=".pr-review-author-indexed.json"
   AUTHOR_INDEXED_FILE="$SCRATCH/$AUTHOR_INDEXED_BASENAME"
   python3 "$SCRIPT_DIR/index_findings.py" <"$AUTHOR_FILE" >"$AUTHOR_INDEXED_FILE"
-  log_step "running editor agent via ${REVIEW_HARNESS}"
+  log_step "editor: running"
   # Same unbounded `claude -p` shape and backstop as the review agent, raised
   # to 600s for the same dogfood-observed reason. Not backgrounded (nothing to
   # fan out to; it's the one call after the lenses), but still draws from the
@@ -1067,7 +1057,7 @@ if [[ "${SKIP_EDITOR:-0}" -ne 1 && "$(jq '.comments | length' "$AUTHOR_FILE")" -
       fi
     } >"$editor_prompt"
     run_agent read-only "$EDITOR_AGENT_TIMEOUT" "$editor_prompt" "$EDIT_RAW_FILE" \
-      "${PR_COLOR_START}pr${PR_NUMBER}:editor${PR_COLOR_RESET}" review-agent-editor ||
+      editor review-agent-editor ||
       rc=$?
     release_claude_slot "$slot"
     exit "$rc"
@@ -1138,7 +1128,7 @@ if [[ "$new_findings_total" -gt 0 && $DRY_RUN -eq 1 ]]; then
   # the preserved scratch for the eval harness to read (contract defined at
   # emit_dryrun_contract in lib.sh). Cost is covered separately by
   # log_total_review_cost below. Safe on stdout: the daemon never runs dry-run.
-  log_info "dry-run: ${new_findings_total} finding(s), posting nothing (scratch preserved)"
+  log_info "dry-run: ${new_findings_total} finding(s), posting nothing (per-PR clone kept)"
   emit_dryrun_contract "$new_findings_total"
 elif [[ "$new_findings_total" -gt 0 ]]; then
   post_args=(
@@ -1184,7 +1174,7 @@ elif [[ $DRY_RUN -eq 1 ]]; then
   # Zero findings under dry-run is a real result the harness must record (a recall
   # miss, not a failure), so it reports the same contract with a zero count. The
   # payload still exists (summary plus an empty comments array).
-  log_info "dry-run: no findings at $HEAD_OID, posting nothing (scratch preserved)"
+  log_info "dry-run: no findings at $HEAD_OID, posting nothing (per-PR clone kept)"
   emit_dryrun_contract 0
 else
   log_info "no new findings at $HEAD_OID; skipping review object (ADR 0020)"

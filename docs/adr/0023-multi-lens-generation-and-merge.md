@@ -1,7 +1,7 @@
 # ADR 0023: Multi-lens generation and merge
 
 Date: 2026-07-03
-Status: Accepted. The lens-set decisions are superseded by [ADR 0038](./0038-review-roles-from-contamination-isolation.md), whose two fixed roles replace the lens taxonomy; the merge/dedup/gate pipeline this ADR built is unchanged and remains authoritative.
+Status: Accepted. The lens-set decisions are superseded by [ADR 0038](./0038-review-roles-from-contamination-isolation.md), whose two fixed roles replace the lens taxonomy; the merge/dedup/gate pipeline this ADR built is unchanged and remains authoritative. Amended 2026-11-13: `stream_format.py`'s `--label` is replaced by `--prefix`, which `run_agent` (`daemon/lib.sh`) fills with the PR's `repo#pr` prefix and the call's phase, so Decisions 11 and 13 below describe code that no longer exists.
 
 ## Context
 
@@ -50,11 +50,15 @@ The following three decisions came from dogfooding this design against a real mu
 
 11. **`stream_format.py`'s `--label` now carries PR identity, not just lens identity** (`pr186:correctness`, not `correctness`). With lenses parallel within a PR (Decision 2) *and* multiple PRs running concurrently (`MAX_PARALLEL` > 1), a lens-only label is ambiguous: `[correctness]` could be PR 185's or PR 186's. `daemon/review-pr.sh` composes the label as `pr${PR_NUMBER}:${lens_label}` (and `pr${PR_NUMBER}:editor` for the editor call) before passing it through.
 
+    *Amended 2026-11-13:* the label is gone. Each call site passes `run_agent` a phase (`review`, `editor`, `judge-fix`, `reply`, or, under Codex, the role name), and `log_agent_prefix` (`daemon/lib.sh`) builds each line's start from the same `repo#pr` prefix the pipeline lines carry plus that phase, which `stream_format.py` and `codex_exec.py` take as `--prefix`.
+
 A second dogfood round (same workload, after Decisions 9-11 landed) surfaced three more operator-facing gaps, all fixed without a design change:
 
 12. **`claude`'s own stderr goes to a per-call sidecar file, not the primary log.** Every `claude -p ... | stream_format.py` pipe only ever piped stdout; claude's stderr (chiefly its non-interactive workspace-trust notice, since a fresh scratch clone is never pre-trusted and non-interactive mode has no bypass for that) flowed straight through, unlabeled and outside stream_format.py's formatting, flooding the log once per lens per PR per tick. All four call sites (lenses, editor, judge-fix, reply agent) now redirect `2>"$raw_file.stderr"`: nothing is silently lost, but the primary log stays legible. The underlying permission-ignore gap this notice describes is unresolved (a real fix needs a fixed, reused pool of scratch dirs manually trusted once each); only the log noise is addressed here.
 
 13. **`stream_format.py`'s labels are now coloured per-PR**, reusing `daemon/lib.sh`'s existing `_LOG_PR_PALETTE`/`pr_color_index`/`_sgr` (the same mechanism `pr_prefix` already used for the daemon's own `repo#pr` step lines) rather than inventing a second palette. `stream_format.py` itself stays colour-blind: `review-pr.sh`/`reply-pr.sh` compute `PR_COLOR_START`/`PR_COLOR_RESET` once per PR (hashing the same `"repo#pr"` key `log_set_pr_context` uses) and wrap the label text before passing it through `--label`, so `_log_color_enabled`'s TTY/`NO_COLOR`/`PR_LOG_COLOR` logic stays single-sourced in bash. A PR's colour is now identical whether the line came from the daemon's own step messages or from inside a `claude -p` call.
+
+    *Amended 2026-11-13:* `PR_COLOR_START`/`PR_COLOR_RESET` are gone. `log_agent_prefix` takes the colour from `pr_prefix`, the same call that colours the pipeline lines' `repo#pr`, so the formatters stay colour-blind and the colour logic stays single-sourced in bash.
 
 14. **Each review logs a total cost, not just one line per lens.** `total_cost_usd` from each call's terminal `result` event was only ever visible in that call's own one-line summary; seeing what a review cost meant hand-summing the log by eye. `stream_format.py` gained `--cost-out PATH`, writing the cost there on a real result event only (omitted on a timeout, matching `--raw-out`'s own empty-on-timeout contract). `review-pr.sh` sums every `*.cost` sidecar in the scratch dir with `find` (not a bare glob: every raw file, hence every `.cost` sidecar, is a dotfile, which `*` silently excludes without `dotglob`) and logs `total review cost: $X.XXX` once the review is done.
 

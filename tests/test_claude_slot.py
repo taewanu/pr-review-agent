@@ -166,14 +166,14 @@ def test_no_label_emits_no_log_line(tmp_path: Path):
     assert result == (str(_slot_file(tmp_path, 1)), 0)
 
 
-def test_label_logs_the_claimed_slot_and_pool_size(tmp_path: Path):
+def test_label_logs_the_claim_and_pool_size(tmp_path: Path):
     # Dogfood follow-up: lens completion times varied 35-519s with no way to
     # tell whether a slow one was genuine complexity or slot contention. This
-    # is the split: which slot, and how long the wait was.
+    # is the split: the claim against the pool, and how long the wait was.
     result = _acquire_with_label(tmp_path, "perf lens", pool_size=3)
     assert result.returncode == 0
     assert result.stdout.strip() == str(_slot_file(tmp_path, 1))
-    assert "perf lens: acquired slot 1/3" in result.stderr
+    assert "perf lens: acquired 1 of 3 slots" in result.stderr
 
 
 def test_label_omits_wait_suffix_on_immediate_acquire(tmp_path: Path):
@@ -210,7 +210,7 @@ def test_label_omits_wait_suffix_when_the_clock_ticks_over_mid_acquire(tmp_path:
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
-    assert "acquired slot 1/3" in result.stderr
+    assert "acquired 1 of 3 slots" in result.stderr
     assert "waited" not in result.stderr, result.stderr
 
 
@@ -229,7 +229,7 @@ def test_label_reports_wait_time_when_it_actually_waited(tmp_path: Path):
     result = _acquire_with_label(tmp_path, "tests lens", pool_size=1, poll=0.5, timeout=10)
     t.join()
     assert result.returncode == 0
-    assert "tests lens: acquired slot 1/1 (waited" in result.stderr
+    assert "tests lens: acquired 1 of 1 slots (waited" in result.stderr
 
 
 def test_pool_never_exceeds_its_size_under_real_concurrency(tmp_path: Path):

@@ -1052,6 +1052,26 @@ def test_codex_flag_form_writes_the_effort_explicitly_even_at_the_default(base):
     assert "Improve the model for everyone" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("cli", "model", "closing"),
+    [
+        ("claude", "claude-example-model", r"done · \d+s"),
+        ("codex", "example-first", r"done · \d+s · 2 tokens"),
+    ],
+)
+def test_test_call_closes_with_one_line_on_stderr_and_names_no_unknown_cost(
+    base, cli, model, closing
+):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_CATALOG=_catalog(base))
+    result = _run(base, ["--harness", cli, "--model", model], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[:2] == [f"REVIEW_HARNESS={cli}", f"REVIEW_MODEL={model}"]
+    agent_lines = [line for line in result.stderr.splitlines() if "test call" in line]
+    assert len(agent_lines) == 1, result.stderr
+    assert re.fullmatch(rf"\[pr-review-agent\] test call  {closing}", agent_lines[0])
+
+
 def test_codex_flag_form_refuses_a_default_effort_the_model_does_not_list(base):
     dotenv = _dotenv(base)
     catalog = {

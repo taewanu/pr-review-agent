@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -182,7 +183,7 @@ def _run_agent(
     clone.mkdir(exist_ok=True)
     (clone / "prompt.txt").write_text(PROMPT)
     raw = clone / ".pr-review-raw.txt"
-    args = [str(clone), mode, str(timeout_secs), "prompt.txt", str(raw), "pr1:label"]
+    args = [str(clone), mode, str(timeout_secs), "prompt.txt", str(raw), "phase"]
     if agent:
         args.append(agent)
     script = _RUN if clear else _RUN_IN_CLONE
@@ -351,8 +352,59 @@ def test_final_message_lands_in_raw_out_with_a_token_sidecar_and_no_cost(base):
     assert Path(f"{raw}.tokens").read_text() == "107"
     # Codex reports no cost, and a fabricated $0 would read as a free review.
     assert not Path(f"{raw}.cost").exists()
-    assert "[pr1:label] → cat in.txt" in result.stderr
-    assert f"[pr1:label] {RESULT}" in result.stderr
+    lines = result.stderr.splitlines()
+    assert "[pr-review-agent] phase      → Shell cat in.txt" in lines
+    assert f"[pr-review-agent] phase      {RESULT}" in lines
+
+
+def test_a_call_closes_with_one_line_naming_its_tokens_and_no_cost(base):
+    result, _ = _run_agent(base)
+    assert result.returncode == 0, result.stderr
+    closing = [line for line in result.stderr.splitlines() if "done ·" in line]
+    assert len(closing) == 1, result.stderr
+    assert re.fullmatch(r"\[pr-review-agent\] phase      done · \d+s · 107 tokens", closing[0])
+
+
+def test_a_failed_turn_prints_no_closing_line(base):
+    result, _ = _run_agent(base, env={"FAKE_CODEX_FAIL_ON": "", "FAKE_CODEX_RC": "1"})
+    assert result.returncode == 1
+    assert "done ·" not in result.stderr
+
+
+def test_paths_under_the_clone_print_relative_to_it(base):
+    clone = (base / "clone").resolve()
+    events = base / "events.ndjson"
+    events.write_text(
+        "\n".join(
+            json.dumps({"type": "item.completed", "item": item})
+            for item in (
+                {"type": "command_execution", "command": f"sed -n 1,9p {clone}/src/a.py"},
+                {"type": "agent_message", "text": f"Read {clone}/src/a.py\nno finding"},
+            )
+        )
+        + "\n"
+    )
+    clone.mkdir()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(DAEMON / "codex_exec.py"),
+            "format",
+            "--events",
+            str(events),
+            "--while-pid",
+            str(2**22 + 1),
+            "--prefix",
+            "",
+            "--tokens-out",
+            str(base / "t"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=clone,
+        check=True,
+    )
+    assert result.stderr == "→ Shell sed -n 1,9p src/a.py\nRead src/a.py · no finding\n"
 
 
 def test_error_exit_surfaces_with_empty_output(base):
@@ -550,7 +602,6 @@ def _write_roles(clone: Path, roles: tuple[str, ...]) -> list[str]:
         (clone / f"{role}-prompt.txt").write_text(f"{role} task\n")
         args += [
             role,
-            f"pr1:{role}",
             f"{role}-prompt.txt",
             str(clone / f".pr-review-raw-{role}.txt"),
             f"review-agent-{role}",
@@ -586,6 +637,18 @@ def test_role_fan_out_gives_each_role_its_own_raw_file_and_tolerates_a_failed_ro
     assert systems == {role: _body(f"review-agent-{role}").strip() for role in ("code", "intent")}
     # Every slot is back in the pool once the fan-out returns.
     assert not list((base / "state").glob("claude-slot-*.lock"))
+
+
+def test_interleaved_role_lines_name_their_role_and_align(base):
+    clone = base / "clone"
+    clone.mkdir()
+    args = _write_roles(clone, ("code", "intent"))
+    script = f"log_set_pr_context example 7; PR_LOG_COLOR=never; {_FAN_OUT}"
+    result = _bash(base, script, [str(clone), "30", *args])
+    assert result.returncode == 0, result.stderr
+    activity = [line for line in result.stderr.splitlines() if "→ Shell" in line]
+    assert {line.split()[1] for line in activity} == {"code", "intent"}
+    assert len({line.index("→") for line in activity}) == 1, activity
 
 
 def test_a_role_past_the_cap_is_named_and_surfaces_as_a_timeout(base):

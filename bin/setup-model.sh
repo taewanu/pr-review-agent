@@ -239,8 +239,8 @@ check_codex_login() {
 
 # The test call runs in a directory made as the daemon makes each per-PR clone.
 make_work_dirs() {
-  WORK="$(mktemp -d -t pr-review-setup.XXXXXX)"
-  OUT="$(mktemp -d -t pr-review-setup-out.XXXXXX)"
+  WORK="$(make_temp_dir pr-review-setup)"
+  OUT="$(make_temp_dir pr-review-setup-out)"
 }
 
 check_temp_root() {
@@ -323,7 +323,7 @@ run_test_call() {
   # The agent runs in an empty directory, so the call carries no code.
   printf 'Reply with OK\n' >"$OUT/prompt.txt"
   local rc=0
-  (cd "$WORK" && run_agent read-only 120 "$OUT/prompt.txt" "$OUT/raw.txt" setup) || rc=$?
+  (cd "$WORK" && run_agent read-only 120 "$OUT/prompt.txt" "$OUT/raw.txt" "test call") || rc=$?
   if ((rc != 0)) || [[ ! -s "$OUT/raw.txt" ]]; then
     log_err "${model} did not answer on ${cli} and nothing was written; run bash bin/setup-model.sh --check, and confirm the model name with --list-models"
     if [[ -s "$OUT/raw.txt.stderr" ]]; then

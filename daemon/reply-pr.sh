@@ -89,11 +89,6 @@ PR_NUMBER="${BASH_REMATCH[3]}"
 # the interleaved review-path lines of other PRs in the same cycle.
 log_set_pr_context "$REPO" "$PR_NUMBER"
 
-# Same per-PR colour as review-pr.sh's (identical "repo#pr" hash key), so a
-# PR's colour matches across both scripts if they ever run concurrently.
-PR_COLOR_START="$(_sgr "${_LOG_PR_PALETTE[$(pr_color_index "${REPO}#${PR_NUMBER}")]}")"
-PR_COLOR_RESET="$(_sgr 0)"
-
 # Reply-scoped per-PR lock (#198), same double-post rationale as the review
 # path's #67 lock: a manual run overlapping a daemon tick would both list this
 # PR's comments before either's ack posts, and both dispatch the same thread.
@@ -220,7 +215,7 @@ if [[ "$(jq 'length' <<<"$THREADS_JSON")" -eq 0 ]]; then
   exit 0
 fi
 
-SCRATCH="$(mktemp -d -t pr-review-reply.XXXXXX)"
+SCRATCH="$(make_temp_dir pr-review-reply)"
 POST_ERR=""
 cleanup() {
   release_pr_lock "${REPLY_LOCK_FILE:-}"
@@ -233,7 +228,7 @@ cleanup() {
 }
 trap cleanup EXIT
 if [[ $KEEP_SCRATCH -eq 1 ]]; then
-  log_info "scratch (will be preserved): $SCRATCH"
+  log_info "per-PR clone (kept): $SCRATCH"
 fi
 
 # Bound the https clone/fetch so a stalled connection aborts cleanly instead of
@@ -257,7 +252,7 @@ RAW_FILE="$SCRATCH/.pr-review-reply-raw.txt"
 
 printf '%s\n' "$THREADS_JSON" >"$THREADS_FILE"
 
-log_step "running reply agent via ${REVIEW_HARNESS}"
+log_step "reply: running"
 # Wall-clock backstop (#76). #51 removed the cause of the 745s reply-runtime
 # spike, but only as a prompt instruction; this enforces a ceiling no matter how
 # the agent behaves. Sized above the observed legitimate ceiling (review runs
@@ -290,7 +285,7 @@ reply_rc=0
     printf 'The unaddressed reply threads are at: %s\n' "$THREADS_BASENAME"
   } >"$reply_prompt"
   run_agent read-only "$REPLY_AGENT_TIMEOUT" "$reply_prompt" "$RAW_FILE" \
-    "${PR_COLOR_START}pr${PR_NUMBER}:reply${PR_COLOR_RESET}" review-agent-reply ||
+    reply review-agent-reply ||
     rc=$?
   release_claude_slot "$slot"
   exit "$rc"

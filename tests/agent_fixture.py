@@ -86,7 +86,7 @@ def run_agent(
     raw = clone / ".pr-review-raw.txt"
     log = tmp_path / "claude-call.json"
 
-    args = [mode, str(timeout_secs), str(prompt), str(raw), "pr1:label"]
+    args = [mode, str(timeout_secs), str(prompt), str(raw), "phase"]
     if agent:
         args.append(agent)
     # The daemon's own flags: pipefail is what carries claude's status through
@@ -163,10 +163,10 @@ def run_agent_calls(script: Path) -> list[list[str]]:
 @dataclass
 class CallSite:
     mode: str
-    label: str
+    phase: str
     agent: str | None
 
 
 def call_site(words: list[str]) -> CallSite:
-    """Read a run_agent call positionally: mode, timeout, prompt, raw, label, [agent name]."""
-    return CallSite(mode=words[1], label=words[5], agent=words[6] if len(words) == 7 else None)
+    """Read a run_agent call positionally: mode, timeout, prompt, raw, phase, [agent name]."""
+    return CallSite(mode=words[1], phase=words[5], agent=words[6] if len(words) == 7 else None)
