@@ -54,7 +54,7 @@ A finding from the `intent` role on this repository's PR #310. The description's
    GITHUB_APP_ID=<your-app-id>
    ```
 
-4. **Start the daemon.** Then open a non-draft pull request on a watched repository.
+4. **Start the daemon.** Then open a non-draft pull request on a watched repository. The first start asks whether to choose the agent CLI and model ([details](docs/running.md#choosing-the-agent-cli-and-model)); answering `n` keeps Claude Code and its default model.
 
    ```bash
    source .venv/bin/activate
@@ -96,7 +96,7 @@ Use "Report a vulnerability" on this repository's Security tab, not a public iss
 
 - [GitHub App](docs/github-app.md): registration and permissions.
 - [Configuration](docs/configuration.md): settings and defaults.
-- [Running](docs/running.md): requirements, the `review` check, replies, background mode, one-shot commands, forking.
+- [Running](docs/running.md): requirements, the agent CLI and model, the `review` check, replies, background mode, one-shot commands, forking.
 - [Troubleshooting](docs/troubleshooting.md): errors and fixes.
 - [ADRs](docs/adr/): design decisions.
 

@@ -344,7 +344,10 @@ def test_claude_run_writes_the_three_keys_and_prints_nothing_else_from_dotenv(ba
     assert SECRET not in result.stdout + result.stderr
     assert "claude.ai/settings/data-privacy-controls" in result.stderr
     assert "An alias or a full name." in result.stderr
-    assert "next cycle without a restart" in result.stdout
+    assert "next cycle without a restart" in result.stderr
+    assert result.stdout == (
+        "REVIEW_HARNESS=claude\nREVIEW_MODEL=claude-example-model\nREVIEW_EFFORT=medium\n"
+    )
 
 
 def test_claude_short_name_is_accepted_with_a_note_that_it_may_be_an_alias(base):
@@ -415,10 +418,10 @@ def test_shell_environment_override_is_named_after_writing(base):
     result = _wizard(base, ["claude", "claude-example-model", "medium", "y"], dotenv, env)
     assert result.returncode == 0, result.stderr
     assert "REVIEW_EFFORT is also set in your shell environment, which overrides .env." in (
-        result.stdout
+        result.stderr
     )
-    assert "REVIEW_MODEL is also set" not in result.stdout
-    assert "REVIEW_HARNESS is also set" not in result.stdout
+    assert "REVIEW_MODEL is also set" not in result.stderr
+    assert "REVIEW_HARNESS is also set" not in result.stderr
 
 
 def test_wizard_on_a_silent_terminal_stops_at_the_timeout_and_writes_nothing(base):
@@ -738,3 +741,354 @@ def test_warn_env_drift_does_not_flag_the_empty_template_keys(tmp_path):
     result = _lib(f'warn_env_drift "{dotenv}" "{TEMPLATE}"', env)
     assert result.returncode == 0
     assert result.stderr == ""
+
+
+# The flag form
+
+
+def _run(
+    base: Path, args: list[str], dotenv: Path, env: dict | None = None, stdin: str = ""
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", str(SETUP), *args, str(dotenv)],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=env or _env(base),
+        timeout=60,
+    )
+
+
+def _calls(calls: Path) -> list[str]:
+    return calls.read_text().splitlines() if calls.exists() else []
+
+
+def _model_calls(calls: Path) -> list[str]:
+    return [c for c in _calls(calls) if c.startswith(("claude -p", "codex exec"))]
+
+
+def test_flag_form_ignores_answers_waiting_on_a_pipe(base):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_CATALOG=_catalog(base))
+    result = _run(
+        base,
+        ["--harness", "claude", "--model", "claude-example-model", "--effort", "low"],
+        dotenv,
+        env,
+        stdin="codex\nexample-first\nhigh\nn\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "REVIEW_HARNESS=claude\nREVIEW_MODEL=claude-example-model\nREVIEW_EFFORT=low\n"
+    )
+    assert _resolve("REVIEW_HARNESS", dotenv) == "claude"
+    assert _resolve("REVIEW_EFFORT", dotenv) == "low"
+
+
+def test_flag_form_on_a_silent_terminal_finishes_without_waiting(base):
+    dotenv = _dotenv(base)
+    env = _env(base, PR_REVIEW_ANSWER_TIMEOUT_SECONDS="60")
+    started = time.monotonic()
+    result = _on_terminal(
+        ["bash", str(SETUP), "--harness", "claude", "--no-test-call", str(dotenv)], env
+    )
+    assert time.monotonic() - started < 15
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "REVIEW_HARNESS=claude\nREVIEW_MODEL=\nREVIEW_EFFORT=\n"
+
+
+@pytest.mark.parametrize("current", ["codex", ""], ids=["set to codex", "unset"])
+def test_flag_form_without_harness_keeps_the_resolved_harness(base, current):
+    dotenv = base / ".env"
+    dotenv.write_text(f"REVIEW_HARNESS={current}\n")
+    result = _run(base, ["--model", "example-typed", "--no-test-call"], dotenv)
+    assert result.returncode == 0, result.stderr
+    assert _resolve("REVIEW_HARNESS", dotenv) == (current or "claude")
+
+
+def test_claude_flag_form_without_model_or_effort_writes_empty_keys_that_resolve_to_defaults(
+    base,
+):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CALLS=str(calls))
+    default_model = _lib("resolve_review_model /dev/null", env).stdout
+    default_effort = _lib("resolve_review_effort /dev/null", env).stdout
+    result = _run(base, ["--harness", "claude"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "REVIEW_HARNESS=claude\nREVIEW_MODEL=\nREVIEW_EFFORT=\n"
+    assert "claude.ai/settings/data-privacy-controls" in result.stderr
+    assert _lib(f'resolve_review_model "{dotenv}"', env).stdout == default_model
+    assert _lib(f'resolve_review_effort "{dotenv}"', env).stdout == default_effort
+    test_call = _model_calls(calls)
+    assert len(test_call) == 1
+    assert f"--model {default_model} --effort {default_effort}" in test_call[0]
+
+
+def test_codex_flag_form_writes_the_effort_explicitly_even_at_the_default(base):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_CATALOG=_catalog(base))
+    result = _run(base, ["--harness", "codex", "--model", "example-first"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\nREVIEW_EFFORT=high\n"
+    assert "Improve the model for everyone" in result.stderr
+
+
+def test_codex_flag_form_without_model_is_a_usage_error_before_any_cli_call(base):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    result = _run(base, ["--harness", "codex"], dotenv, _env(base, FAKE_CALLS=str(calls)))
+    assert result.returncode == 2
+    assert "--model is required with codex" in result.stderr
+    assert result.stdout == ""
+    assert _calls(calls) == []
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_codex_flag_form_refuses_an_effort_the_model_does_not_list_and_names_those_it_does(base):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CATALOG=_catalog(base), FAKE_CALLS=str(calls))
+    result = _run(
+        base, ["--harness", "codex", "--model", "example-first", "--effort", "low"], dotenv, env
+    )
+    assert result.returncode == 1
+    assert "example-first on codex takes effort medium, high, not low" in result.stderr
+    assert result.stdout == ""
+    assert _model_calls(calls) == []
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_flag_form_with_no_test_call_writes_and_says_not_verified(base):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CALLS=str(calls), FAKE_AGENT_FAIL="1")
+    args = ["--harness", "claude", "--model", "claude-example-model", "--no-test-call"]
+    result = _run(base, args, dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert "claude-example-model on claude is not verified" in result.stderr
+    assert _model_calls(calls) == []
+    assert _resolve("REVIEW_MODEL", dotenv) == "claude-example-model"
+
+
+def test_flag_form_failed_test_call_writes_nothing_and_prints_nothing_on_stdout(base):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_AGENT_FAIL="1")
+    result = _run(base, ["--harness", "claude", "--model", "claude-example-model"], dotenv, env)
+    assert result.returncode == 1
+    assert "claude-example-model did not answer on claude" in result.stderr
+    assert result.stdout == ""
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+BAD_VALUES = {
+    "model with a space": ["--harness", "claude", "--model", "has space"],
+    "unknown effort": ["--harness", "claude", "--effort", "beyond-max"],
+    "unknown harness": ["--harness", "other", "--model", "example-typed"],
+    "claude model on codex": ["--harness", "codex", "--model", "claude-example"],
+}
+
+
+@pytest.mark.parametrize("case", BAD_VALUES)
+def test_flag_form_refuses_a_bad_value_before_any_cli_call(base, case):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    result = _run(base, BAD_VALUES[case], dotenv, _env(base, FAKE_CALLS=str(calls)))
+    assert result.returncode == 1
+    assert "ERROR" in result.stderr
+    assert result.stdout == ""
+    assert _calls(calls) == []
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+@pytest.mark.parametrize("case", CHECKS)
+def test_flag_form_stops_at_the_same_failed_check_as_the_wizard(base, case):
+    cli, make_env, message = CHECKS[case]
+    dotenv = _dotenv(base)
+    args = ["--harness", cli, "--model", "example-model", "--no-test-call"]
+    result = _run(base, args, dotenv, make_env(base))
+    assert result.returncode == 1
+    assert message in result.stderr
+    assert result.stdout == ""
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+# --check
+
+
+def _check(
+    base: Path, body: str, env: dict, *extra: str
+) -> tuple[subprocess.CompletedProcess, Path]:
+    dotenv = base / ".env"
+    dotenv.write_text(body)
+    return _run(base, ["--check", *extra], dotenv, env), dotenv
+
+
+def _temp_root_under_tmp(base: Path) -> None:
+    # macOS mktemp -t ignores TMPDIR, so the temp root is moved under /tmp directly.
+    real_mktemp = shutil.which("mktemp")
+    assert real_mktemp
+    fake_mktemp = base / "fakebin" / "mktemp"
+    fake_mktemp.write_text(f'#!/bin/sh\nexec "{real_mktemp}" -d /tmp/pr-review-test.XXXXXX\n')
+    fake_mktemp.chmod(0o755)
+
+
+PASSING_CHECKS = {
+    "claude": (
+        "REVIEW_HARNESS=claude\nREVIEW_MODEL=claude-example-model\nREVIEW_EFFORT=low\n",
+        [
+            "harness: claude",
+            "model: claude-example-model",
+            "effort: low",
+            "claude on PATH: ok",
+            "claude version: ok",
+            "claude logged in: ok",
+        ],
+    ),
+    "codex": (
+        "REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\nREVIEW_EFFORT=high\n",
+        [
+            "harness: codex",
+            "model: example-first",
+            "effort: high",
+            "codex on PATH: ok",
+            "codex is the real binary: ok",
+            "codex logged in: ok",
+            "model set for codex: ok",
+            "per-PR clones outside the system temp directories: ok",
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", PASSING_CHECKS)
+def test_check_passing_reports_each_check_and_makes_no_model_call(base, case):
+    body, lines = PASSING_CHECKS[case]
+    calls = base / "calls.log"
+    result, dotenv = _check(base, body, _env(base, FAKE_CALLS=str(calls)))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == lines
+    assert _model_calls(calls) == []
+    assert dotenv.read_text() == body
+
+
+CHECK_FAILURES = {
+    "claude off PATH": (
+        "REVIEW_HARNESS=claude\n",
+        lambda b: _env(b, fakes=("codex",)),
+        "claude on PATH: failed",
+    ),
+    "claude logged out": (
+        "REVIEW_HARNESS=claude\n",
+        lambda b: _env(b, FAKE_LOGGED_IN="0"),
+        "claude logged in: failed",
+    ),
+    "codex with no model": (
+        "REVIEW_HARNESS=codex\nREVIEW_MODEL=\n",
+        _env,
+        "model set for codex: failed",
+    ),
+    "codex with a claude model": (
+        "REVIEW_HARNESS=codex\nREVIEW_MODEL=claude-example\n",
+        _env,
+        "model set for codex: failed",
+    ),
+    "codex temp root refused": (
+        "REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\n",
+        _env,
+        "per-PR clones outside the system temp directories: failed",
+    ),
+    "harness unknown": ("REVIEW_HARNESS=other\n", _env, "harness is claude or codex: failed"),
+}
+
+
+@pytest.mark.parametrize("case", CHECK_FAILURES)
+def test_check_with_one_failure_names_it_exits_non_zero_and_writes_nothing(base, case):
+    body, make_env, line = CHECK_FAILURES[case]
+    env = make_env(base)
+    if case == "codex temp root refused":
+        _temp_root_under_tmp(base)
+    result, dotenv = _check(base, body, env)
+    assert result.returncode == 1
+    assert [ln for ln in result.stdout.splitlines() if ln.endswith(": failed")] == [line]
+    assert "ERROR" in result.stderr
+    assert dotenv.read_text() == body
+
+
+def test_check_with_test_call_makes_exactly_one_model_call(base):
+    calls = base / "calls.log"
+    env = _env(base, FAKE_CALLS=str(calls))
+    result, _ = _check(base, "REVIEW_HARNESS=claude\n", env, "--test-call")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-1] == "test call: ok"
+    assert len(_model_calls(calls)) == 1
+
+
+# --list-models
+
+
+def test_list_models_prints_codex_models_in_menu_order_with_their_usable_levels(base):
+    dotenv = _dotenv(base)
+    env = _env(base, FAKE_CATALOG=_catalog(base))
+    result = _run(base, ["--list-models", "--harness", "codex"], dotenv, env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "example-first\tmedium,high\nexample-second\tlow,high\n"
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_list_models_reads_the_harness_from_the_env_file(base):
+    dotenv = base / ".env"
+    dotenv.write_text("REVIEW_HARNESS=codex\n")
+    result = _run(base, ["--list-models"], dotenv, _env(base, FAKE_CATALOG=_catalog(base)))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("example-first\t")
+
+
+def test_list_models_with_a_failing_catalog_command_exits_non_zero_with_a_plain_message(base):
+    result = _run(base, ["--list-models", "--harness", "codex"], _dotenv(base))
+    assert result.returncode == 1
+    assert "codex debug models failed" in result.stderr
+    assert result.stdout == ""
+
+
+def test_list_models_on_claude_prints_the_daemon_default_and_says_there_is_no_list(base):
+    env = _env(base)
+    result = _run(base, ["--list-models", "--harness", "claude"], _dotenv(base), env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _lib("resolve_review_model /dev/null", env).stdout + "\n"
+    assert "Claude Code has no command that lists models" in result.stderr
+    assert "any model name or alias" in result.stderr
+
+
+# Usage
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--unknown"],
+        ["--check", "--model", "example-model"],
+        ["--check", "--harness", "claude"],
+        ["--check", "--list-models"],
+        ["--list-models", "--effort", "high"],
+        ["--test-call"],
+        ["--model", ""],
+        ["extra-path"],
+    ],
+)
+def test_usage_errors_exit_2_and_write_nothing(base, args):
+    dotenv = _dotenv(base)
+    calls = base / "calls.log"
+    result = _run(base, args, dotenv, _env(base, FAKE_CALLS=str(calls)))
+    assert result.returncode == 2
+    assert "--help" in result.stderr
+    assert result.stdout == ""
+    assert _calls(calls) == []
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_help_prints_usage_and_exit_statuses_on_stdout(base):
+    result = _run(base, ["--help"], _dotenv(base))
+    assert result.returncode == 0
+    for text in ("--check", "--list-models", "--no-test-call", "usage error", "142"):
+        assert text in result.stdout

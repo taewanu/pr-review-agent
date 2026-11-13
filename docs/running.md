@@ -1,6 +1,6 @@
 # Running the daemon
 
-This page covers what the daemon needs, how a review runs, running on Codex, foreground and background operation, one-shot commands, replies to findings, and forking.
+This page covers what the daemon needs, choosing the agent CLI and model, how a review runs, running on Codex, foreground and background operation, one-shot commands, replies to findings, and forking.
 
 ## Requirements
 
@@ -22,6 +22,35 @@ pip install -e .
 Activate it with `source .venv/bin/activate` in each new shell before you run a daemon script. Homebrew's Python refuses `pip install` outside a virtual environment with `externally-managed-environment`. The `python3` that ships with macOS is 3.9.
 
 If you use mise, `mise install` provides the Python 3.13 pinned in `mise.toml` instead, and you run `pip install -e .` and each daemon script under `mise exec --`.
+
+## Choosing the agent CLI and model
+
+`bin/setup-model.sh` sets `REVIEW_HARNESS`, `REVIEW_MODEL`, and `REVIEW_EFFORT` in `.env`. It checks that the CLI is installed, recent enough, and signed in. It prints how the provider may use what the review agent sends, and can make one test call with the prompt "Reply with OK". It writes nothing unless every step passes. `bash bin/setup-model.sh --help` lists every flag and exit status.
+
+On a fresh `.env`, `run.sh` offers it at the first start in a terminal. To run it yourself:
+
+```bash
+bash bin/setup-model.sh
+```
+
+It asks for each value. Enter keeps the value shown in brackets.
+
+To set the values without questions, pass flags. With `codex`, list the models first; each line is a model name, a tab, and the effort levels the model takes:
+
+```bash
+bash bin/setup-model.sh --list-models --harness codex
+bash bin/setup-model.sh --harness codex --model <model>
+```
+
+`<model>` is a name from that list. With `claude`, `--model` takes any model name or alias Claude Code accepts, and leaving it out keeps the daemon default. `--effort <level>` sets the effort. `--no-test-call` skips the test call.
+
+To check the current setting without changing it:
+
+```bash
+bash bin/setup-model.sh --check
+```
+
+It prints the CLI, model, and effort, then one line per check, and exits non-zero if a check failed.
 
 ## How it works
 

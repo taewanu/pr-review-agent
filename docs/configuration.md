@@ -26,6 +26,8 @@ For the other keys, a shell variable overrides `.env`.
 | `REVIEW_MODEL` | `claude-opus-5-5` | model for every role; required with `codex` |
 | `REVIEW_EFFORT` | `high` | `low`, `medium`, `high`, `xhigh`, or `max` |
 
+`bin/setup-model.sh` writes `REVIEW_HARNESS`, `REVIEW_MODEL`, and `REVIEW_EFFORT` to `.env`. See [Choosing the agent CLI and model](running.md#choosing-the-agent-cli-and-model).
+
 The default applies when a key is absent or empty. The template sets some keys to other values. At startup the daemon logs any template key your `.env` lacks.
 
 A changed value takes effect on the next polling cycle. `POLL_INTERVAL_SECONDS` takes effect when you restart the daemon.
