@@ -113,6 +113,23 @@ def test_no_review_runs_when_the_judge_cannot(monkeypatch, capsys, tmp_path):
     assert "claude is not on PATH" in capsys.readouterr().err
 
 
+def test_the_config_record_reads_dotenv_dials_the_way_review_pr_sh_does(tmp_path):
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("REVIEW_HARNESS=codex\nREVIEW_MODEL=example-model\nSKIP_EDITOR=1\n")
+    config = run_eval.review_config_env({"REVIEW_EFFORT": "low"}, dotenv)
+    # SKIP_EDITOR is read from the environment only, so .env does not set it.
+    assert config == {
+        "REVIEW_HARNESS": "codex",
+        "REVIEW_MODEL": "example-model",
+        "REVIEW_EFFORT": "low",
+    }
+    # The environment wins over .env, as it does for review-pr.sh.
+    assert (
+        run_eval.review_config_env({"REVIEW_HARNESS": "claude"}, dotenv)["REVIEW_HARNESS"]
+        == "claude"
+    )
+
+
 def test_the_harness_is_resolved_the_way_review_pr_sh_resolves_it(monkeypatch):
     monkeypatch.setenv("REVIEW_HARNESS", "claude")
     assert run_eval.resolved_harness() == "claude"

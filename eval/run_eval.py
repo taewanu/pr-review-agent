@@ -155,12 +155,46 @@ def summarize_finding(finding: dict) -> dict:
     }
 
 
-def review_config_env(environ: dict) -> dict:
-    """The review-selecting env vars that are set, as they reach review-pr.sh.
-    Unset vars are omitted rather than recorded as null: review-pr.sh defaults on
-    absence (size-based routing, the full lens set), so a null would read as a
-    value someone chose."""
-    return {name: environ[name] for name in REVIEW_CONFIG_VARS if environ.get(name)}
+# The dials review-pr.sh reads through lib.sh's resolve_tunable, which falls back
+# to .env when the environment leaves one unset.
+DOTENV_DIALS = (
+    "REVIEW_HARNESS",
+    "REVIEW_MODEL",
+    "REVIEW_EFFORT",
+    "CONFIDENCE_THRESHOLD",
+    "MAX_FINDINGS",
+)
+
+
+def review_config_env(environ: dict, dotenv: Path = DOTENV) -> dict:
+    """The review-selecting dials that are set, as they reach review-pr.sh: from
+    the environment, or from .env for DOTENV_DIALS, read by lib.sh itself so the
+    two cannot disagree. Unset dials are omitted rather than recorded as null:
+    review-pr.sh defaults on absence, so a null would read as a value someone
+    chose."""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; for key in "${@:3}"; do\n'
+            '  printf "%s\\0" "$(resolve_tunable "$key" "$2")"\n'
+            "done",
+            "_",
+            str(LIB),
+            str(dotenv),
+            *DOTENV_DIALS,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PATH": os.environ.get("PATH", os.defpath), **environ},
+    )
+    resolved = dict(zip(DOTENV_DIALS, result.stdout.split("\0"), strict=False))
+    return {
+        name: value
+        for name in REVIEW_CONFIG_VARS
+        if (value := resolved.get(name) or environ.get(name))
+    }
 
 
 def mean_cost(costs: list[float | None]) -> float | None:
