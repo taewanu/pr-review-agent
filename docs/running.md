@@ -25,7 +25,7 @@ If you use mise, `mise install` provides the Python 3.13 pinned in `mise.toml` i
 
 ## Choosing the agent CLI and model
 
-`bin/setup-model.sh` sets `REVIEW_HARNESS`, `REVIEW_MODEL`, and `REVIEW_EFFORT` in `.env`. It checks that the CLI is installed, recent enough, and signed in. It prints how the provider may use what the review agent sends, and can make one test call with the prompt "Reply with OK". It writes nothing unless every step passes. `bash bin/setup-model.sh --help` lists every flag and exit status.
+`bin/setup-model.sh` sets `REVIEW_HARNESS`, `REVIEW_MODEL`, and `REVIEW_EFFORT` in `.env`. It checks that the CLI is installed and signed in. For Claude Code it also checks the version; for Codex it checks that the `codex` it runs is the real binary, not a version-manager shim. It prints how the provider may use what the review agent sends, and can make one test call with the prompt "Reply with OK". It writes nothing unless every step passes. `bash bin/setup-model.sh --help` lists every flag and exit status.
 
 On a fresh `.env`, `run.sh` offers it at the first start in a terminal. To run it yourself:
 

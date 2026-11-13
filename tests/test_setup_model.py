@@ -36,6 +36,9 @@ env = os.environ.get
 if env("FAKE_CALLS"):
     with open(env("FAKE_CALLS"), "a") as f:
         f.write(" ".join([name] + args) + "\n")
+if env("FAKE_STDIN_LOG") and args[:1] not in (["-p"], ["exec"]):
+    with open(env("FAKE_STDIN_LOG"), "a") as f:
+        f.write(sys.stdin.read())
 if name == "claude":
     if args == ["--version"]:
         print(env("FAKE_CLAUDE_VERSION", "999.0.0") + " (Claude Code)")
@@ -171,9 +174,9 @@ def _dotenv(base: Path) -> Path:
     return dotenv
 
 
-def _catalog(base: Path) -> str:
+def _catalog(base: Path, catalog: dict = CATALOG) -> str:
     path = base / "catalog.json"
-    path.write_text(json.dumps(CATALOG))
+    path.write_text(json.dumps(catalog))
     return str(path)
 
 
@@ -797,6 +800,52 @@ def test_flag_form_on_a_silent_terminal_finishes_without_waiting(base):
     assert result.stdout == "REVIEW_HARNESS=claude\nREVIEW_MODEL=\nREVIEW_EFFORT=\n"
 
 
+def test_no_test_call_alone_selects_the_flag_form_and_never_asks(base):
+    dotenv = _dotenv(base)
+    env = _env(base, PR_REVIEW_ANSWER_TIMEOUT_SECONDS="60")
+    started = time.monotonic()
+    result = _on_terminal(["bash", str(SETUP), "--no-test-call", str(dotenv)], env)
+    assert time.monotonic() - started < 15
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "REVIEW_HARNESS=claude\nREVIEW_MODEL=\nREVIEW_EFFORT=\n"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--check"], ["--list-models", "--harness", "codex"]],
+    ids=["check", "list-models"],
+)
+def test_read_only_modes_on_a_silent_terminal_finish_without_waiting(base, args):
+    dotenv = base / ".env"
+    dotenv.write_text("REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\nREVIEW_EFFORT=high\n")
+    env = _env(base, FAKE_CATALOG=_catalog(base), PR_REVIEW_ANSWER_TIMEOUT_SECONDS="60")
+    started = time.monotonic()
+    result = _on_terminal(["bash", str(SETUP), *args, str(dotenv)], env)
+    assert time.monotonic() - started < 15
+    assert result.returncode == 0, result.stderr
+    assert result.stdout
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--harness", "codex", "--model", "example-first", "--no-test-call"],
+        ["--check"],
+        ["--list-models", "--harness", "codex"],
+    ],
+    ids=["flags", "check", "list-models"],
+)
+def test_cli_started_by_a_non_interactive_mode_reads_no_stdin(base, args):
+    dotenv = base / ".env"
+    dotenv.write_text("REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\nREVIEW_EFFORT=high\n")
+    stdin_log = base / "stdin.log"
+    env = _env(base, FAKE_CATALOG=_catalog(base), FAKE_STDIN_LOG=str(stdin_log))
+    result = _run(base, args, dotenv, env, stdin="planted answer\n")
+    assert result.returncode == 0, result.stderr
+    assert stdin_log.exists()
+    assert stdin_log.read_text() == ""
+
+
 @pytest.mark.parametrize("current", ["codex", ""], ids=["set to codex", "unset"])
 def test_flag_form_without_harness_keeps_the_resolved_harness(base, current):
     dotenv = base / ".env"
@@ -832,6 +881,54 @@ def test_codex_flag_form_writes_the_effort_explicitly_even_at_the_default(base):
     assert result.returncode == 0, result.stderr
     assert result.stdout == "REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\nREVIEW_EFFORT=high\n"
     assert "Improve the model for everyone" in result.stderr
+
+
+def test_codex_flag_form_refuses_a_default_effort_the_model_does_not_list(base):
+    dotenv = _dotenv(base)
+    catalog = {
+        "models": [
+            {
+                "slug": "example-edges",
+                "visibility": "list",
+                "priority": 1,
+                "supported_reasoning_levels": [{"effort": "low"}, {"effort": "xhigh"}],
+            }
+        ]
+    }
+    env = _env(base, FAKE_CATALOG=_catalog(base, catalog))
+    result = _run(base, ["--harness", "codex", "--model", "example-edges"], dotenv, env)
+    assert result.returncode == 1
+    assert "takes effort low, xhigh, not the default high; pass --effort" in result.stderr
+    assert result.stdout == ""
+    assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_flag_form_without_a_dotenv_starts_it_from_the_template(base):
+    dotenv = base / ".env"
+    result = _run(base, ["--harness", "claude", "--no-test-call"], dotenv)
+    assert result.returncode == 0, result.stderr
+    expected = TEMPLATE.read_text().replace("\nREVIEW_EFFORT=high\n", "\nREVIEW_EFFORT=\n")
+    assert dotenv.read_text() == expected.replace(
+        "\nREVIEW_HARNESS=\n", "\nREVIEW_HARNESS=claude\n"
+    )
+
+
+@pytest.mark.parametrize("source", ["environment", "env file"])
+def test_flag_form_refuses_an_invalid_current_harness_and_names_where_it_is_set(base, source):
+    dotenv = _dotenv(base)
+    extra = {}
+    if source == "environment":
+        extra["REVIEW_HARNESS"] = "bogus"
+    else:
+        dotenv.write_text(ENV_BODY + "REVIEW_HARNESS=bogus\n")
+    body = dotenv.read_bytes()
+    result = _run(base, ["--model", "example-typed", "--no-test-call"], dotenv, _env(base, **extra))
+    assert result.returncode == 1
+    where = "the environment" if source == "environment" else str(dotenv)
+    assert f"REVIEW_HARNESS is set to bogus in {where}" in result.stderr
+    assert "pass --harness" in result.stderr
+    assert result.stdout == ""
+    assert dotenv.read_bytes() == body
 
 
 def test_codex_flag_form_without_model_is_a_usage_error_before_any_cli_call(base):
@@ -955,6 +1052,7 @@ PASSING_CHECKS = {
             "codex is the real binary: ok",
             "codex logged in: ok",
             "model set for codex: ok",
+            "effort listed for the model: ok",
             "per-PR clones outside the system temp directories: ok",
         ],
     ),
@@ -965,7 +1063,8 @@ PASSING_CHECKS = {
 def test_check_passing_reports_each_check_and_makes_no_model_call(base, case):
     body, lines = PASSING_CHECKS[case]
     calls = base / "calls.log"
-    result, dotenv = _check(base, body, _env(base, FAKE_CALLS=str(calls)))
+    env = _env(base, FAKE_CALLS=str(calls), FAKE_CATALOG=_catalog(base))
+    result, dotenv = _check(base, body, env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == lines
     assert _model_calls(calls) == []
@@ -999,6 +1098,11 @@ CHECK_FAILURES = {
         "per-PR clones outside the system temp directories: failed",
     ),
     "harness unknown": ("REVIEW_HARNESS=other\n", _env, "harness is claude or codex: failed"),
+    "codex effort the model does not list": (
+        "REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\nREVIEW_EFFORT=low\n",
+        lambda b: _env(b, FAKE_CATALOG=_catalog(b)),
+        "effort listed for the model: failed",
+    ),
 }
 
 
@@ -1013,6 +1117,14 @@ def test_check_with_one_failure_names_it_exits_non_zero_and_writes_nothing(base,
     assert [ln for ln in result.stdout.splitlines() if ln.endswith(": failed")] == [line]
     assert "ERROR" in result.stderr
     assert dotenv.read_text() == body
+
+
+def test_check_without_a_catalog_does_not_report_the_effort_as_ok(base):
+    body = "REVIEW_HARNESS=codex\nREVIEW_MODEL=example-first\nREVIEW_EFFORT=low\n"
+    result, _ = _check(base, body, _env(base))
+    assert result.returncode == 0, result.stderr
+    assert "effort listed for the model: not checked" in result.stdout.splitlines()
+    assert "the effort was not checked" in result.stderr
 
 
 def test_check_with_test_call_makes_exactly_one_model_call(base):
@@ -1034,6 +1146,22 @@ def test_list_models_prints_codex_models_in_menu_order_with_their_usable_levels(
     assert result.returncode == 0, result.stderr
     assert result.stdout == "example-first\tmedium,high\nexample-second\tlow,high\n"
     assert dotenv.read_bytes() == ENV_BODY.encode()
+
+
+def test_list_models_leaves_out_a_model_with_no_level_the_daemon_accepts(base):
+    catalog = {"models": [*CATALOG["models"]]}
+    catalog["models"].append(
+        {
+            "slug": "example-unusable",
+            "visibility": "list",
+            "priority": 3,
+            "supported_reasoning_levels": [{"effort": "beyond-max"}],
+        }
+    )
+    env = _env(base, FAKE_CATALOG=_catalog(base, catalog))
+    result = _run(base, ["--list-models", "--harness", "codex"], _dotenv(base), env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "example-first\tmedium,high\nexample-second\tlow,high\n"
 
 
 def test_list_models_reads_the_harness_from_the_env_file(base):

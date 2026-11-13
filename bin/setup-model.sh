@@ -225,6 +225,14 @@ check_codex_model() {
   resolve_review_model "$DOTENV" codex >/dev/null
 }
 
+# refuse_bad_harness [suffix]: exits 1 naming the invalid REVIEW_HARNESS and
+# where it was set, because the daemon keeps reading that value.
+refuse_bad_harness() {
+  local source="${DOTENV}"
+  [[ -z "${REVIEW_HARNESS:-}" ]] || source="the environment"
+  fail "REVIEW_HARNESS is set to $(resolve_tunable REVIEW_HARNESS "$DOTENV") in ${source}, which is not claude or codex; pass --harness claude or --harness codex, or fix it there${1:-}"
+}
+
 # load_catalog: reads the account's codex models into catalog, and the ones it
 # lists for choosing into slugs and descriptions, by priority; fails when the
 # command does.
@@ -268,6 +276,14 @@ usable_levels() {
   printf '%s' "$out"
 }
 
+check_codex_effort() {
+  local levels
+  levels="$(usable_levels "$model")"
+  [[ " $levels " != *" $effort "* ]] || return 0
+  log_err "$model on codex takes effort ${levels// /, }, not ${effort}; set REVIEW_EFFORT to one of them"
+  return 1
+}
+
 run_test_call() {
   # shellcheck disable=SC2034  # run_agent reads them
   REVIEW_HARNESS="$cli" REVIEW_MODEL="$model" REVIEW_EFFORT="$effort"
@@ -276,7 +292,7 @@ run_test_call() {
   local rc=0
   (cd "$WORK" && run_agent read-only 120 "$OUT/prompt.txt" "$OUT/raw.txt" setup) || rc=$?
   if ((rc != 0)) || [[ ! -s "$OUT/raw.txt" ]]; then
-    log_err "${model} did not answer on ${cli}; nothing was written"
+    log_err "${model} did not answer on ${cli} and nothing was written; run bash bin/setup-model.sh --check, and confirm the model name with --list-models"
     if [[ -s "$OUT/raw.txt.stderr" ]]; then
       printf 'Its last stderr lines:\n' >&2
       tail -n 5 "$OUT/raw.txt.stderr" >&2
@@ -299,8 +315,7 @@ if [[ "$mode" == --list-models ]]; then
   if [[ -n "$harness_arg" ]]; then
     set_cli "$harness_arg"
   else
-    current="$(resolve_review_harness "$DOTENV" 2>/dev/null)" ||
-      fail "REVIEW_HARNESS is set to $(resolve_tunable REVIEW_HARNESS "$DOTENV"), which is not claude or codex; pass --harness claude or --harness codex"
+    current="$(resolve_review_harness "$DOTENV" 2>/dev/null)" || refuse_bad_harness
     set_cli "$current"
   fi
   if [[ "$cli" == claude ]]; then
@@ -314,6 +329,8 @@ if [[ "$mode" == --list-models ]]; then
   ((${#slugs[@]} > 0)) || fail "codex debug models listed no models; pass a model name the codex CLI accepts to --model"
   for slug in "${slugs[@]}"; do
     levels="$(usable_levels "$slug")"
+    # A model with none of the daemon's levels would be refused on write.
+    [[ -n "$levels" ]] || continue
     printf '%s\t%s\n' "$slug" "${levels// /,}"
   done
   exit 0
@@ -345,6 +362,7 @@ if [[ "$mode" == --check ]]; then
   effort="$(resolve_review_effort "$DOTENV")"
   printf 'harness: %s\nmodel: %s\neffort: %s\n' "$cli" "${model:-(not set)}" "$effort"
   make_work_dirs
+  codex_bin=""
   if [[ "$cli" == claude ]]; then
     if check "claude on PATH" check_on_path; then
       check "claude version" require_claude_version || true
@@ -364,7 +382,16 @@ if [[ "$mode" == --check ]]; then
       skip "codex is the real binary"
       skip "codex logged in"
     fi
-    check "model set for codex" check_codex_model || true
+    model_ok=0
+    check "model set for codex" check_codex_model && model_ok=1
+    if [[ -z "$codex_bin" || "$model_ok" == 0 ]]; then
+      skip "effort listed for the model"
+    elif load_catalog && [[ -n "$catalog" ]]; then
+      check "effort listed for the model" check_codex_effort || true
+    else
+      printf 'codex debug models returned no model list, so the effort was not checked.\n' >&2
+      skip "effort listed for the model"
+    fi
     check "per-PR clones outside the system temp directories" check_temp_root || true
   fi
   if [[ "$check_test_call" == 1 ]]; then
@@ -380,7 +407,10 @@ fi
 [[ ! -e "$DOTENV" || -w "$DOTENV" ]] ||
   fail "${DOTENV} is not writable, so it is unchanged; make it writable with chmod u+w and re-run"
 
-current_harness="$(resolve_review_harness "$DOTENV" 2>/dev/null)" || current_harness=claude
+if ! current_harness="$(resolve_review_harness "$DOTENV" 2>/dev/null)"; then
+  [[ "$mode" == wizard || -n "$harness_arg" ]] || refuse_bad_harness "; nothing was written"
+  current_harness=claude
+fi
 if [[ "$mode" == wizard ]]; then
   cli="$(choose "Agent CLI to review with, claude or codex" "$current_harness" "claude codex")"
   set_cli "$cli"
@@ -466,7 +496,7 @@ if [[ "$mode" == flags ]]; then
   if [[ " $levels " != *" $effort "* ]]; then
     [[ -z "$effort_arg" ]] ||
       fail "$model on codex takes effort ${levels// /, }, not ${effort}; nothing was written"
-    effort="${levels%% *}"
+    fail "$model on codex takes effort ${levels// /, }, not the default ${effort}; pass --effort with one of them; nothing was written"
   fi
 else
   default_effort="$(resolve_review_effort "$DOTENV" 2>/dev/null)"
