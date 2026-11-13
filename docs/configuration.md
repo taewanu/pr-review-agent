@@ -23,8 +23,10 @@ For the other keys, a shell variable overrides `.env`.
 | `CONFIDENCE_THRESHOLD` | `60` | minimum finding confidence, 0 to 100 |
 | `MAX_FINDINGS` | `10` | findings per review |
 | `REVIEW_HARNESS` | `claude` | agent CLI every role runs on, `claude` or `codex` ([Codex](running.md#codex)) |
-| `REVIEW_MODEL` | `claude-opus-5-5` | model for every role; required with `codex` |
+| `REVIEW_MODEL` | built in under `claude`; `bash bin/setup-model.sh --check` prints it | model for every role; required with `codex` |
 | `REVIEW_EFFORT` | `high` | `low`, `medium`, `high`, `xhigh`, or `max` |
+
+`bin/setup-model.sh` writes `REVIEW_HARNESS`, `REVIEW_MODEL`, and `REVIEW_EFFORT` to `.env`. See [Choosing the agent CLI and model](running.md#choosing-the-agent-cli-and-model).
 
 The default applies when a key is absent or empty. The template sets some keys to other values. At startup the daemon logs any template key your `.env` lacks.
 

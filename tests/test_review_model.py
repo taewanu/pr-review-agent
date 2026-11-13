@@ -88,12 +88,13 @@ def test_empty_dial_defaults_rather_than_emitting_a_broken_flag(tmp_path):
     assert _resolve(dotenv) == DEFAULT_MODEL
 
 
-def test_template_default_matches_the_code_default():
-    # A template drifted from the code default silently moves every operator who
-    # copied it onto a different model (#200/#201).
-    keyed = re.search(r"^REVIEW_MODEL=(.+)$", TEMPLATE.read_text(), re.M)
+def test_template_leaves_the_model_empty_so_a_new_clone_runs_the_setup(tmp_path):
+    # An empty value is what makes run.sh offer bin/setup-model.sh, and it must
+    # still resolve to the code default for an operator who declines.
+    keyed = re.search(r"^REVIEW_MODEL=(.*)$", TEMPLATE.read_text(), re.M)
     assert keyed, "REVIEW_MODEL missing from the .env template"
-    assert keyed.group(1).strip() == DEFAULT_MODEL
+    assert keyed.group(1) == ""
+    assert _resolve(TEMPLATE) == DEFAULT_MODEL
 
 
 def test_both_scripts_name_the_model_in_the_log():

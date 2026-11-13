@@ -26,6 +26,14 @@ Prereqs: a registered GitHub App the daemon authenticates as (its id in `GITHUB_
 
 The daemon supplies every agent definition from its own `.claude/agents/` (ADR 0007), so target repos carry nothing and cannot override a role, and nothing in the per-PR clone configures the agent; `run_agent` in `daemon/lib.sh` is where that is enforced.
 
+## Set the review CLI and model
+
+`bin/setup-model.sh` writes `REVIEW_HARNESS` (`claude` or `codex`), `REVIEW_MODEL`, and `REVIEW_EFFORT` to `.env`. From an agent, always pass flags: without them the script asks questions on the terminal and waits for answers.
+
+- **Choose:** ask the operator which CLI and model to use. `bash bin/setup-model.sh --list-models --harness codex` prints each Codex model with the effort levels it takes; Claude Code has no model list.
+- **Write:** `bash bin/setup-model.sh --harness <claude|codex> --model <model> [--effort <level>]`. It makes one test call unless `--no-test-call` is given. Standard output is the three lines written; exit 1 means a check failed and nothing was written.
+- **Diagnose:** `bash bin/setup-model.sh --check` checks the current setting and writes nothing. `--help` lists every flag and exit status.
+
 ## Forking
 
 The review footer names the App the daemon posts as, linking to its page (`github.com/apps/<slug>`). The slug comes from the installation probe's `app_slug` (`render_review_footer` in `daemon/lib.sh`), so attribution follows the App you register and install (ADR 0036), not the clone's git remote. A fork attributes to its own App once `GITHUB_APP_ID` and the private key are set.

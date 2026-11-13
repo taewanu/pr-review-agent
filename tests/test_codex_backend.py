@@ -772,11 +772,12 @@ def test_unknown_harness_fails_instead_of_falling_back(tmp_path):
     assert "REVIEW_HARNESS='cluade'" in result.stderr
 
 
-def test_harness_template_default_matches_the_code_default(tmp_path):
+def test_harness_template_empty_value_resolves_to_the_code_default(tmp_path):
     lines = [ln for ln in TEMPLATE.read_text().splitlines() if ln.startswith("REVIEW_HARNESS=")]
     assert lines, "REVIEW_HARNESS missing from the .env template"
+    assert lines[0] == "REVIEW_HARNESS="
     code_default = _resolve('resolve_review_harness "$1"', tmp_path / "none", {}).stdout
-    assert lines[0].split("=", 1)[1] == code_default
+    assert _resolve('resolve_review_harness "$1"', TEMPLATE, {}).stdout == code_default
 
 
 def test_codex_requires_an_explicit_model(tmp_path):
@@ -787,7 +788,7 @@ def test_codex_requires_an_explicit_model(tmp_path):
 
 
 def test_codex_refuses_a_claude_model_at_startup(tmp_path):
-    # The template ships a Claude model ID, so switching only the harness keeps it.
+    # A .env written for claude keeps its Claude model when only the harness is switched.
     dotenv = tmp_path / ".env"
     dotenv.write_text("REVIEW_MODEL=claude-example\n")
     result = _resolve('resolve_review_model "$1" codex', dotenv, {})
