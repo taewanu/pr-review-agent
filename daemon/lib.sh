@@ -252,20 +252,29 @@ live_pids() {
   return 0
 }
 
-# kill_with_groups <pid...>
-# Kills the given processes and every process group they belong to except the
-# caller's own, which holds the daemon itself. The groups reach a command that
-# double-forked out of the tree, because its orphan keeps the group it was
-# started in. Freezing everything first stops a process forking a replacement
-# between the group kills and the pid kills.
-kill_with_groups() {
-  local own pid pgid groups=""
+# foreign_groups <pid...>
+# Prints the process group of each given process, except the caller's own,
+# which holds the daemon itself. A group reaches a command that double-forked
+# out of the tree, because its orphan keeps the group it was started in, as long
+# as another member of that group is still in the tree.
+foreign_groups() {
+  local own pid pgid
   own="$(ps -o pgid= -p $$ | tr -d ' ')"
-  kill -STOP "$@" 2>/dev/null || true
   for pid in "$@"; do
     pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" || continue
-    [[ -n "$pgid" && "$pgid" -gt 1 && "$pgid" != "$own" ]] && groups="$groups $pgid"
-  done
+    [[ -n "$pgid" && "$pgid" -gt 1 && "$pgid" != "$own" ]] && printf '%s\n' "$pgid"
+  done | sort -u
+  return 0
+}
+
+# kill_with_groups <pid...>
+# Kills the given processes and their foreign_groups. Freezing everything first
+# stops a process forking a replacement between the group kills and the pid
+# kills.
+kill_with_groups() {
+  local pgid groups
+  kill -STOP "$@" 2>/dev/null || true
+  groups="$(foreign_groups "$@")"
   for pgid in $groups; do
     kill -KILL -- "-$pgid" 2>/dev/null || true
   done
@@ -300,10 +309,13 @@ kill_with_groups() {
 # it again per lens. The walk is not atomic, so a process forking mid-walk can
 # escape; for a backstop that is the better trade than a kill that composes badly.
 #
-# TIMEOUT_KILL_GROUPS=1 replaces the TERM-then-KILL escalation with
-# kill_with_groups, for a command that starts its children in groups of their
-# own and needs no flush on the way out. A command that calls setsid still
-# escapes both.
+# The escalation also signals the foreign_groups of the tree, so an outer cap
+# reaches what a nested call started in groups of its own even after killing the
+# nested watchdog that would have cleaned them up. TIMEOUT_KILL_GROUPS=1
+# replaces the escalation with kill_with_groups, for a command that starts its
+# children in groups of their own and needs no flush on the way out. Neither
+# reaches a process that left the tree when no member of its group is left in
+# it, which includes one that called setsid.
 run_with_timeout() {
   local secs="$1"
   shift
@@ -346,7 +358,7 @@ run_with_timeout() {
     # its parent dies, so a walk from "$pid" after the TERM cannot see the very
     # processes the escalation is for: the ones that outlived a parent that took
     # the TERM. This is what a process group gets for free and the walk does not.
-    local victims survivors
+    local victims survivors groups pgid
     victims="$(process_tree "$pid")"
     if [[ "${TIMEOUT_KILL_GROUPS:-0}" -eq 1 ]]; then
       # shellcheck disable=SC2086  # word splitting is the point: one pid per arg
@@ -354,7 +366,12 @@ run_with_timeout() {
       exit 0
     fi
     # shellcheck disable=SC2086
+    groups="$(foreign_groups $victims)"
+    # shellcheck disable=SC2086
     kill -TERM $victims 2>/dev/null || true
+    for pgid in $groups; do
+      kill -TERM -- "-$pgid" 2>/dev/null || true
+    done
     local grace=$(($(date +%s) + TIMEOUT_KILL_GRACE))
     while :; do
       # The snapshot catches the re-parented; a fresh walk catches anything
@@ -369,6 +386,11 @@ run_with_timeout() {
       fi
       sleep 1
       victims="$survivors"
+    done
+    # An orphan in a group is not among the survivors, so the walk ending says
+    # nothing about it.
+    for pgid in $groups; do
+      kill -KILL -- "-$pgid" 2>/dev/null || true
     done
   ) >/dev/null 2>&1 &
   local watchdog=$!

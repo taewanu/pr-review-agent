@@ -385,6 +385,34 @@ def test_timeout_kills_a_grandchild_that_double_forked_out_of_the_tree(base):
             os.kill(orphan, 9)
 
 
+def test_an_outer_cap_kills_a_grandchild_that_double_forked_out_of_the_tree(base):
+    # The per-PR cap wraps the script that runs codex under a far longer inner
+    # cap, so the outer kill takes down the inner watchdog before its group kill.
+    pidfile = base / "orphan.pid"
+    clone = base / "clone"
+    clone.mkdir()
+    (clone / "prompt.txt").write_text(PROMPT)
+    args = [str(clone), "read-only", "300", "prompt.txt", str(clone / ".pr-review-raw.txt")]
+    result = _bash(
+        base,
+        'rc=0; run_with_timeout 3 bash -c "$INNER" _ "$@" || rc=$?; exit "$rc"',
+        [*args, "pr1:label", AGENT],
+        env={
+            "INNER": f'set -euo pipefail; source "{LIB}"; {_RUN}',
+            "FAKE_CODEX_ORPHAN_PIDFILE": str(pidfile),
+            "FAKE_CODEX_HANG_ON": "",
+            **_FAST_TIMEOUT,
+        },
+    )
+    assert result.returncode == TIMEOUT_EXIT, result.stderr
+    orphan = int(pidfile.read_text())
+    try:
+        assert _wait_gone(orphan), "a double-forked grandchild outlived the outer cap"
+    finally:
+        if _alive(orphan):
+            os.kill(orphan, 9)
+
+
 def test_an_escaped_process_holding_stdout_cannot_hold_the_run_past_its_cap(base):
     pidfile = base / "held.pid"
     started = time.monotonic()
