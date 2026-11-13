@@ -27,6 +27,7 @@ for cmd in gh claude jq git python3 openssl curl; do
     exit 1
   fi
 done
+require_claude_version || exit 1
 # App identity (ADR 0036): the App key must be readable; no `gh auth login` is
 # required. The reply path renders no footer, so it needs no App-owner probe.
 if [[ ! -r "$APP_KEY_PATH" ]]; then

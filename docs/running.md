@@ -5,7 +5,8 @@ This page covers what the daemon needs, how a review runs, foreground and backgr
 ## Requirements
 
 - **A machine that stays on.** macOS is the tested platform. CI runs the test suite on Linux. The foreground loop runs without `launchd`. Only background mode needs it.
-- **Claude Code v2.1.281 or later**, as `claude` on your `PATH`, signed in. The daemon passes role definitions to `--agents` as a file, which v2.1.281 added.
+- **Claude Code v2.1.281 or later**, as `claude` on your `PATH`, signed in. The daemon passes role definitions to `--agents` as a file, which v2.1.281 added. The daemon checks the version before each review.
+- **On Linux, `bubblewrap` and `socat`.** Claude Code's sandbox needs both there.
 - **`gh`** ([GitHub CLI](https://cli.github.com/)), **`git`**, **`jq`**, **`openssl`**, and **`curl`** on your `PATH`. You do not need `gh auth login`. The daemon signs in as the App.
 - **Python 3.13 or later**, with the dependencies in `pyproject.toml` installed in a virtual environment.
 - **A GitHub App you register.** See [Register the GitHub App](github-app.md).

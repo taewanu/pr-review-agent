@@ -26,8 +26,8 @@ REPLY_LOCK_NAME = "example-example-7-reply.lock"
 
 def _stub_bin(tmp_path: Path) -> Path:
     """A PATH dir whose `gh` answers the preflight and returns zero comments,
-    recording a marker file when the comments endpoint is hit. `claude` exists
-    but is never reached on the no-replies path."""
+    recording a marker file when the comments endpoint is hit. `claude` answers
+    the version preflight and is never run as an agent on the no-replies path."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -41,7 +41,7 @@ def _stub_bin(tmp_path: Path) -> Path:
         "esac\n"
     )
     claude = bin_dir / "claude"
-    claude.write_text("#!/usr/bin/env bash\nexit 0\n")
+    claude.write_text("#!/usr/bin/env bash\necho '2.1.281 (Claude Code)'\n")
     for stub in (gh, claude):
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     install_app_stubs(bin_dir)
