@@ -120,6 +120,12 @@ def build_argv(
         "hooks",
         "--disable",
         "image_generation",
+        # A spawned subagent is a second model session outside the shared slot
+        # pool, which caps concurrent agent calls.
+        "--disable",
+        "multi_agent",
+        "--disable",
+        "multi_agent_v2",
         "-c",
         'web_search="disabled"',
         # Nobody is there to approve, so a command the profile denies fails
