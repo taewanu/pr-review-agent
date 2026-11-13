@@ -1,7 +1,7 @@
 # ADR 0011: Foreground-first operating model; launchd background is optional
 
 Date: 2026-06-08
-Status: Accepted
+Status: Accepted. Amended 2026-11-13: the launchd install runs only while the operator is logged in; it stops at logout and starts again at the next login.
 
 ## Context
 
@@ -21,6 +21,8 @@ The root cause is visibility, not the loop mechanism — ADR 0009 stands. A fore
 
 - The primary, documented way to run the daemon is **foreground**: `bash daemon/run.sh`. Progress prints to the terminal (`log_info` / `log_err` write to stderr; the `.daemon.log` redirect is a launchd-only artifact, not inherent to the loop). Ctrl-C stops it cleanly — the `INT` / `TERM` trap releases the pidfile singleton. Updating is Ctrl-C → `git pull` → re-run. Because `run.sh` re-invokes `bash poll.sh` each cycle, a pull that only touches `poll.sh` or the review pipeline is picked up on the next tick without a restart; only a change to `run.sh`'s own loop body requires one.
 - The launchd `KeepAlive` install (`bin/install.sh`, ADR 0009) remains an **optional** path for always-on operation that survives logout and reboot. Its tradeoff is documented: it is invisible and bound to its checkout's working tree, so that checkout must stay on `main` (or be a clone dedicated to running the daemon). Switching its branch silently breaks the running daemon — the failure that motivated this ADR.
+
+  *Amended 2026-11-13:* **the launchd install runs only while the operator is logged in; it does not survive logout or reboot, contrary to this bullet and the chosen option above.** `bin/install.sh` bootstraps a LaunchAgent into the `gui/$(id -u)` domain, which belongs to the operator's login session. The job keeps running across sleep and after the terminal closes, and `KeepAlive` restarts it after a non-zero exit. Logout stops it, and `RunAtLoad` starts it again at the next login, so after a reboot it runs only once the operator logs in. The decision stands: the install remains the optional background path.
 
 ## Consequences
 
