@@ -1,139 +1,226 @@
 # pr-review-agent
 
-Automated PR review agent that posts as a self-hosted GitHub App. Run it in your terminal: it polls the repos you choose and submits findings as a review under its `<app>[bot]` identity. Optionally install it as a background `launchd` job.
+A pull-request review agent that runs on your machine and posts findings as inline review comments under a GitHub App you register.
 
-> **Preview release (v0.x).** Works end-to-end on your own repos. Review wording, line anchoring, and re-review skipping are still being polished. Expect quirks until v1.0.
+## What it does
 
-## How it works
+- Runs on your machine under your own Claude Code sign-in. There is no hosted service.
+- Reviews each PR with two agents: `code` reads the diff and surrounding code but not the PR description or commit messages; `intent` compares the description and commit messages with the diff.
+- Drops findings scored below a confidence threshold (60 of 100 by default), then has an editor pass re-read the PR and remove weak or inaccurate ones.
+- Re-reads the file at the current commit when the author replies that a finding is fixed, then confirms the fix or names the mismatch.
+- Resolves its own thread when a later commit fixes the finding without a reply, and leaves it open if the fix is in doubt.
+- Keeps one status comment per PR listing the findings and the commits reviewed, and sets a `review` check that fails while a finding thread is open.
+- Ignores the reviewed repository's `.claude/` directory and settings.
 
-1. You run `bash daemon/run.sh` — a loop that drives `daemon/poll.sh` every `POLL_INTERVAL_SECONDS` (default 300), printing progress to the terminal ([ADR 0009](docs/adr/0009-explicit-polling-loop.md), [ADR 0011](docs/adr/0011-foreground-first-operating-model.md)). Optionally install it as a `launchd` `KeepAlive` job to run in the background, restarted on crash, logout, and reboot.
-2. The daemon lists open PRs for each watched repo via `gh`.
-3. It skips drafts, PRs labeled `no-ai-review`, and PRs whose HEAD SHA was already reviewed.
-4. For the rest, it runs two review roles (`.claude/agents/review-agent-code.md` and `review-agent-intent.md`, ADR 0038) via headless Claude Code (`claude -p`) against the diff, and anchors findings to file/line ranges.
-5. It submits the findings as a `COMMENT` review under its App bot identity, in one call ([ADR 0036](docs/adr/0036-github-app-identity.md)).
-6. The PR's checks row tracks it throughout: a `review` check runs while the agent works, then passes when no finding is open and fails when one is ([ADR 0039](docs/adr/0039-review-state-on-the-checks-row.md)). Make it a required check if you want it to gate merges.
-7. You open the PR to read them, and edit or dismiss any you disagree with.
+Finding from the `intent` agent on this repository's PR #310. The test plan in the description claimed more than the test checked; the author fixed it and the review agent confirmed the fix:
 
-## Why this exists
+> _🔀 intent_ | _🔴 important_
+>
+> **`test_callers_reach_pr_metadata_through_the_seam` doesn't guard what the test plan promises: a caller re-adding its own `gh pr view`.**
+>
+> - The test plan pins "that neither caller carries its own `gh pr view` again," but at HEAD the test asserts only `derive_pr_metadata in text` per caller.
+> - A caller that keeps `derive_pr_metadata` and re-adds its own `gh pr view` passes, so the re-fetch regression the plan claims is caught goes unnoticed.
+>
+> ✅ _Resolved_: confirmed fixed by the author
 
-- Review comments post as a dedicated `<app>[bot]`, distinct from your own GitHub identity, so the daemon's work is never confused with yours.
-- Each teammate can install the App on their own repos; multiple independent reviews on the same PR are fine.
-- Runs on your laptop as a self-hosted App: polling, so no webhooks and no hosting bill.
-- MIT-licensed. Retune via `.claude/agents/review-agent-code.md` (prompt) and `.env` tunables (confidence gate, findings cap).
+Written in bash and Python, with about 950 tests. Design decisions are in [`docs/adr/`](docs/adr/).
 
-## Prerequisites
+## Know before you start
 
-- macOS (Claude Code runs here; the optional background install uses `launchd`).
-- A GitHub App you register and own: its App id in `GITHUB_APP_ID` and its private key at `~/.pr-review-agent/app.pem`. The daemon authenticates as the App, so no `gh auth login` is needed ([ADR 0036](docs/adr/0036-github-app-identity.md)). [Register the GitHub App](#register-the-github-app) below walks it end to end.
-- [`gh`](https://cli.github.com/) on `PATH` (the daemon drives it with the App token), plus `openssl` and `curl` for the token mint.
-- [`claude`](https://claude.com/claude-code) on `PATH`.
-- `git`, `jq`, `python3` 3.13+.
+- **You register your own GitHub App and keep a Mac on.** Reviews happen only while the daemon runs.
+- **It polls.** A review starts on the next polling cycle (every 5 minutes by default) and takes several minutes.
+- **It is a `0.x` preview.** Review wording, line anchoring, and re-review skipping are still being polished.
 
-Install however you prefer (brew, asdf, mise, pyenv, system package manager). This repo uses [mise](https://mise.jdx.dev/) to pin dev tool versions for contributors; not required to run the daemon.
+## What you need
 
-## Register the GitHub App
+- **macOS.** The optional background mode uses `launchd`, the macOS service manager.
+- **Claude Code v2.1.281 or later**, as `claude` on your `PATH` and signed in. The daemon runs every agent with `--restricted` (added in v2.1.248) and passes role definitions to `--agents` as a file (added in v2.1.281).
+- **`gh`** ([GitHub CLI](https://cli.github.com/)), **`git`**, **`jq`**, **`openssl`**, and **`curl`** on your `PATH`. You do not need `gh auth login`: the daemon signs in as the App.
+- **Python 3.13 or later** as `python3`, with the `pydantic` package (version 2) installed for it.
+- **A GitHub App you register yourself**, about ten minutes on github.com (step 1 below).
 
-Do this once, before the first run: the daemon has no identity of its own until you give it one. It is roughly ten minutes of form-filling on github.com, with no hosting to arrange and no webhook endpoint to expose, and each step below is a field on a page GitHub walks you through.
+The repo's `mise.toml` pins tools for contributors; the daemon does not need mise.
 
-**1. Open the form.** Go to **Settings → Developer settings → GitHub Apps → New GitHub App** on your personal account ([github.com/settings/apps/new](https://github.com/settings/apps/new)). Name it whatever you like. The name is what the `[bot]` suffix hangs off, and it carries tone rather than function, so attribution rides in the review footer instead ([ADR 0036](docs/adr/0036-github-app-identity.md)). The canonical instance is named `youshallnotmerge`. GitHub requires a homepage URL and never uses it for anything here; your fork's URL will do.
+## Quick start
 
-**2. Turn the webhook off.** Uncheck **Webhook → Active** and subscribe to no events. The daemon polls GitHub on a timer ([ADR 0009](docs/adr/0009-explicit-polling-loop.md)), so it needs no public URL for GitHub to call back to, which is what keeps it runnable from a laptop.
+### 1. Register a GitHub App
 
-**3. Grant four repository permissions.** Under **Repository permissions**, set Contents to *Read and write*, Issues to *Read and write*, Pull requests to *Read and write*, and leave Metadata at *Read-only* (GitHub selects Metadata for you). Everything else stays *No access*.
+The App is the identity the daemon posts as, as `<name>[bot]`.
 
-Pull requests carries the review and its inline findings. Issues carries the Status comment, which is an issue comment on the PR. Metadata is GitHub's mandatory baseline.
+1. Open [github.com/settings/apps/new](https://github.com/settings/apps/new). Pick any name. GitHub requires a homepage URL but never uses it here; your fork's URL will do.
+2. Uncheck **Webhook → Active**. The daemon polls, so nothing needs a public URL.
+3. Under **Repository permissions**, grant these five and leave everything else at *No access*:
 
-Contents is the one worth pausing on, because *write* access to your code is a lot to hand a tool that only reads it. It buys exactly one thing: closing a review thread. GitHub's `resolveReviewThread` mutation rejects an App holding only `pull_requests: write` with `Resource not accessible by integration`, and the coupling appears nowhere in the permission docs ([community discussion 44650](https://github.com/orgs/community/discussions/44650)). Narrowing this back to *read* on least-privilege grounds is a tempting mistake and a quiet one: reviews keep posting, and threads simply stop closing until someone notices days later. CodeRabbit asks for the same read-and-write entry ([its docs](https://docs.coderabbit.ai/platforms/github-com) list read-and-write on "Code, commit statuses, issues, and pull requests"), so this is the category's floor rather than an unusual demand.
+   | Permission | Access | Used for |
+   |---|---|---|
+   | Checks | Read and write | the `review` check on the PR |
+   | Contents | Read and write | resolving review threads ([why](#why-contents-needs-write-access)) |
+   | Issues | Read and write | the status comment |
+   | Pull requests | Read and write | the review and its findings |
+   | Metadata | Read-only | GitHub's required baseline |
 
-What the permission does not buy is any write to your repository. The daemon makes no commits, no branches, and no file edits, and the installation token is attached to one `gh` call at a time rather than exported, so the review agents Claude Code spawns never inherit it ([ADR 0036](docs/adr/0036-github-app-identity.md) decision 5).
+4. Choose **Only on this account** and create the App.
+5. Note the **App ID** on the App's **General** page.
+6. On the same page, click **Generate a private key** and move the downloaded file where the daemon looks:
 
-If you ever change permissions on an App that is already installed, GitHub holds the change until you approve it at [github.com/settings/installations](https://github.com/settings/installations). Until you do, the App's settings page shows the new permission while its tokens still carry the old set.
+   ```bash
+   mkdir -p ~/.pr-review-agent
+   mv ~/Downloads/<downloaded>.private-key.pem ~/.pr-review-agent/app.pem
+   chmod 600 ~/.pr-review-agent/app.pem
+   ```
 
-**4. Restrict where it can be installed.** Pick **Only on this account**, then create the App.
+7. Open **Install App**, choose **Only select repositories**, and pick the repos to review. There is no installation ID to copy.
 
-**5. Download the private key.** On the App's settings page, under **Private keys**, click **Generate a private key**. GitHub downloads a `.pem` file and never shows it again; if you lose it, generate another and delete the old one. Put it where the daemon looks:
+### 2. Clone and configure
 
 ```bash
-mkdir -p ~/.pr-review-agent
-mv ~/Downloads/<downloaded>.private-key.pem ~/.pr-review-agent/app.pem
-chmod 600 ~/.pr-review-agent/app.pem
+git clone https://github.com/<owner>/pr-review-agent.git
+cd pr-review-agent
+cp templates/.env.example .env
 ```
 
-Set `APP_KEY_PATH` in the environment to keep it somewhere else.
-
-**6. Install the App on each repo you want reviewed.** Open the **Install App** tab, install it on your account, and choose **Only select repositories**. There is no installation id to copy down: the daemon asks GitHub which installation covers each watched repo ([ADR 0036](docs/adr/0036-github-app-identity.md) decision 4). A watched repo the App is not installed on is skipped, and named once in a warning when `daemon/run.sh` starts. Installing on a new repo mid-run needs no restart: the daemon resolves each repo's installation every cycle, so the next one picks it up. Only the startup warning waits for a restart.
-
-**7. Copy the App id into your config.** The **App ID** is on the App's General settings page, a number. It goes in `.env` as `GITHUB_APP_ID`, which the next section covers.
-
-## Install
+In `.env`, set the two required keys. `REPOS` is a space-separated list of `owner/repo` pairs.
 
 ```bash
-git clone https://github.com/<you>/pr-review-agent.git
-cd pr-review-agent
+REPOS=<owner>/<repo>
+GITHUB_APP_ID=<your-app-id>
+```
 
-# create your config and edit it
-# at minimum: REPOS=<owner>/<repo>, GITHUB_APP_ID=<your App id>
-cp templates/.env.example .env
+### 3. Start the daemon
 
-# run it — progress prints to the terminal; Ctrl-C to stop
+```bash
 bash daemon/run.sh
 ```
 
-Each cycle reviews your watched repos every `POLL_INTERVAL_SECONDS` (default 300). To update: Ctrl-C, `git pull`, re-run.
+It runs in the foreground. Open a non-draft pull request on a watched repo.
 
-### Run it in the background (optional)
+## How to tell it worked
 
-Want it always-on, surviving logout and reboot? Register a `launchd` `KeepAlive` job:
+**In the terminal:**
+
+- `polling loop up (pid …, interval 300s, …)`: the loop started.
+- `watched: <owner>/<repo> (app: <id>, …)`: your `.env` loaded.
+- `reviewing: <pr-url> (HEAD <sha>)`: a review began.
+- `cycle done · 1 repo · 1 reviewed`: the polling cycle finished.
+
+**On the pull request:**
+
+- A check named `review` appears while the review runs.
+- A status comment from `<app-name>[bot]` names the commit under review, then lists the findings.
+- A review from `<app-name>[bot]` carries the findings inline. With no findings, no review is posted and the `review` check passes with "No findings open on this commit".
+
+If none of this happens, see [Troubleshooting](#troubleshooting).
+
+## Stop and update
+
+- **Stop:** press Ctrl-C. The loop exits cleanly and releases its lock.
+- **Update:** stop it, run `git pull`, and start it again. A pull that changes only `daemon/poll.sh` or the review pipeline takes effect on the next polling cycle without a restart, because `run.sh` launches `poll.sh` fresh each cycle.
+
+---
+
+## How it works
+
+Each polling cycle, the daemon lists open PRs on each watched repo and skips drafts, PRs labeled `no-ai-review`, and commits it has already reviewed. For each remaining PR it makes a per-PR clone, runs the `code` and `intent` roles through `claude -p` ([ADR 0038](docs/adr/0038-review-roles-from-contamination-isolation.md)), applies the confidence gate and editor pass ([ADR 0022](docs/adr/0022-confidence-scored-generate-verify.md), [ADR 0016](docs/adr/0016-editorial-pass-over-review-content.md)), posts the survivors as one `COMMENT` review, and concludes the `review` check ([ADR 0039](docs/adr/0039-review-state-on-the-checks-row.md)). On later commits it reviews only the new changes and resolves threads the new code fixed ([ADR 0017](docs/adr/0017-commit-driven-thread-resolution.md)).
+
+Every agent runs as `claude -p --restricted`, which loads no settings, hooks, or `CLAUDE.md` from the per-PR clone; role definitions come from the daemon's own `.claude/agents/` ([ADR 0007](docs/adr/0007-operator-bundled-agents.md)). To change how reviews behave, edit those files in the daemon's checkout.
+
+### Replying to findings
+
+Reply inline to a finding and the daemon answers on the next polling cycle, checking your claim against the file at the latest commit:
+
+| Your reply | Example | Reaction | Answer |
+|---|---|---|---|
+| Fix claim | "Done in `abc123`" | 👀 | confirms the fix or names the mismatch |
+| Question or pushback | "This is a false positive" | 👀 | stands by the finding or withdraws it |
+| Acknowledgment | "Thanks" | 👍 | none |
+
+## Configuration
+
+All settings live in `.env` at the repository root, which git ignores; `templates/.env.example` documents each key. `REPOS`, `GITHUB_APP_ID`, `MAX_PARALLEL`, and `OPT_OUT_LABEL` are read from `.env` only. For the other keys, a shell variable overrides `.env`.
+
+| Key | Default | Controls |
+|---|---|---|
+| `REPOS` | required | repos to watch |
+| `GITHUB_APP_ID` | required | the App to post as |
+| `POLL_INTERVAL_SECONDS` | `300` | seconds between cycles |
+| `MAX_PARALLEL` | `1` (template: `3`) | PRs reviewed at once, capped at 16 |
+| `CLAUDE_SLOT_POOL_SIZE` | `3` (template: `10`) | concurrent `claude` calls |
+| `OPT_OUT_LABEL` | `no-ai-review` | label that skips a PR |
+| `CONFIDENCE_THRESHOLD` | `60` | minimum finding confidence, 0 to 100 |
+| `MAX_FINDINGS` | `10` | findings per review |
+| `REVIEW_MODEL` | `claude-opus-5-5` | model for every agent |
+| `REVIEW_EFFORT` | `high` | `low` to `max` |
+
+"Default" applies when the key is absent; the template ships some keys with other values. On startup the daemon names any template key your `.env` lacks.
+
+`APP_KEY_PATH`, read from the environment only, moves the private key from `~/.pr-review-agent/app.pem`.
+
+To skip a single PR, add the `no-ai-review` label (or your `OPT_OUT_LABEL`).
+
+## Run in the background (optional)
+
+To keep the daemon running across logout and reboot, register it as a `launchd` job:
 
 ```bash
-bash bin/install.sh     # writes the plist into ~/Library/LaunchAgents/ and bootstraps it
-bash bin/uninstall.sh   # stop and remove it
+bash bin/install.sh
 ```
 
-The background job is invisible and bound to this checkout's working tree, so keep the checkout on `main` — switching its branch silently breaks the running daemon ([ADR 0011](docs/adr/0011-foreground-first-operating-model.md)).
+This writes `~/Library/LaunchAgents/com.user.pr-review.plist` and starts the same `run.sh` loop, restarted by `launchd` if it exits with an error. Output goes to `.daemon.log`. `bash bin/uninstall.sh` removes the job and keeps the state in `~/.pr-review-agent/`. Re-run `install.sh` after changing your `PATH`; the job keeps the one it was installed with.
 
-## Configure
+Two limits:
 
-One file at the repo root:
+- **Keep this checkout on `main`.** The job runs from this working tree, so switching branches changes the running daemon. Develop in a separate clone ([ADR 0011](docs/adr/0011-foreground-first-operating-model.md)).
+- **Shell variables do not reach it.** The job sees only `PATH`, `HOME`, and `.env`, so put settings in `.env` and keep the key at the default path.
 
-- **`.env`** (required): which repos to watch, the id of the App it posts as, and the daemon's tunables. Copy `templates/.env.example` and edit it; every key is documented there, which is why this list does not repeat them.
-
-Watched repos need nothing checked in, and nothing they check in changes the review. The daemon hands `claude -p` its own agent definitions and loads no settings, hooks, or `CLAUDE.md` from the per-PR clone, because the clone holds the PR's head and its author controls it ([ADR 0007](docs/adr/0007-operator-bundled-agents.md)). To change how reviews behave, edit `.claude/agents/` in the daemon's own checkout.
-
-### Skip a single PR
-
-Label it `no-ai-review` (or whatever you set as `OPT_OUT_LABEL`). The daemon skips it on the next polling cycle.
-
-## Manual operation
+Check on it:
 
 ```bash
-bash daemon/poll.sh                # run one polling cycle by hand
-bash daemon/review-pr.sh <pr-url>  # review one PR ad-hoc
-
-# inspecting the optional background (launchd) install — a foreground run shows all this in the terminal already:
-tail -f .daemon.log                # follow its log
-echo $(( $(date +%s) - $(cat ~/.pr-review-agent/daemon.heartbeat) ))s   # seconds since its last cycle
+tail -f .daemon.log
+echo $(( $(date +%s) - $(cat ~/.pr-review-agent/daemon.heartbeat) ))s since last cycle
 ```
 
-## Submitting a review
+The heartbeat is stamped at the start of each polling cycle. Only one loop runs at a time; a second `run.sh` prints `another pr-review loop is already running` and exits.
 
-Every review submits immediately as a `COMMENT` review, posted by the App under its `<app>[bot]` identity ([ADR 0036](docs/adr/0036-github-app-identity.md)). There is no pending stage and no own-vs-others fork: a bot review has no private draft to protect, so it publishes in one call. Edit or hide it after the fact if needed.
+## One-shot commands
 
-## Replying to findings
+These run one step without the loop. `<pr-url>` is a full `https://github.com/<owner>/<repo>/pull/<number>` URL.
 
-Reply inline to a finding and the daemon picks it up on the next polling cycle. It classifies your reply and leaves an Ack reaction on it:
+| Command | Does |
+|---|---|
+| `bash daemon/poll.sh` | one polling cycle |
+| `bash daemon/review-pr.sh <pr-url>` | review one PR and post the result |
+| `bash daemon/review-pr.sh --dry-run <pr-url>` | review one PR, post nothing |
+| `bash daemon/reply-pr.sh <pr-url>` | answer pending replies on one PR |
 
-- **Fix claim** ("Done in `abc123`", "Removed"): 👀, then a threaded reply that either confirms the fix against the file at HEAD or pushes back with the specific mismatch.
-- **Question or pushback** ("Why flag this?", "This is a false positive"): 👀 ("seen"), then a threaded reply that either stands by the finding with evidence from the file at HEAD or withdraws it as a false positive.
-- **Acknowledgment** ("Thanks", "Deferring to V2"): 👍 ("noted"), no text reply.
+`review-pr.sh` skips a commit it has already reviewed; `--dry-run` reviews it anyway and keeps the per-PR clone, whose path it prints. `--keep-scratch` keeps the clone on a normal run too.
 
-The reaction lands on your comment from the `<app>[bot]`, so a "bot 👀" is plainly distinct from your own ([ADR 0036](docs/adr/0036-github-app-identity.md)); the shared-login ambiguity the operator-identity model carried here is gone.
+## Troubleshooting
+
+| Message or symptom | Fix |
+|---|---|
+| `missing '<tool>' on PATH` | install the tool, or fix `PATH` |
+| `App private key not readable at …` | place the key at `~/.pr-review-agent/app.pem` |
+| `.env not found …` | `cp templates/.env.example .env` |
+| `GITHUB_APP_ID must be a numeric App id` | copy the App ID, not the name |
+| `App not installed on: <repo>` | install the App on that repo |
+| `ModuleNotFoundError: No module named 'pydantic'` | install `pydantic` for `python3` |
+| `session limit pause active` | wait; polling resumes at the time shown |
+| reviews post, threads never resolve | grant Contents: Read and write |
+| no `review` check appears | grant Checks: Read and write |
+
+- **A repo you install the App on later** is picked up on the next polling cycle.
+- **After changing an installed App's permissions**, approve the change at [github.com/settings/installations](https://github.com/settings/installations). Until you do, the App's tokens carry the old set.
+- **When your Claude usage limit is reached**, the daemon pauses polling until the limit resets (or one hour, if it cannot read the reset time) instead of failing every PR.
+
+### Why Contents needs write access
+
+Contents: write is needed only to close review threads. GitHub's `resolveReviewThread` mutation rejects an App that holds only Pull requests: write, with `Resource not accessible by integration`, and the permission docs do not mention it ([community discussion 44650](https://github.com/orgs/community/discussions/44650)). With read access, reviews post but threads never close.
+
+The permission never writes to your repository. The daemon makes no commits, branches, or file edits, and attaches the App's short-lived installation token to one `gh` call at a time instead of exporting it, so the review agents never see it ([ADR 0036](docs/adr/0036-github-app-identity.md), decision 5).
 
 ## Forking
 
-Reviews post under your own GitHub App, so a fork attributes to whoever runs it with no shared identity. The footer links to the App's page (`github.com/apps/<slug>`), and the slug comes from the App you register and install ([ADR 0036](docs/adr/0036-github-app-identity.md)), not from the clone's git remote.
-
-To run a fork: register your own App, then set its id in `GITHUB_APP_ID` and drop its private key at `~/.pr-review-agent/app.pem` (see [Register the GitHub App](#register-the-github-app)).
+A fork posts under its own App; the review footer links to the page of the App the daemon signs in as. Register your own App (step 1 of the [Quick start](#quick-start)), set `GITHUB_APP_ID`, and place its key at `~/.pr-review-agent/app.pem`. Two Apps installed on one repo produce two independent reviews on every PR.
 
 ## License
 
