@@ -286,49 +286,36 @@ def test_non_terminal_output_carries_no_colour_codes(tmp_path):
 def test_off_a_terminal_lines_keep_their_full_text():
     long = "no new findings at " + "0" * 40 + "; skipping review object (ADR 0020)"
     _, err, _ = _run(
-        f'SECONDS=5; log_step "polling {"r" * 90}"; log_set_pr_context example 7; '
-        f'log_info "fetching diff"; log_info "{long}"',
+        f'log_info "polling {"r" * 90}"; '
+        'log_pr example 7 "$LOG_GLYPH_STEP" "fetching diff" 5; '
+        f'log_pr example 7 "$LOG_GLYPH_STEP" "{long}" 5',
         PR_LOG_COLOR="never",
     )
     assert err == (
-        f"[pr-review-agent] polling {'r' * 90} (+5s)\n"
+        f"[pr-review-agent] polling {'r' * 90}\n"
         f"  example#7  • fetching diff{' ' * 40}+5s\n"
         f"  example#7  • {long}     +5s\n"
     )
 
 
 # --- terminal width ------------------------------------------------------------
+# Status lines are the record of a run, so a terminal never cuts them; only agent
+# activity, a summary of what the agent is doing, is fitted to the width.
 
+ACTIVITY = "  example#7    review"
 LONG_MESSAGE = "no new findings at " + "0" * 40 + "; skipping review object (ADR 0020)"
 
 
-def test_on_a_terminal_every_line_of_a_pr_run_fits_its_width(tmp_path):
-    for columns in (60, 80, 140):
-        run_dir = tmp_path / str(columns)
-        run_dir.mkdir()
-        lines = _pr_run(run_dir, "auto", columns, LONG_MESSAGE)
-        assert len(lines) == 7, lines
-        assert all(len(line) <= columns for line in lines), (columns, lines)
-        assert any("…" in line for line in lines), lines
-
-
-def test_on_a_terminal_a_pipeline_line_ends_with_its_elapsed_time_at_the_right_edge(tmp_path):
-    lines = [
-        line for line in _pr_run(tmp_path, "auto", 80, LONG_MESSAGE) if " review  " not in line
-    ]
-    assert all(re.search(r" \+\d+s$", line) and len(line) == 80 for line in lines), lines
-    assert lines[0].startswith("  example#7  • no new findings at 000")
-
-
-def test_on_a_terminal_every_line_of_a_pr_run_starts_its_message_in_one_column(tmp_path):
+def test_on_a_terminal_a_status_line_longer_than_the_terminal_comes_out_whole(tmp_path):
     lines = _pr_run(tmp_path, "auto", 60, LONG_MESSAGE)
-    words = ["no", "fetching", "review", "review", "review", "submitted", "status"]
-    assert len({line.index(word) for line, word in zip(lines, words, strict=True)}) == 1, lines
+    assert re.fullmatch(rf"  example#7  • {re.escape(LONG_MESSAGE)} +\+\d+s", lines[0]), lines
 
 
-def test_on_a_terminal_a_path_keeps_its_file_name(tmp_path):
-    tool = [line for line in _pr_run(tmp_path, "auto", 60) if "→ Read" in line]
-    assert len(tool) == 1 and tool[0].endswith("/a.py") and "…" in tool[0], tool
+def test_on_a_terminal_a_cycle_line_longer_than_the_terminal_comes_out_whole():
+    lines = _on_terminal(
+        ["bash", "-c", f'source {LIB}\nlog_info "polling {"r" * 90}"'], 60, dict(os.environ)
+    )
+    assert lines == [f"[pr-review-agent] polling {'r' * 90}"]
 
 
 def test_on_a_terminal_a_failure_line_keeps_its_whole_reason():
@@ -341,22 +328,49 @@ def test_on_a_terminal_a_failure_line_keeps_its_whole_reason():
     assert reason in "".join(lines)
 
 
-def test_on_a_terminal_a_cycle_line_fits_and_keeps_its_elapsed_time():
+def test_on_a_terminal_a_degradation_warning_keeps_its_whole_text(tmp_path):
+    warning = "merge-skip: lens data-flow skipped (ValueError: " + "w" * 60 + ")"
+    stderr_file = tmp_path / "merge.stderr"
+    stderr_file.write_text(warning + "\n")
     lines = _on_terminal(
-        ["bash", "-c", f'source {LIB}\nSECONDS=5; log_step "polling {"r" * 90}"'],
+        [
+            "bash",
+            "-c",
+            f'source {LIB}\nlog_set_pr_context example 7; log_degradation_warnings "{stderr_file}"',
+        ],
         60,
         dict(os.environ),
     )
-    assert lines == [f"[pr-review-agent] polling {'r' * 27}… (+5s)"]
+    assert warning in "".join(lines)
 
 
-def test_a_terminal_narrower_than_the_floor_still_shows_twenty_columns_of_text():
-    lines = _on_terminal(
-        ["bash", "-c", f'source {LIB}\nlog_set_pr_context example 7; log_info "{"x" * 90}"'],
-        10,
-        dict(os.environ),
-    )
-    assert f"• {'x' * 19}…  +" in "".join(lines)
+def test_on_a_terminal_a_status_line_that_fits_ends_with_its_elapsed_time_at_the_right_edge(
+    tmp_path,
+):
+    lines = [line for line in _pr_run(tmp_path, "auto", 80) if not line.startswith(ACTIVITY)]
+    assert len(lines) == 4, lines
+    assert all(re.search(r" \+\d+s$", line) and len(line) == 80 for line in lines), lines
+
+
+def test_on_a_terminal_activity_lines_fit_its_width(tmp_path):
+    for columns in (60, 80, 140):
+        run_dir = tmp_path / str(columns)
+        run_dir.mkdir()
+        activity = [line for line in _pr_run(run_dir, "auto", columns) if line.startswith(ACTIVITY)]
+        assert len(activity) == 3, activity
+        assert all(len(line) <= columns for line in activity), (columns, activity)
+        assert columns == 140 or "…" in activity[1], activity
+
+
+def test_on_a_terminal_every_line_of_a_pr_run_starts_its_message_in_one_column(tmp_path):
+    lines = _pr_run(tmp_path, "auto", 60, LONG_MESSAGE)
+    words = ["no", "fetching", "review", "review", "review", "submitted", "status"]
+    assert len({line.index(word) for line, word in zip(lines, words, strict=True)}) == 1, lines
+
+
+def test_on_a_terminal_a_path_keeps_its_file_name(tmp_path):
+    tool = [line for line in _pr_run(tmp_path, "auto", 60) if "→ Read" in line]
+    assert len(tool) == 1 and tool[0].endswith("/a.py") and "…" in tool[0], tool
 
 
 CODEX_PREFIX = "  \x1b[36mexample#7\x1b[0m    review     "
@@ -416,34 +430,11 @@ def test_a_codex_error_keeps_its_whole_message_on_a_terminal_and_off_it(tmp_path
         assert lines[0] == f"  example#7    review     error: {message}", (columns, lines)
 
 
-def test_on_a_terminal_a_per_pr_clone_line_keeps_its_unique_directory(tmp_path):
-    scratch = "/var/folders/y_/fx1y4m792jx2x3gssfwgqt2r0000gn/T/pr-review-agent.Ab12Cd/clone"
-    for script in ("review-pr.sh", "reply-pr.sh"):
-        calls = [
-            line.strip()
-            for line in (REPO_ROOT / "daemon" / script).read_text().splitlines()
-            if "log_info" in line and "$SCRATCH" in line
-        ]
-        assert calls, script
-        lines = _on_terminal(
-            [
-                "bash",
-                "-c",
-                f"source {LIB}\nlog_set_pr_context example 7; SCRATCH={scratch}; "
-                + "; ".join(calls),
-            ],
-            80,
-            dict(os.environ),
-        )
-        assert len(lines) == len(calls), lines
-        assert all(scratch in line for line in lines), (script, lines)
-
-
-def test_on_a_terminal_each_line_reads_the_width_it_prints_at(tmp_path):
+def test_on_a_terminal_a_status_line_reads_the_width_it_prints_at(tmp_path):
     flag = tmp_path / "resized"
     script = (
-        f'log_set_pr_context example 7; log_info "{"x" * 90}"; '
-        f'until [[ -e "{flag}" ]]; do sleep 0.05; done; log_info "{"x" * 90}"'
+        'log_set_pr_context example 7; log_info "fetching diff"; '
+        f'until [[ -e "{flag}" ]]; do sleep 0.05; done; log_info "fetching diff"'
     )
     lines = _on_terminal(
         ["bash", "-c", f"source {LIB}\n{script}"], 80, dict(os.environ), resize=(50, flag)
@@ -451,17 +442,15 @@ def test_on_a_terminal_each_line_reads_the_width_it_prints_at(tmp_path):
     assert [len(line) for line in lines] == [80, 50], lines
 
 
-def test_on_a_terminal_a_degradation_warning_keeps_its_whole_text(tmp_path):
-    warning = "merge-skip: lens data-flow skipped (ValueError: " + "w" * 60 + ")"
-    stderr_file = tmp_path / "merge.stderr"
-    stderr_file.write_text(warning + "\n")
-    lines = _on_terminal(
-        [
-            "bash",
-            "-c",
-            f'source {LIB}\nlog_set_pr_context example 7; log_degradation_warnings "{stderr_file}"',
-        ],
-        60,
-        dict(os.environ),
+def test_on_a_terminal_an_activity_line_reads_the_width_it_prints_at(tmp_path):
+    flag = tmp_path / "resized"
+    event = json.dumps(
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "y" * 120}]}}
     )
-    assert warning in "".join(lines)
+    script = (
+        f"{{ echo '{event}'; until [[ -e \"{flag}\" ]]; do sleep 0.05; done; echo '{event}'; }} | "
+        f'"{sys.executable}" "{REPO_ROOT / "daemon" / "stream_format.py"}" '
+        f'--raw-out "{tmp_path / "raw.txt"}" --prefix "P> "'
+    )
+    lines = _on_terminal(["bash", "-c", script], 80, dict(os.environ), resize=(50, flag))
+    assert [len(line) for line in lines] == [80, 50], lines

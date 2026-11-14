@@ -180,7 +180,7 @@ for ri in "${!REPOS[@]}"; do
     pr_url="$(jq -r '.url' <<<"$pr_obj")"
 
     if [[ "$is_draft" == "true" ]]; then
-      _LOG_WHOLE=1 log_info "skipped (draft): $pr_url"
+      log_info "skipped (draft): $pr_url"
       continue
     fi
 
@@ -189,7 +189,7 @@ for ri in "${!REPOS[@]}"; do
       has_optout="$(jq --arg label "$OPT_OUT_LABEL" \
         '[.labels[]?.name] | any(. == $label)' <<<"$pr_obj")"
       if [[ "$has_optout" == "true" ]]; then
-        _LOG_WHOLE=1 log_info "skipped (opt-out label '$OPT_OUT_LABEL'): $pr_url"
+        log_info "skipped (opt-out label '$OPT_OUT_LABEL'): $pr_url"
         continue
       fi
     fi
@@ -226,16 +226,16 @@ for ri in "${!REPOS[@]}"; do
       # ADR 0006 Discovery step 5: API failure must not collapse to first-review
       # when state is also empty — skip and retry on next tick instead.
       if [[ "$sentinel_rc" -eq 2 && -z "$last_sha" ]]; then
-        _LOG_WHOLE=1 log_info "skipped (discovery API down, no state fallback): $pr_url"
+        log_info "skipped (discovery API down, no state fallback): $pr_url"
         continue
       fi
     fi
     if [[ -n "$last_sha" && "$head_sha" == "$last_sha" ]]; then
-      _LOG_WHOLE=1 log_info "skipped (same SHA ${head_sha:0:12}): $pr_url"
+      log_info "skipped (same SHA ${head_sha:0:12}): $pr_url"
       continue
     fi
 
-    _LOG_WHOLE=1 log_info "reviewing: $pr_url (HEAD ${head_sha:0:12})"
+    log_info "reviewing: $pr_url (HEAD ${head_sha:0:12})"
     # Pass last_sha down so review-pr.sh can scope the diff to changes since
     # the prior review's HEAD. Empty last_sha (first-review) uses the full
     # PR diff.

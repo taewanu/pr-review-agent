@@ -14,11 +14,6 @@ _LOG_PR_NUM=""
 # log_err/log_failure are never gated: identity and problems always surface.
 _LOG_QUIET=0
 
-# Set to 1 (as a local, or as `_LOG_WHOLE=1 log_info …`) around a log call whose
-# text nothing else keeps or the operator acts on, such as an error or a path, so
-# a terminal wraps the line instead of cutting it.
-_LOG_WHOLE=""
-
 # log_set_pr_context <repo-name> <pr-number>
 log_set_pr_context() {
   _LOG_PR_REPO="$1"
@@ -29,12 +24,11 @@ log_info() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*" "$SECONDS"
   elif [[ "$_LOG_QUIET" != "1" ]]; then
-    _log_plain "$*"
+    printf '[pr-review-agent] %s\n' "$*" >&2
   fi
 }
 
 log_err() {
-  local _LOG_WHOLE=1
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_FAIL" "$*" "$SECONDS"
   else
@@ -50,7 +44,7 @@ log_step() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*" "$SECONDS"
   elif [[ "$_LOG_QUIET" != "1" ]]; then
-    _log_plain "$*" " (+${SECONDS}s)"
+    printf '[pr-review-agent] %s (+%ds)\n' "$*" "${SECONDS}" >&2
   fi
 }
 
@@ -60,7 +54,7 @@ log_ok() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_OK" "$*" "$SECONDS"
   else
-    _log_plain "$*" " (+${SECONDS}s)"
+    printf '[pr-review-agent] %s (+%ds)\n' "$*" "${SECONDS}" >&2
   fi
 }
 
@@ -74,7 +68,7 @@ log_ok() {
 # drop left no signal before cleanup() removed the scratch. Lives in lib.sh, not
 # inline, so test_degradation_warnings.py can source it (ADR 0026).
 log_degradation_warnings() {
-  local stderr_file="$1" line _LOG_WHOLE=1
+  local stderr_file="$1" line
   [[ -r "$stderr_file" ]] || return 0
   while IFS= read -r line; do
     log_info "$line"
@@ -201,67 +195,48 @@ pr_prefix() {
   _sgr 0
 }
 
-# Width the per-PR message is padded to off a terminal, so the elapsed times of
-# one PR's lines line up; a longer message pushes its time right instead of being
-# cut.
+# Width the per-PR message is padded to, so the elapsed times of one PR's lines
+# line up; a longer message pushes its time right instead of being cut.
 LOG_MSG_WIDTH=48
 
-# The fewest columns a line's text is cut to; a narrower terminal wraps the line.
-LOG_MIN_TEXT_COLUMNS=20
-
-# _log_fit <text> <used-columns>: sets _LOG_FIT to <text> cut with an ellipsis to
-# the columns stderr's terminal has left after <used-columns>, and _LOG_COLS to
-# that budget; off a terminal, or for a text of several lines, it leaves the text
-# whole and _LOG_COLS empty, and under _LOG_WHOLE it keeps the text whole but
-# still sets the budget. It reads the width on every line so a resize applies
-# from the next one, at the cost of one stty process, since non-interactive bash
-# never updates COLUMNS.
-_log_fit() {
-  local text="$1" size
-  _LOG_FIT="$text"
-  _LOG_COLS=""
-  [[ -t 2 && "$text" != *$'\n'* ]] || return 0
+# _log_columns: sets _LOG_COLUMNS to the width of stderr's terminal, or empty off
+# a terminal. It runs stty on every line so a resize applies from the next one,
+# since non-interactive bash never updates COLUMNS.
+_log_columns() {
+  local size
+  _LOG_COLUMNS=""
+  [[ -t 2 ]] || return 0
   size="$(stty size <&2 2>/dev/null)" || return 0
   size="${size#* }"
   [[ "$size" =~ ^[1-9][0-9]*$ ]] || return 0
-  _LOG_COLS=$((size - $2))
-  ((_LOG_COLS >= LOG_MIN_TEXT_COLUMNS)) || _LOG_COLS=$LOG_MIN_TEXT_COLUMNS
-  if [[ -z "$_LOG_WHOLE" ]] && ((${#text} > _LOG_COLS)); then
-    _LOG_FIT="${text:0:_LOG_COLS-1}…"
-  fi
-}
-
-# _log_plain <message> [suffix]: a "[pr-review-agent] message suffix" line.
-_log_plain() {
-  local suffix="${2:-}"
-  _log_fit "$1" $((18 + ${#suffix}))
-  printf '[pr-review-agent] %s%s\n' "$_LOG_FIT" "$suffix" >&2
+  _LOG_COLUMNS="$size"
 }
 
 # log_pr <repo-name> <pr-number> <glyph> <message> [elapsed-seconds]
 # Emit one styled per-PR line: "  repo#pr  <glyph> message      +Ns". The
 # coloured prefix tells interleaved parallel lines apart; the elapsed time is
-# dimmed, right-aligned past LOG_MSG_WIDTH (at the right edge on a terminal), and
-# omitted when empty. A message of several lines gets no padding, because its
-# last line starts in no column the others share.
+# dimmed, right-aligned past LOG_MSG_WIDTH (at the terminal's right edge when the
+# line fits there), and omitted when empty. The message is never cut, since the
+# log line is its only record. A message of several lines gets no padding,
+# because its last line starts in no column the others share.
 log_pr() {
-  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}" stamp="" field
-  # The stamp's field holds the stamp and at least two spaces before it.
-  [[ -z "$elapsed" ]] || stamp="  +${elapsed}s"
-  _log_fit "$msg" $((6 + ${#repo} + 1 + ${#pr} + ${#stamp}))
+  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}" pad edge
   {
-    printf '  %s  %s %s' "$(pr_prefix "$repo" "$pr")" "$glyph" "$_LOG_FIT"
-    if [[ -n "$stamp" ]]; then
-      if [[ -n "$_LOG_COLS" ]]; then
-        field=$((_LOG_COLS - ${#_LOG_FIT} + ${#stamp}))
-        ((field >= ${#stamp})) || field=${#stamp}
-      elif ((${#msg} > LOG_MSG_WIDTH)) || [[ "$msg" == *$'\n'* ]]; then
-        field=8
-      else
-        field=$((LOG_MSG_WIDTH - ${#msg} + 8))
+    printf '  %s  %s %s' "$(pr_prefix "$repo" "$pr")" "$glyph" "$msg"
+    if [[ -n "$elapsed" ]]; then
+      pad=$((LOG_MSG_WIDTH - ${#msg}))
+      if ((pad < 0)) || [[ "$msg" == *$'\n'* ]]; then
+        pad=0
+      fi
+      _log_columns
+      if [[ -n "$_LOG_COLUMNS" && "$msg" != *$'\n'* ]]; then
+        # The pad that ends the line at the right edge, used while it leaves the
+        # "+Ns" at least two spaces after the message.
+        edge=$((_LOG_COLUMNS - 6 - ${#repo} - 1 - ${#pr} - ${#msg} - 8))
+        ((edge < ${#elapsed} - 4)) || pad=$edge
       fi
       _sgr 2
-      printf '%*s' "$field" "${stamp#  }"
+      printf '%*s' $((pad + 8)) "+${elapsed}s"
       _sgr 0
     fi
     printf '\n'
@@ -636,13 +611,13 @@ offer_model_setup() {
   [[ -z "${REVIEW_HARNESS:-}" && -z "${REVIEW_MODEL:-}" ]] || return 0
   [[ "$({ grep -E '^REVIEW_HARNESS=' "$1" 2>/dev/null || true; } | head -1)" == REVIEW_HARNESS= ]] || return 0
   if [[ ! -t 0 ]]; then
-    _LOG_WHOLE=1 log_info "no agent CLI or model chosen, so reviews run on the defaults; run bash bin/setup-model.sh in a terminal to choose them"
+    log_info "no agent CLI or model chosen, so reviews run on the defaults; run bash bin/setup-model.sh in a terminal to choose them"
     return 0
   fi
   printf 'No agent CLI or model chosen for reviews. Set them up now? [Y/n] ' >&2
   if ! IFS= read -t "$OFFER_TIMEOUT_SECONDS" -r answer; then
     printf '\n' >&2
-    _LOG_WHOLE=1 log_info "no answer, so the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
+    log_info "no answer, so the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
     return 0
   fi
   case "$answer" in
@@ -650,14 +625,14 @@ offer_model_setup() {
       bash "$(dirname "${BASH_SOURCE[0]}")/../bin/setup-model.sh" "$1" || rc=$?
       # setup-model.sh exits TIMEOUT_EXIT when a prompt goes unanswered.
       if ((rc == TIMEOUT_EXIT)); then
-        _LOG_WHOLE=1 log_info "the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
+        log_info "the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
         return 0
       fi
       return "$rc"
       ;;
     *)
       set_dotenv_keys "$1" REVIEW_HARNESS=claude || return 0
-      _LOG_WHOLE=1 log_info "continuing on the defaults; wrote REVIEW_HARNESS=claude to .env so this is not asked again; run bash bin/setup-model.sh to choose later"
+      log_info "continuing on the defaults; wrote REVIEW_HARNESS=claude to .env so this is not asked again; run bash bin/setup-model.sh to choose later"
       ;;
   esac
 }
@@ -1192,7 +1167,7 @@ warn_env_drift() {
     grep -qE "^${key}=" "$env_file" || missing+=("$key")
   done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$template_file")
   ((${#missing[@]} > 0)) || return 0
-  _LOG_WHOLE=1 log_info "config drift: ${missing[*]} in templates/.env.example but not in .env; running on code defaults; add the key(s) to .env if that is not intended"
+  log_info "config drift: ${missing[*]} in templates/.env.example but not in .env; running on code defaults; add the key(s) to .env if that is not intended"
 }
 
 # Outer per-PR watchdog cap (#121). run_with_timeout bounds only one inner
