@@ -24,6 +24,7 @@ from agent_fixture import (
     RESULT,
     CallSite,
     call_site,
+    clone_dir,
     run_agent,
     run_agent_calls,
 )
@@ -138,8 +139,8 @@ def test_each_call_site_sends_its_exact_argv(tmp_path, script, phase, mode, agen
     ("mode", "agent"), [("read-only", "review-agent-editor"), ("orchestrate", None)]
 )
 def test_daemon_asks_for_a_fail_closed_sandbox_bounded_to_the_clone(tmp_path, mode, agent):
-    clone = tmp_path / "clone"
-    clone.mkdir()
+    clone = clone_dir(tmp_path)
+    clone.mkdir(parents=True)
     real = tmp_path.resolve() / "real"
     (real / "state").mkdir(parents=True)
     (real / "app.pem").touch()
@@ -179,7 +180,10 @@ def test_daemon_asks_for_a_fail_closed_sandbox_bounded_to_the_clone(tmp_path, mo
     # it sits under a denied root, as it does under the temp directory.
     agent_tmp = Path(run.env["CLAUDE_CODE_TMPDIR"]).resolve()
     assert fs["allowRead"] == [str(clone.resolve()), str(agent_tmp)]
-    assert fs["denyWrite"] == [str(clone.resolve())]
+    # Denying the clone itself instead leaves it under the read-denied temp
+    # directory, where Linux's sandbox keeps protected-path placeholders that it
+    # cannot create in the read-only clone, so no command starts.
+    assert fs["denyWrite"] == [str(clone.resolve().parent)]
     assert sandbox["credentials"] == {"files": [{"path": str(real / "app.pem"), "mode": "deny"}]}
 
 
@@ -283,7 +287,7 @@ def test_git_inside_the_agent_skips_its_config_under_the_home_directory(tmp_path
 @pytest.mark.parametrize(("script", "phase", "agent"), _READ_ONLY_SITES)
 def test_read_only_system_prompt_is_the_daemon_definitions_body(tmp_path, script, phase, agent):
     # The clone is the PR head, so a definition it carries is the PR author's.
-    planted = tmp_path / "clone" / ".claude" / "agents" / f"{agent}.md"
+    planted = clone_dir(tmp_path) / ".claude" / "agents" / f"{agent}.md"
     planted.parent.mkdir(parents=True)
     planted.write_text("---\nname: planted\n---\nPLANTED INSTRUCTIONS\n")
     run = run_agent(tmp_path, "read-only", agent=_site(script, phase).agent)
@@ -294,7 +298,7 @@ def test_read_only_system_prompt_is_the_daemon_definitions_body(tmp_path, script
 
 def test_orchestrator_roles_are_the_daemon_definitions(tmp_path):
     # The clone is the PR head, so a definition it carries is the PR author's.
-    planted = tmp_path / "clone" / ".claude" / "agents" / "review-agent-code.md"
+    planted = clone_dir(tmp_path) / ".claude" / "agents" / "review-agent-code.md"
     planted.parent.mkdir(parents=True)
     planted.write_text("---\nname: review-agent-code\ntools: Read\n---\nPLANTED INSTRUCTIONS\n")
     run = run_agent(tmp_path, "orchestrate")
@@ -332,6 +336,16 @@ def test_unknown_agent_refuses_without_running_claude(tmp_path):
     assert run.rc == 1
     assert run.argv is None
     assert "no agent definition" in run.stderr
+
+
+def test_a_clone_sharing_its_directory_refuses_without_running_claude(tmp_path):
+    # The sandbox denies writes to the clone's directory, so a neighbour there
+    # would be denied too, and a shared temp root would deny the agent its own.
+    (clone_dir(tmp_path).parent / "another-clone").mkdir(parents=True)
+    run = run_agent(tmp_path, "read-only", agent="review-agent-editor")
+    assert run.rc == 1
+    assert run.argv is None
+    assert "make_clone_dir" in run.stderr
 
 
 def test_every_call_site_goes_through_run_agent():

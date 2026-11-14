@@ -215,12 +215,12 @@ if [[ "$(jq 'length' <<<"$THREADS_JSON")" -eq 0 ]]; then
   exit 0
 fi
 
-SCRATCH="$(make_temp_dir pr-review-reply)"
+SCRATCH="$(make_clone_dir pr-review-reply)"
 POST_ERR=""
 cleanup() {
   release_pr_lock "${REPLY_LOCK_FILE:-}"
   if [[ $KEEP_SCRATCH -ne 1 ]]; then
-    rm -rf "$SCRATCH"
+    rm -rf "$(dirname "$SCRATCH")"
   fi
   if [[ -n "$POST_ERR" ]]; then
     rm -f "$POST_ERR"

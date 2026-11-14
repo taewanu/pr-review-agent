@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from agent_fixture import RESULT, run_agent
+from agent_fixture import RESULT, clone_dir, run_agent
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
@@ -59,8 +59,8 @@ def test_a_planted_symlink_is_not_written_through(tmp_path):
     victim_dir = tmp_path / "victim-dir"
     victim_dir.mkdir()
     (victim_dir / "kept.txt").write_text("victim")
-    clone = tmp_path / "clone"
-    clone.mkdir()
+    clone = clone_dir(tmp_path)
+    clone.mkdir(parents=True)
     for name in (".pr-review-raw.txt", ".pr-review-raw.txt.cost", ".pr-review-raw.txt.system.md"):
         (clone / name).symlink_to(victim)
     # A case-insensitive filesystem resolves this to the daemon's stderr sidecar.
@@ -76,8 +76,8 @@ def test_a_planted_symlink_is_not_written_through(tmp_path):
 
 
 def test_a_committed_role_payload_is_not_merged(tmp_path):
-    clone = tmp_path / "clone"
-    clone.mkdir()
+    clone = clone_dir(tmp_path)
+    clone.mkdir(parents=True)
     (clone / ".pr-review-raw-intent.txt").write_text(_lens_payload("PLANTED finding.", 7))
     ensure_payloads = _lift(r"^role_i=0\nwhile .*?^done$")
     # The code role lands its payload and the intent role writes nothing.
@@ -99,8 +99,8 @@ def test_a_committed_role_payload_is_not_merged(tmp_path):
 
 
 def test_a_committed_cost_file_is_not_summed(tmp_path):
-    clone = tmp_path / "clone"
-    clone.mkdir()
+    clone = clone_dir(tmp_path)
+    clone.mkdir(parents=True)
     (clone / ".pr-review-planted.txt.cost").write_text("1e400")
     (clone / "planted.cost").write_text("1e400")
     run = run_agent(tmp_path, "read-only", agent="review-agent-reply")
@@ -115,7 +115,7 @@ def test_a_committed_cost_file_is_not_summed(tmp_path):
 
 @pytest.mark.parametrize("name", [".pr-review-raw.txt", ".pr-review-raw.txt.stderr"])
 def test_a_committed_directory_does_not_fail_the_write(tmp_path, name):
-    planted = tmp_path / "clone" / name
+    planted = clone_dir(tmp_path) / name
     planted.mkdir(parents=True)
     (planted / "inner.txt").write_text("planted")
 

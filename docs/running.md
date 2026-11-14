@@ -179,7 +179,7 @@ These run one step without the loop. `<pr-url>` is a full `https://github.com/<o
 | `bash daemon/review-pr.sh --dry-run <pr-url>` | review one PR, post nothing |
 | `bash daemon/reply-pr.sh <pr-url>` | answer pending replies on one PR |
 
-`review-pr.sh` skips a commit it has already reviewed. `--dry-run` reviews it anyway and keeps the per-PR clone, whose path it prints. `--keep-scratch` keeps the per-PR clone on a normal run of either script.
+`review-pr.sh` skips a commit it has already reviewed. `--dry-run` reviews it anyway and keeps the per-PR clone, whose path it prints. `--keep-scratch` keeps the per-PR clone on a normal run of either script. The clone sits alone in a directory of its own, so remove that parent directory, not only the clone.
 
 ## Forking
 
