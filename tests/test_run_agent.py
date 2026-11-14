@@ -284,6 +284,27 @@ def test_git_inside_the_agent_skips_its_config_under_the_home_directory(tmp_path
     }
 
 
+def test_the_tool_shim_cache_sits_where_no_sandboxed_command_can_write(tmp_path):
+    # The unsandboxed claude resolves its own git through this cache, so a PR
+    # able to write it could run a binary of its choosing outside the sandbox.
+    run = run_agent(tmp_path, "read-only", agent="review-agent-reply")
+    assert run.rc == 0, run.stderr
+    cache = Path(run.env["xcrun_db"]).resolve()
+    agent_tmp = Path(run.env["CLAUDE_CODE_TMPDIR"]).resolve()
+    fs = run.split_settings()[1]["sandbox"]["filesystem"]
+    # Inside agent_tmp, sandboxed commands write only Claude Code's own temp directory.
+    writable = [agent_tmp / f"claude-{os.getuid()}", *map(Path, fs.get("allowWrite", []))]
+    assert cache.parent == agent_tmp
+    assert not any(cache.is_relative_to(w) for w in writable)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="xcrun ships with macOS only")
+def test_the_tool_shim_cache_is_filled_before_claude_starts(tmp_path):
+    run = run_agent(tmp_path, "read-only", agent="review-agent-reply")
+    assert run.rc == 0, run.stderr
+    assert run.xcrun_db_existed
+
+
 @pytest.mark.parametrize(("script", "phase", "agent"), _READ_ONLY_SITES)
 def test_read_only_system_prompt_is_the_daemon_definitions_body(tmp_path, script, phase, agent):
     # The clone is the PR head, so a definition it carries is the PR author's.
