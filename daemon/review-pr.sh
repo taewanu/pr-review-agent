@@ -209,7 +209,7 @@ log_total_review_cost() {
 cleanup() {
   release_pr_lock "${LOCK_FILE:-}"
   if [[ $KEEP_SCRATCH -eq 0 && -n "${SCRATCH:-}" ]]; then
-    rm -rf "$SCRATCH"
+    rm -rf "$(dirname "$SCRATCH")"
   fi
 }
 
@@ -535,7 +535,7 @@ if [[ $DRY_RUN -eq 0 ]] &&
   exit 0
 fi
 
-SCRATCH="$(make_temp_dir pr-review-agent)"
+SCRATCH="$(make_clone_dir pr-review-agent)"
 if [[ $KEEP_SCRATCH -eq 1 ]]; then
   log_info "per-PR clone (kept): $SCRATCH"
 else

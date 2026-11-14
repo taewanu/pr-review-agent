@@ -783,10 +783,20 @@ _version_key() {
 # which allowRead re-opens because the narrower rule wins; it writes nothing in
 # the clone and reaches no network. Paths are physical because /tmp and /var are
 # symlinks on macOS.
+#
+# Writes are denied on the directory holding the clone, not on the clone, because
+# only a path strictly under a denied directory spares the Linux sandbox from
+# mounting placeholders (.gitconfig and more) that bubblewrap cannot create in a
+# read-only clone.
 agent_sandbox_settings() {
-  local clone agent_tmp tmpdir mktemp_dir slash_tmp state checkout key
+  local clone holder agent_tmp tmpdir mktemp_dir slash_tmp state checkout key
   clone="$(pwd -P)" &&
+    holder="$(dirname "$clone")" &&
     agent_tmp="$(cd "$1" && pwd -P)" || return 1
+  if [[ "$(ls -A "$holder")" != "$(basename "$clone")" ]]; then
+    log_err "run_agent: ${clone} shares its directory with other files, which the sandbox would deny writes to as well; make the clone with make_clone_dir"
+    return 1
+  fi
   # The daemon's own temp files land where mktemp puts them, which on macOS is
   # the user temp directory even when TMPDIR is unset or names another one.
   if ! mktemp_dir="$(mktemp -u -t pr-review-probe.XXXXXX)"; then
@@ -801,7 +811,7 @@ agent_sandbox_settings() {
     key="$(physical_path "$APP_KEY_PATH")" || return 1
   jq -cn --arg clone "$clone" --arg agent_tmp "$agent_tmp" --arg tmpdir "$tmpdir" \
     --arg mktemp_dir "$mktemp_dir" --arg slash_tmp "$slash_tmp" --arg state "$state" \
-    --arg checkout "$checkout" --arg key "$key" '{sandbox: {
+    --arg checkout "$checkout" --arg key "$key" --arg holder "$holder" '{sandbox: {
     enabled: true,
     failIfUnavailable: true,
     allowUnsandboxedCommands: false,
@@ -809,7 +819,7 @@ agent_sandbox_settings() {
     filesystem: {
       denyRead: (["~/", $tmpdir, $mktemp_dir, $slash_tmp, $state, $checkout] | unique),
       allowRead: [$clone, $agent_tmp],
-      denyWrite: [$clone]
+      denyWrite: [$holder]
     },
     credentials: {files: [{path: $key, mode: "deny"}]},
     network: {strictAllowlist: true}
@@ -1071,6 +1081,16 @@ make_temp_dir() {
   local probe
   probe="$(mktemp -u -t "$1.XXXXXX")" || return 1
   mktemp -d "$(dirname "$probe")/$1.XXXXXX"
+}
+
+# make_clone_dir <name>
+# Creates and prints an empty directory for a per-PR clone, alone inside a fresh
+# make_temp_dir <name>, which the agent sandbox denies writes to (see
+# agent_sandbox_settings). Remove the clone's parent to clean up.
+make_clone_dir() {
+  local holder
+  holder="$(make_temp_dir "$1")" || return 1
+  mkdir "$holder/clone" && printf '%s\n' "$holder/clone"
 }
 
 # clear_reserved_names <clone>

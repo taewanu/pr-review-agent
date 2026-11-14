@@ -184,14 +184,14 @@ def _catalog(base: Path, catalog: dict = CATALOG) -> str:
     return str(path)
 
 
-def _temp_root_under_tmp(base: Path) -> None:
-    """Moves the temp root to /tmp by answering make_temp_dir's -u probe there,
+def _temp_root_at(base: Path, root: str = "/tmp") -> None:
+    """Moves the temp root to `root` by answering make_temp_dir's -u probe there,
     because macOS mktemp -t ignores TMPDIR; every other call runs unchanged."""
     real_mktemp = shutil.which("mktemp")
     assert real_mktemp
     fake_mktemp = base / "fakebin" / "mktemp"
     fake_mktemp.write_text(
-        f'#!/bin/sh\n[ "$1" = -u ] && exec "{real_mktemp}" -u /tmp/pr-review-test.XXXXXX\n'
+        f'#!/bin/sh\n[ "$1" = -u ] && exec "{real_mktemp}" -u {root}/pr-review-test.XXXXXX\n'
         f'exec "{real_mktemp}" "$@"\n'
     )
     fake_mktemp.chmod(0o755)
@@ -663,7 +663,7 @@ def test_codex_with_the_temp_root_under_tmp_stops_before_the_model_question(base
     dotenv = _dotenv(base)
     calls = base / "calls.log"
     env = _env(base, FAKE_CATALOG=_catalog(base), FAKE_CALLS=str(calls))
-    _temp_root_under_tmp(base)
+    _temp_root_at(base)
     result = _wizard(base, ["codex", "1", "high", "send"], dotenv, env)
     assert result.returncode == 1
     assert "Codex refuses to run in" in result.stderr
@@ -935,6 +935,21 @@ def test_make_temp_dir_makes_one_directory_with_a_random_suffix(tmp_path):
         assert [p.name for p in made.parent.glob(f"{name}.*")] == [made.name]
     finally:
         made.rmdir()
+
+
+def test_make_clone_dir_makes_an_empty_clone_alone_in_a_fresh_directory(tmp_path):
+    name = f"pr-review-make-clone-dir-{os.getpid()}"
+    result = _lib(f"make_clone_dir {name}", {**os.environ, "TMPDIR": str(tmp_path)})
+    assert result.returncode == 0, result.stderr
+    clone = Path(result.stdout.strip())
+    try:
+        assert clone.is_dir() and not any(clone.iterdir())
+        assert list(clone.parent.iterdir()) == [clone]
+        assert clone.parent.name.startswith(f"{name}.")
+        assert [p.name for p in clone.parent.parent.glob(f"{name}.*")] == [clone.parent.name]
+    finally:
+        clone.rmdir()
+        clone.parent.rmdir()
 
 
 # The flag form
@@ -1313,7 +1328,7 @@ def test_check_with_one_failure_names_it_exits_non_zero_and_writes_nothing(base,
     body, make_env, line = CHECK_FAILURES[case]
     env = make_env(base)
     if case == "codex temp root refused":
-        _temp_root_under_tmp(base)
+        _temp_root_at(base)
     result, dotenv = _check(base, body, env)
     assert result.returncode == 1
     assert [ln for ln in result.stdout.splitlines() if ln.endswith(": failed")] == [line]
@@ -1336,6 +1351,14 @@ def test_check_with_test_call_makes_exactly_one_model_call(base):
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[-1] == "test call: ok"
     assert len(_model_calls(calls)) == 1
+
+
+def test_check_with_test_call_leaves_no_temp_directory_behind(base):
+    env = _env(base)
+    _temp_root_at(base, str(base / "tmp"))
+    result, _ = _check(base, "REVIEW_HARNESS=claude\n", env, "--test-call")
+    assert result.returncode == 0, result.stderr
+    assert list((base / "tmp").iterdir()) == []
 
 
 # --list-models

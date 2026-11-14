@@ -386,7 +386,7 @@ def run_review(fixture: dict) -> dict:
             "cost": None,
             "tokens": 0,
             "count": 0,
-            "scratch": None,
+            "clone_holder": None,
             "rc": -1,  # ERR, distinct from a real review's rc; -1 == wall-clock kill
             "stderr_tail": f"review exceeded {_REVIEW_TIMEOUT_SECONDS}s wall-clock; killed",
         }
@@ -416,7 +416,8 @@ def run_review(fixture: dict) -> dict:
         "cost": cost,
         "tokens": tokens,
         "count": int(contract.get("dryrun_count", 0)),
-        "scratch": str(scratch) if scratch else None,
+        # The clone sits alone in a directory of its own; removing that removes both.
+        "clone_holder": str(scratch.parent) if scratch else None,
         "rc": proc.returncode,
         "stderr_tail": stderr[-800:],
     }
@@ -772,8 +773,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"caught={verdict['caught']} "
                     f"others={verdict['other_count']} noise={verdict['noise_count']}"
                 )
-            if review["scratch"] and os.path.isdir(review["scratch"]):
-                shutil.rmtree(review["scratch"], ignore_errors=True)
+            if review["clone_holder"] and os.path.isdir(review["clone_holder"]):
+                shutil.rmtree(review["clone_holder"], ignore_errors=True)
             print(
                 f"  {fixture['id']} run{run_i + 1}/{args.repeats}: "
                 f"{label} tokens={review['tokens']} cost={dollars(review['cost'])} "

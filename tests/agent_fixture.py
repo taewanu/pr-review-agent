@@ -57,6 +57,11 @@ class AgentRun:
         return self.argv[:i] + self.argv[i + 2 :], json.loads(self.argv[i + 1])
 
 
+def clone_dir(tmp_path: Path) -> Path:
+    """The clone run_agent runs in, alone in its directory as make_clone_dir makes it."""
+    return tmp_path / "holder" / "clone"
+
+
 def run_agent(
     tmp_path: Path,
     mode: str,
@@ -79,8 +84,8 @@ def run_agent(
     fake = bindir / "claude"
     fake.write_text(_FAKE_CLAUDE)
     fake.chmod(0o755)
-    clone = tmp_path / "clone"
-    clone.mkdir(exist_ok=True)
+    clone = clone_dir(tmp_path)
+    clone.mkdir(parents=True, exist_ok=True)
     prompt = clone / "prompt.txt"
     prompt.write_text(PROMPT)
     raw = clone / ".pr-review-raw.txt"

@@ -115,7 +115,7 @@ DOTENV="${DOTENV:-$REPO_ROOT/.env}"
 
 WORK=""
 OUT=""
-cleanup() { rm -rf "$WORK" "$OUT"; }
+cleanup() { rm -rf "${WORK:+$(dirname "$WORK")}" "$OUT"; }
 trap cleanup EXIT
 
 # Seconds each prompt waits. Override PR_REVIEW_ANSWER_TIMEOUT_SECONDS for tests.
@@ -239,13 +239,13 @@ check_codex_login() {
 
 # The test call runs in a directory made as the daemon makes each per-PR clone.
 make_work_dirs() {
-  WORK="$(make_temp_dir pr-review-setup)"
+  WORK="$(make_clone_dir pr-review-setup)"
   OUT="$(make_temp_dir pr-review-setup-out)"
 }
 
 check_temp_root() {
   local temp_root
-  temp_root="$(cd "$WORK/.." && pwd -P)"
+  temp_root="$(cd "$WORK/../.." && pwd -P)"
   case "$temp_root/" in
     /tmp/* | /private/tmp/* | /var/tmp/* | /private/var/tmp/*)
       log_err "Codex refuses to run in ${temp_root}, where each per-PR clone would land, because its sandbox denies the system temp directories; run export TMPDIR=\"\$HOME/.pr-review-agent/tmp\" && mkdir -p \"\$TMPDIR\" in the shell that starts the daemon, then re-run bash bin/setup-model.sh there; nothing was written"

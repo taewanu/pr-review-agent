@@ -19,6 +19,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from agent_fixture import clone_dir
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
 
@@ -150,7 +152,9 @@ def _pr_run(tmp_path: Path, colour: str) -> list[str]:
     bindir.mkdir()
     (bindir / "claude").write_text(_FAKE_CLAUDE)
     (bindir / "claude").chmod(0o755)
-    (tmp_path / "prompt.txt").write_text("prompt\n")
+    clone = clone_dir(tmp_path)
+    clone.mkdir(parents=True)
+    (clone / "prompt.txt").write_text("prompt\n")
     script = (
         "set -euo pipefail; log_set_pr_context example 7; "
         'REVIEW_MODEL=m; REVIEW_EFFORT=e; cd "$1"; '
@@ -159,7 +163,7 @@ def _pr_run(tmp_path: Path, colour: str) -> list[str]:
         'log_ok "submitted review"; log_err "status comment edit failed"'
     )
     result = subprocess.run(
-        ["bash", "-c", f"source {LIB}\n{script}", "_", str(tmp_path)],
+        ["bash", "-c", f"source {LIB}\n{script}", "_", str(clone)],
         capture_output=True,
         text=True,
         env={
