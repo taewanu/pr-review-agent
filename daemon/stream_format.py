@@ -25,18 +25,55 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
+# Off a terminal an activity text is capped at this many columns; on one it
+# takes what the terminal has left after the prefix, but never fewer than the floor.
+TEXT_LIMIT = 80
+MIN_TEXT_COLUMNS = 20
+_SGR = re.compile(r"\x1b\[[0-9;]*m")
 
-def truncate(text: str, limit: int = 80) -> str:
-    """Flatten to one line and cap length, so a long command can't wrap the view."""
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+def text_columns(prefix: str) -> int | None:
+    """The columns stderr's terminal has left after `prefix`, read now so a resize
+    applies from the next line, or None when stderr is not a terminal."""
+    try:
+        columns = os.get_terminal_size(sys.stderr.fileno()).columns
+    except (OSError, ValueError):
+        return None
+    if columns <= 0:
+        return None
+    return max(columns - display_width(_SGR.sub("", prefix)), MIN_TEXT_COLUMNS)
 
 
-def _truncate_left(text: str, limit: int = 80) -> str:
+def display_width(text: str) -> int:
+    """Terminal columns `text` fills: two for a wide character (CJK, emoji), one otherwise."""
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def _cut(text: str, limit: int, *, left: bool = False) -> str:
+    """`text` cut with an ellipsis to `limit` columns, from the left when `left`."""
+    if display_width(text) <= limit:
+        return text
+    kept: list[str] = []
+    used = 1
+    for c in reversed(text) if left else text:
+        used += display_width(c)
+        if used > limit:
+            break
+        kept.append(c)
+    return "…" + "".join(reversed(kept)) if left else "".join(kept) + "…"
+
+
+def truncate(text: str, limit: int = TEXT_LIMIT) -> str:
+    """Flatten to one line and cap its width, so a long command can't wrap the view."""
+    return _cut(" ".join(text.split()), limit)
+
+
+def _truncate_left(text: str, limit: int = TEXT_LIMIT) -> str:
     """Cap a path from the left, so the file name at its end stays visible."""
-    return text if len(text) <= limit else "…" + text[-(limit - 1) :]
+    return _cut(text, limit, left=True)
 
 
 def clone_roots() -> tuple[str, ...]:
@@ -61,20 +98,24 @@ def relative(text: str, roots: tuple[str, ...]) -> str:
     return text
 
 
-def describe_tool(name: str, arg: str, roots: tuple[str, ...], *, path: bool = False) -> str:
+def describe_tool(
+    name: str, arg: str, roots: tuple[str, ...], *, path: bool = False, width: int | None = None
+) -> str:
     """`Read daemon/lib.sh`: a tool name and its argument on one line, a path capped
-    from the left so its file name stays visible."""
+    from the left so its file name stays visible. `width` is the columns the line
+    may fill (None off a terminal, where the argument is capped at TEXT_LIMIT)."""
     arg = " ".join(relative(arg, roots).split())
-    return f"{name} {(_truncate_left if path else truncate)(arg)}"
+    limit = TEXT_LIMIT if width is None else max(width - display_width(name) - 1, 2)
+    return f"{name} {(_truncate_left if path else truncate)(arg, limit)}"
 
 
-def prose(text: str, roots: tuple[str, ...]) -> str | None:
+def prose(text: str, roots: tuple[str, ...], width: int | None = None) -> str | None:
     """The agent's prose on one line, its own line breaks kept as separators."""
     text = " · ".join(part.strip() for part in text.splitlines() if part.strip())
-    return truncate(relative(text, roots)) if text else None
+    return truncate(relative(text, roots), width or TEXT_LIMIT) if text else None
 
 
-def _summarize_tool(block: dict, roots: tuple[str, ...] = ()) -> str:
+def _summarize_tool(block: dict, roots: tuple[str, ...] = (), width: int | None = None) -> str:
     """`Read daemon/lib.sh` / `Bash gh pr diff …`: tool name plus its most telling arg.
 
     The informative key differs per tool, so take the first one present rather than
@@ -83,11 +124,13 @@ def _summarize_tool(block: dict, roots: tuple[str, ...] = ()) -> str:
     inp = block.get("input", {})
     for key in ("file_path", "command", "pattern", "path", "url", "subagent_type", "prompt"):
         if key in inp:
-            return describe_tool(name, str(inp[key]), roots, path=key in ("file_path", "path"))
+            return describe_tool(
+                name, str(inp[key]), roots, path=key in ("file_path", "path"), width=width
+            )
     return name
 
 
-def render_event(event: dict, roots: tuple[str, ...] = ()) -> str | None:
+def render_event(event: dict, roots: tuple[str, ...] = (), width: int | None = None) -> str | None:
     """Map one assistant event to progress lines for stderr, or None to skip it.
 
     A returned string may hold several lines joined by "\\n" when one event carries
@@ -103,10 +146,10 @@ def render_event(event: dict, roots: tuple[str, ...] = ()) -> str | None:
     for block in event.get("message", {}).get("content", []):
         btype = block.get("type")
         if btype == "tool_use":
-            lines.append(f"→ {_summarize_tool(block, roots)}")
+            lines.append(f"→ {_summarize_tool(block, roots, width and width - 2)}")
         elif btype == "text":
             # Narrate the agent's prose live (it also reappears in the final result).
-            text = prose(block.get("text", ""), roots)
+            text = prose(block.get("text", ""), roots, width)
             if text:
                 lines.append(text)
         # btype == "thinking": skip (reasoning noise)
@@ -128,8 +171,10 @@ def closing_line(
     return " · ".join(parts)
 
 
-def emit(text: str, prefix: str) -> None:
+def emit(text: str, prefix: str, width: int | None = None) -> None:
     for line in text.split("\n"):
+        if width is not None:
+            line = _cut(line, width)
         print(f"{prefix}{line}", file=sys.stderr, flush=True)
 
 
@@ -207,11 +252,12 @@ def run(
                         if isinstance(value, (int, float)):
                             tokens += value
                 cost_out.with_suffix(".tokens").write_text(str(int(tokens)))
-        rendered = render_event(event, roots)
+        width = text_columns(prefix)
+        rendered = render_event(event, roots, width)
         if rendered is not None:
-            emit(rendered, prefix)
+            emit(rendered, prefix, width)
     if saw_result:
-        emit(closing_line(turns, clock() - start, last_cost), prefix)
+        emit(closing_line(turns, clock() - start, last_cost), prefix, text_columns(prefix))
     return 0
 
 

@@ -199,20 +199,41 @@ pr_prefix() {
 # line up; a longer message pushes its time right instead of being cut.
 LOG_MSG_WIDTH=48
 
+# _log_columns: sets _LOG_COLUMNS to the width of stderr's terminal, or empty off
+# a terminal. It runs stty on every line so a resize applies from the next one,
+# since non-interactive bash never updates COLUMNS.
+_log_columns() {
+  local size
+  _LOG_COLUMNS=""
+  [[ -t 2 ]] || return 0
+  size="$(stty size <&2 2>/dev/null)" || return 0
+  size="${size#* }"
+  [[ "$size" =~ ^[1-9][0-9]*$ ]] || return 0
+  _LOG_COLUMNS="$size"
+}
+
 # log_pr <repo-name> <pr-number> <glyph> <message> [elapsed-seconds]
 # Emit one styled per-PR line: "  repo#pr  <glyph> message      +Ns". The
 # coloured prefix tells interleaved parallel lines apart; the elapsed time is
-# dimmed, right-aligned past LOG_MSG_WIDTH, and omitted when empty. A message of
-# several lines gets no padding, because its last line starts in no column the
-# others share.
+# dimmed, right-aligned past LOG_MSG_WIDTH (at the terminal's right edge when the
+# line fits there), and omitted when empty. The message is never cut, since the
+# log line is its only record. A message of several lines gets no padding,
+# because its last line starts in no column the others share.
 log_pr() {
-  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}" pad
+  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}" pad edge
   {
     printf '  %s  %s %s' "$(pr_prefix "$repo" "$pr")" "$glyph" "$msg"
     if [[ -n "$elapsed" ]]; then
       pad=$((LOG_MSG_WIDTH - ${#msg}))
       if ((pad < 0)) || [[ "$msg" == *$'\n'* ]]; then
         pad=0
+      fi
+      _log_columns
+      if [[ -n "$_LOG_COLUMNS" && "$msg" != *$'\n'* ]]; then
+        # The pad that ends the line at the right edge, used while it leaves the
+        # "+Ns" at least two spaces after the message.
+        edge=$((_LOG_COLUMNS - 6 - ${#repo} - 1 - ${#pr} - ${#msg} - 8))
+        ((edge < ${#elapsed} - 4)) || pad=$edge
       fi
       _sgr 2
       printf '%*s' $((pad + 8)) "+${elapsed}s"
@@ -1146,7 +1167,7 @@ warn_env_drift() {
     grep -qE "^${key}=" "$env_file" || missing+=("$key")
   done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$template_file")
   ((${#missing[@]} > 0)) || return 0
-  log_info "config drift: ${missing[*]} in templates/.env.example but not in .env — running on code defaults; add the key(s) to .env if that is not intended"
+  log_info "config drift: ${missing[*]} in templates/.env.example but not in .env; running on code defaults; add the key(s) to .env if that is not intended"
 }
 
 # Outer per-PR watchdog cap (#121). run_with_timeout bounds only one inner
