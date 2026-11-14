@@ -22,7 +22,16 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from stream_format import clone_roots, closing_line, describe_tool, emit, prose, truncate
+from stream_format import (
+    TEXT_LIMIT,
+    clone_roots,
+    closing_line,
+    describe_tool,
+    emit,
+    prose,
+    text_columns,
+    truncate,
+)
 
 PROFILE = "pr-review-agent"
 # What codex exec prints, after validating its arguments, when stdin is empty.
@@ -222,19 +231,20 @@ def sandbox_config(install_root: str) -> list[str]:
     ]
 
 
-def render_event(event: dict, roots: tuple[str, ...] = ()) -> str | None:
+def render_event(event: dict, roots: tuple[str, ...] = (), width: int | None = None) -> str | None:
     """Map one `codex exec --json` event to a progress line, or None to skip it. A
     completed turn renders nothing here; format_stream closes the call once."""
     etype = event.get("type")
     if etype == "item.completed":
         item = event.get("item") or {}
         if item.get("type") == "command_execution":
-            return f"→ {describe_tool('Shell', str(item.get('command', '')), roots)}"
+            command = str(item.get("command", ""))
+            return f"→ {describe_tool('Shell', command, roots, width=width and width - 2)}"
         if item.get("type") == "agent_message":
-            return prose(str(item.get("text", "")), roots)
+            return prose(str(item.get("text", "")), roots, width)
     elif etype in ("turn.failed", "error"):
         error = event.get("error") if etype == "turn.failed" else event
-        return f"{etype}: {truncate(str((error or {}).get('message', '')))}"
+        return f"{etype}: {truncate(str((error or {}).get('message', '')), width or TEXT_LIMIT)}"
     return None
 
 
@@ -292,14 +302,15 @@ def format_stream(lines, prefix: str, tokens_out: Path, clock=time.monotonic) ->
         if event.get("type") == "turn.completed":
             tokens = (tokens or 0) + usage_tokens(event)
         failed = failed or event.get("type") == "turn.failed"
-        rendered = render_event(event, roots)
+        width = text_columns(prefix)
+        rendered = render_event(event, roots, width)
         if rendered is not None:
-            emit(rendered, prefix)
+            emit(rendered, prefix, width)
     # Written only on a completed turn, so a timeout leaves no sidecar and no
     # closing line, as on claude. Codex reports no cost, so the line names none.
     if tokens is not None:
         tokens_out.write_text(str(tokens))
-        emit(closing_line(None, clock() - start, None, tokens), prefix)
+        emit(closing_line(None, clock() - start, None, tokens), prefix, text_columns(prefix))
     return 1 if failed else 0
 
 

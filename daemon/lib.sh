@@ -14,6 +14,10 @@ _LOG_PR_NUM=""
 # log_err/log_failure are never gated: identity and problems always surface.
 _LOG_QUIET=0
 
+# Set to 1 (as a local) around a log call whose text nothing else keeps, such as
+# an error in a foreground run, so a terminal wraps the line instead of cutting it.
+_LOG_WHOLE=""
+
 # log_set_pr_context <repo-name> <pr-number>
 log_set_pr_context() {
   _LOG_PR_REPO="$1"
@@ -24,11 +28,12 @@ log_info() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*" "$SECONDS"
   elif [[ "$_LOG_QUIET" != "1" ]]; then
-    printf '[pr-review-agent] %s\n' "$*" >&2
+    _log_plain "$*"
   fi
 }
 
 log_err() {
+  local _LOG_WHOLE=1
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_FAIL" "$*" "$SECONDS"
   else
@@ -44,7 +49,7 @@ log_step() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_STEP" "$*" "$SECONDS"
   elif [[ "$_LOG_QUIET" != "1" ]]; then
-    printf '[pr-review-agent] %s (+%ds)\n' "$*" "${SECONDS}" >&2
+    _log_plain "$*" " (+${SECONDS}s)"
   fi
 }
 
@@ -54,7 +59,7 @@ log_ok() {
   if [[ -n "$_LOG_PR_REPO" ]]; then
     log_pr "$_LOG_PR_REPO" "$_LOG_PR_NUM" "$LOG_GLYPH_OK" "$*" "$SECONDS"
   else
-    printf '[pr-review-agent] %s (+%ds)\n' "$*" "${SECONDS}" >&2
+    _log_plain "$*" " (+${SECONDS}s)"
   fi
 }
 
@@ -68,7 +73,7 @@ log_ok() {
 # drop left no signal before cleanup() removed the scratch. Lives in lib.sh, not
 # inline, so test_degradation_warnings.py can source it (ADR 0026).
 log_degradation_warnings() {
-  local stderr_file="$1" line
+  local stderr_file="$1" line _LOG_WHOLE=1
   [[ -r "$stderr_file" ]] || return 0
   while IFS= read -r line; do
     log_info "$line"
@@ -195,27 +200,67 @@ pr_prefix() {
   _sgr 0
 }
 
-# Width the per-PR message is padded to, so the elapsed times of one PR's lines
-# line up; a longer message pushes its time right instead of being cut.
+# Width the per-PR message is padded to off a terminal, so the elapsed times of
+# one PR's lines line up; a longer message pushes its time right instead of being
+# cut.
 LOG_MSG_WIDTH=48
+
+# The fewest columns a line's text is cut to; a narrower terminal wraps the line.
+LOG_MIN_TEXT_COLUMNS=20
+
+# _log_fit <text> <used-columns>: sets _LOG_FIT to <text> cut with an ellipsis to
+# the columns stderr's terminal has left after <used-columns>, and _LOG_COLS to
+# that budget; off a terminal, or for a text of several lines, it leaves the text
+# whole and _LOG_COLS empty, and under _LOG_WHOLE it keeps the text whole but
+# still sets the budget. It reads the width on every line so a resize applies
+# from the next one, at the cost of one stty process, since non-interactive bash
+# never updates COLUMNS.
+_log_fit() {
+  local text="$1" size
+  _LOG_FIT="$text"
+  _LOG_COLS=""
+  [[ -t 2 && "$text" != *$'\n'* ]] || return 0
+  size="$(stty size <&2 2>/dev/null)" || return 0
+  size="${size#* }"
+  [[ "$size" =~ ^[1-9][0-9]*$ ]] || return 0
+  _LOG_COLS=$((size - $2))
+  ((_LOG_COLS >= LOG_MIN_TEXT_COLUMNS)) || _LOG_COLS=$LOG_MIN_TEXT_COLUMNS
+  if [[ -z "$_LOG_WHOLE" ]] && ((${#text} > _LOG_COLS)); then
+    _LOG_FIT="${text:0:_LOG_COLS-1}…"
+  fi
+}
+
+# _log_plain <message> [suffix]: a "[pr-review-agent] message suffix" line.
+_log_plain() {
+  local suffix="${2:-}"
+  _log_fit "$1" $((18 + ${#suffix}))
+  printf '[pr-review-agent] %s%s\n' "$_LOG_FIT" "$suffix" >&2
+}
 
 # log_pr <repo-name> <pr-number> <glyph> <message> [elapsed-seconds]
 # Emit one styled per-PR line: "  repo#pr  <glyph> message      +Ns". The
 # coloured prefix tells interleaved parallel lines apart; the elapsed time is
-# dimmed, right-aligned past LOG_MSG_WIDTH, and omitted when empty. A message of
-# several lines gets no padding, because its last line starts in no column the
-# others share.
+# dimmed, right-aligned past LOG_MSG_WIDTH (at the right edge on a terminal), and
+# omitted when empty. A message of several lines gets no padding, because its
+# last line starts in no column the others share.
 log_pr() {
-  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}" pad
+  local repo="$1" pr="$2" glyph="$3" msg="$4" elapsed="${5:-}" stamp="" field
+  # The stamp's field holds the stamp and at least two spaces before it.
+  [[ -z "$elapsed" ]] || stamp="  +${elapsed}s"
+  _log_fit "$msg" $((6 + ${#repo} + 1 + ${#pr} + ${#stamp}))
   {
-    printf '  %s  %s %s' "$(pr_prefix "$repo" "$pr")" "$glyph" "$msg"
-    if [[ -n "$elapsed" ]]; then
-      pad=$((LOG_MSG_WIDTH - ${#msg}))
-      if ((pad < 0)) || [[ "$msg" == *$'\n'* ]]; then
-        pad=0
+    printf '  %s  %s %s' "$(pr_prefix "$repo" "$pr")" "$glyph" "$_LOG_FIT"
+    if [[ -n "$stamp" ]]; then
+      if [[ -n "$_LOG_COLS" ]]; then
+        field=$((_LOG_COLS - ${#_LOG_FIT} + ${#stamp}))
+        ((field >= ${#stamp})) || field=${#stamp}
+      elif ((${#msg} > LOG_MSG_WIDTH)) || [[ "$msg" == *$'\n'* ]]; then
+        field=8
+      else
+        field=$((LOG_MSG_WIDTH - ${#msg} + 8))
       fi
       _sgr 2
-      printf '%*s' $((pad + 8)) "+${elapsed}s"
+      printf '%*s' "$field" "${stamp#  }"
       _sgr 0
     fi
     printf '\n'

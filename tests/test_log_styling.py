@@ -6,7 +6,9 @@ repo#pr identity always lives in the line text. These tests pin that split:
 colour is gated (PR_LOG_COLOR=never|always forces it off-TTY for the test), the
 per-PR context swaps the [pr-review-agent] prefix for a coloured repo#pr one, the
 quiet gate suppresses cycle-level chatter without ever hiding errors or per-PR
-lines, and log_failure keeps its ADR 0005 machine-readable shape regardless.
+lines, and log_failure keeps its ADR 0005 machine-readable shape regardless. On a
+terminal (a pseudo-terminal here) each line fits the width the terminal has when
+the line prints; off one, every line keeps its full text.
 
 lib.sh is sourced in a subprocess; helpers that build text print to stdout, the
 log_* emitters print to stderr.
@@ -14,9 +16,18 @@ log_* emitters print to stderr.
 
 from __future__ import annotations
 
+import fcntl
+import json
 import os
+import pty
 import re
+import select
+import struct
 import subprocess
+import sys
+import termios
+import time
+import unicodedata
 from pathlib import Path
 
 from agent_fixture import clone_dir
@@ -25,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LIB = REPO_ROOT / "daemon" / "lib.sh"
 
 ESC = "\x1b"
+SGR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _run(script: str, **env_extra: str) -> tuple[str, str, int]:
@@ -137,17 +149,72 @@ import json, sys
 sys.stdin.read()
 for event in (
     {"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "name": "Read", "input": {"file_path": "a.py"}}]}},
+        {"type": "tool_use", "name": "Read",
+         "input": {"file_path": "src/" + "nested/" * 15 + "a.py"}}]}},
     {"type": "result", "result": "partial", "num_turns": 2, "total_cost_usd": 0.5},
-    {"type": "assistant", "message": {"content": [{"type": "text", "text": "all done"}]}},
+    {"type": "assistant", "message": {"content": [{"type": "text",
+        "text": "all done; " + "nothing in the changed files is worth flagging " * 3}]}},
     {"type": "result", "result": "final", "num_turns": 1, "total_cost_usd": 0.5},
 ):
     print(json.dumps(event), flush=True)
 """
 
 
-def _pr_run(tmp_path: Path, colour: str) -> list[str]:
-    """One PR's lines: every per-PR log_* emitter around one run_agent call."""
+def _set_columns(fd: int, columns: int) -> None:
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
+
+
+def _width(line: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in line)
+
+
+def _on_terminal(
+    argv: list[str],
+    columns: int,
+    env: dict[str, str],
+    resize: tuple[int, Path] | None = None,
+) -> list[str]:
+    """Run `argv` with stderr on a pseudo-terminal `columns` wide; its stderr lines
+    with the colour codes stripped. With `resize` (columns, flag), the terminal
+    takes the new width once the first line arrives, and then the flag file appears."""
+    master, slave = pty.openpty()
+    _set_columns(slave, columns)
+    deadline = time.monotonic() + 60
+    with subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=slave, env=env
+    ) as proc:
+        os.close(slave)
+        out = b""
+        while True:
+            ready, _, _ = select.select([master], [], [], max(deadline - time.monotonic(), 0))
+            if not ready:
+                proc.kill()
+                os.close(master)
+                raise AssertionError(f"no end of output within 60s: {out!r}")
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            out += chunk
+            if resize and b"\n" in out:
+                _set_columns(master, resize[0])
+                resize[1].touch()
+                resize = None
+    os.close(master)
+    assert proc.returncode == 0, out
+    return SGR.sub("", out.decode().replace("\r\n", "\n")).splitlines()
+
+
+def _pr_run(
+    tmp_path: Path,
+    colour: str,
+    columns: int | None = None,
+    message: str = "head: example/example@main",
+) -> list[str]:
+    """One PR's lines: every per-PR log_* emitter around one run_agent call, with
+    stderr on a terminal `columns` wide when given."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "claude").write_text(_FAKE_CLAUDE)
@@ -158,21 +225,19 @@ def _pr_run(tmp_path: Path, colour: str) -> list[str]:
     script = (
         "set -euo pipefail; log_set_pr_context example 7; "
         'REVIEW_MODEL=m; REVIEW_EFFORT=e; cd "$1"; '
-        'log_info "head: example/example@main"; log_step "fetching diff"; '
+        'log_info "$2"; log_step "fetching diff"; '
         "run_agent read-only 30 prompt.txt raw.txt review; "
         'log_ok "submitted review"; log_err "status comment edit failed"'
     )
-    result = subprocess.run(
-        ["bash", "-c", f"source {LIB}\n{script}", "_", str(clone)],
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
-            "PR_LOG_COLOR": colour,
-        },
-        timeout=60,
-    )
+    argv = ["bash", "-c", f"source {LIB}\n{script}", "_", str(clone), message]
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "PR_LOG_COLOR": colour,
+    }
+    if columns is not None:
+        return _on_terminal(argv, columns, env)
+    result = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=60)
     assert result.returncode == 0, result.stderr
     return result.stderr.splitlines()
 
@@ -216,3 +281,151 @@ def test_non_terminal_output_carries_no_colour_codes(tmp_path):
     lines = _pr_run(tmp_path, "auto")
     assert lines
     assert not any(ESC in line for line in lines)
+
+
+def test_off_a_terminal_lines_keep_their_full_text():
+    long = "no new findings at " + "0" * 40 + "; skipping review object (ADR 0020)"
+    _, err, _ = _run(
+        f'SECONDS=5; log_step "polling {"r" * 90}"; log_set_pr_context example 7; '
+        f'log_info "fetching diff"; log_info "{long}"',
+        PR_LOG_COLOR="never",
+    )
+    assert err == (
+        f"[pr-review-agent] polling {'r' * 90} (+5s)\n"
+        f"  example#7  • fetching diff{' ' * 40}+5s\n"
+        f"  example#7  • {long}     +5s\n"
+    )
+
+
+# --- terminal width ------------------------------------------------------------
+
+LONG_MESSAGE = "no new findings at " + "0" * 40 + "; skipping review object (ADR 0020)"
+
+
+def test_on_a_terminal_every_line_of_a_pr_run_fits_its_width(tmp_path):
+    for columns in (60, 80, 140):
+        run_dir = tmp_path / str(columns)
+        run_dir.mkdir()
+        lines = _pr_run(run_dir, "auto", columns, LONG_MESSAGE)
+        assert len(lines) == 7, lines
+        assert all(len(line) <= columns for line in lines), (columns, lines)
+        assert any("…" in line for line in lines), lines
+
+
+def test_on_a_terminal_a_pipeline_line_ends_with_its_elapsed_time_at_the_right_edge(tmp_path):
+    lines = [
+        line for line in _pr_run(tmp_path, "auto", 80, LONG_MESSAGE) if " review  " not in line
+    ]
+    assert all(re.search(r" \+\d+s$", line) and len(line) == 80 for line in lines), lines
+    assert lines[0].startswith("  example#7  • no new findings at 000")
+
+
+def test_on_a_terminal_every_line_of_a_pr_run_starts_its_message_in_one_column(tmp_path):
+    lines = _pr_run(tmp_path, "auto", 60, LONG_MESSAGE)
+    words = ["no", "fetching", "review", "review", "review", "submitted", "status"]
+    assert len({line.index(word) for line, word in zip(lines, words, strict=True)}) == 1, lines
+
+
+def test_on_a_terminal_a_path_keeps_its_file_name(tmp_path):
+    tool = [line for line in _pr_run(tmp_path, "auto", 60) if "→ Read" in line]
+    assert len(tool) == 1 and tool[0].endswith("/a.py") and "…" in tool[0], tool
+
+
+def test_on_a_terminal_a_failure_line_keeps_its_whole_reason():
+    reason = "run_agent: refusing to run codex here; set TMPDIR to a private directory"
+    lines = _on_terminal(
+        ["bash", "-c", f'source {LIB}\nlog_set_pr_context example 7; log_err "{reason}"'],
+        40,
+        dict(os.environ),
+    )
+    assert reason in "".join(lines)
+
+
+def test_on_a_terminal_a_cycle_line_fits_and_keeps_its_elapsed_time():
+    lines = _on_terminal(
+        ["bash", "-c", f'source {LIB}\nSECONDS=5; log_step "polling {"r" * 90}"'],
+        60,
+        dict(os.environ),
+    )
+    assert lines == [f"[pr-review-agent] polling {'r' * 27}… (+5s)"]
+
+
+def test_a_terminal_narrower_than_the_floor_still_shows_twenty_columns_of_text():
+    lines = _on_terminal(
+        ["bash", "-c", f'source {LIB}\nlog_set_pr_context example 7; log_info "{"x" * 90}"'],
+        10,
+        dict(os.environ),
+    )
+    assert f"• {'x' * 19}…  +" in "".join(lines)
+
+
+def test_on_a_terminal_codex_activity_lines_fit_its_width(tmp_path):
+    events = tmp_path / "events.ndjson"
+    events.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {
+                    "type": "item.completed",
+                    "item": {"type": "command_execution", "command": "grep -rn " + "x" * 120},
+                },
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "y" * 120}},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "검토" * 40}},
+                {"type": "error", "message": "z" * 120},
+                {"type": "turn.completed", "usage": {"input_tokens": 1000, "output_tokens": 5}},
+            )
+        )
+        + "\n"
+    )
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    prefix = "  \x1b[36mexample#7\x1b[0m    review     "
+    lines = _on_terminal(
+        [
+            sys.executable,
+            str(REPO_ROOT / "daemon" / "codex_exec.py"),
+            "format",
+            "--events",
+            str(events),
+            "--while-pid",
+            str(gone.pid),
+            "--prefix",
+            prefix,
+            "--tokens-out",
+            str(tmp_path / "tokens"),
+        ],
+        60,
+        dict(os.environ),
+    )
+    assert len(lines) == 5, lines
+    assert [_width(line) for line in lines[:4]] == [60, 60, 59, 60], lines
+    assert lines[2].endswith("검토…"), lines
+    assert all(line.startswith("  example#7    review     ") for line in lines), lines
+
+
+def test_on_a_terminal_each_line_reads_the_width_it_prints_at(tmp_path):
+    flag = tmp_path / "resized"
+    script = (
+        f'log_set_pr_context example 7; log_info "{"x" * 90}"; '
+        f'until [[ -e "{flag}" ]]; do sleep 0.05; done; log_info "{"x" * 90}"'
+    )
+    lines = _on_terminal(
+        ["bash", "-c", f"source {LIB}\n{script}"], 80, dict(os.environ), resize=(50, flag)
+    )
+    assert [len(line) for line in lines] == [80, 50], lines
+
+
+def test_on_a_terminal_a_degradation_warning_keeps_its_whole_text(tmp_path):
+    warning = "merge-skip: lens data-flow skipped (ValueError: " + "w" * 60 + ")"
+    stderr_file = tmp_path / "merge.stderr"
+    stderr_file.write_text(warning + "\n")
+    lines = _on_terminal(
+        [
+            "bash",
+            "-c",
+            f'source {LIB}\nlog_set_pr_context example 7; log_degradation_warnings "{stderr_file}"',
+        ],
+        60,
+        dict(os.environ),
+    )
+    assert warning in "".join(lines)
