@@ -905,10 +905,11 @@ run_agent_claude() {
       ;;
   esac
   # --restricted ignores every settings file (user, project, and local) and
-  # stops CLAUDE.md loading, so the clone's author cannot plant hooks, env, or
-  # instructions; it also confines file tools to the per-PR clone. Slash
-  # commands are disabled because ADR 0034 measured the slash-command wrapper as
-  # pure forwarding overhead; every call is directly prompted (ADR 0038).
+  # stops CLAUDE.md and AGENTS.md loading, so the clone's author cannot plant
+  # hooks, env, or instructions; it also confines file tools to the per-PR
+  # clone. Slash commands are disabled because ADR 0034 measured the
+  # slash-command wrapper as pure forwarding overhead; every call is directly
+  # prompted (ADR 0038).
   args+=(--restricted --strict-mcp-config --disable-slash-commands
     --output-format stream-json --verbose)
   # Claude Code's own temp files, the Bash tool's output among them, go to a
