@@ -341,7 +341,9 @@ kill_with_groups() {
 run_with_timeout() {
   local secs="$1"
   shift
-  local deadline=$(($(date +%s) + secs))
+  # The +1 keeps the cap from firing before secs have passed, since `date +%s`
+  # truncates and a deadline read late in one second would otherwise land early.
+  local deadline=$(($(date +%s) + secs + 1))
   # Empty means the command ended on its own; the watchdog writes to it before
   # signalling. A flag file, not the exit status, because a command may die of
   # its own signal and must not be misreported as having hit the cap.
@@ -394,7 +396,8 @@ run_with_timeout() {
     for pgid in $groups; do
       kill -TERM -- "-$pgid" 2>/dev/null || true
     done
-    local grace=$(($(date +%s) + TIMEOUT_KILL_GRACE))
+    # The same +1 as the deadline, so the KILL never cuts the grace short.
+    local grace=$(($(date +%s) + TIMEOUT_KILL_GRACE + 1))
     while :; do
       # The snapshot catches the re-parented; a fresh walk catches anything
       # spawned since. Neither alone is enough.
