@@ -27,11 +27,13 @@ RESULT = "the agent's final text"
 
 _FAKE_CLAUDE = """#!/usr/bin/env python3
 import json, os, sys, time
-env = {k: v for k, v in os.environ.items() if k.startswith(("GIT_CONFIG", "CLAUDE_CODE_TMPDIR"))}
+kept = ("GIT_CONFIG", "CLAUDE_CODE_TMPDIR", "xcrun_db")
+env = {k: v for k, v in os.environ.items() if k.startswith(kept)}
 tmp = env.get("CLAUDE_CODE_TMPDIR")
 with open(os.environ["FAKE_CLAUDE_LOG"], "w") as f:
     json.dump({"argv": sys.argv[1:], "stdin": sys.stdin.read(), "env": env,
-               "tmp_existed": bool(tmp) and os.path.isdir(tmp)}, f)
+               "tmp_existed": bool(tmp) and os.path.isdir(tmp),
+               "xcrun_db_existed": os.path.isfile(env.get("xcrun_db", ""))}, f)
 time.sleep(float(os.environ.get("FAKE_CLAUDE_SLEEP", "0")))
 print(json.dumps({"type": "result", "result": os.environ["FAKE_CLAUDE_RESULT"],
                   "total_cost_usd": 0.25}), flush=True)
@@ -48,6 +50,7 @@ class AgentRun:
     stderr: str
     env: dict[str, str] | None = None
     tmp_existed: bool | None = None
+    xcrun_db_existed: bool | None = None
 
     def split_settings(self) -> tuple[list[str], dict]:
         """The argv without its one --settings pair, and that pair's parsed JSON."""
@@ -130,6 +133,7 @@ def run_agent(
         stderr=stderr,
         env=call.get("env"),
         tmp_existed=call.get("tmp_existed"),
+        xcrun_db_existed=call.get("xcrun_db_existed"),
     )
 
 

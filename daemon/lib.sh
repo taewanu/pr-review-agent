@@ -948,7 +948,12 @@ run_agent_claude() {
   # a sidecar file so the primary log stays legible.
   # The GIT_CONFIG_* variables keep git off its files in the home directory,
   # which the sandbox denies: git exits on an unreadable ~/.gitconfig.
+  # xcrun_db hands the macOS /usr/bin tool shims a lookup cache filled before
+  # the sandbox starts, which sandboxed commands can read but must never be able
+  # to write, because the unsandboxed claude resolves its own git through it too.
+  fill_xcrun_cache "$agent_tmp/xcrun_db"
   run_with_timeout "$secs" env CLAUDE_CODE_TMPDIR="$agent_tmp" \
+    xcrun_db="$agent_tmp/xcrun_db" \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_COUNT=2 \
     GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0=/dev/null \
     GIT_CONFIG_KEY_1=core.attributesFile GIT_CONFIG_VALUE_1=/dev/null \
@@ -959,6 +964,24 @@ run_agent_claude() {
   trap - INT TERM
   eval "$traps"
   return "$rc"
+}
+
+# fill_xcrun_cache <file>
+# Copies the operator's xcrun lookup cache to <file> after warming the shims
+# agents commonly run; does nothing off macOS or without developer tools.
+fill_xcrun_cache() {
+  local shared tool
+  shared="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" || return 0
+  # A relative source would resolve inside the clone, which the PR author controls.
+  [[ "$shared" == /* ]] || return 0
+  # Without developer tools a shim opens the install dialog instead of running.
+  [[ -d "$(xcode-select -p 2>/dev/null)" ]] || return 0
+  for tool in git make python3 clang; do
+    if [[ -x "/usr/bin/$tool" ]]; then
+      (cd / && "/usr/bin/$tool" --version) >/dev/null 2>&1 || true
+    fi
+  done
+  cp "${shared%/}/xcrun_db" "$1" 2>/dev/null || true
 }
 
 # Same contract as run_agent_claude; codex_exec.py builds the argv and says why
