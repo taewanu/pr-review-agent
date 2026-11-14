@@ -537,9 +537,9 @@ fi
 
 SCRATCH="$(make_clone_dir pr-review-agent)"
 if [[ $KEEP_SCRATCH -eq 1 ]]; then
-  log_info "per-PR clone (kept): $SCRATCH"
+  _LOG_WHOLE=1 log_info "per-PR clone (kept): $SCRATCH"
 else
-  log_info "per-PR clone: $SCRATCH"
+  _LOG_WHOLE=1 log_info "per-PR clone: $SCRATCH"
 fi
 
 # Bound the https clone/fetch so a stalled connection aborts cleanly instead of

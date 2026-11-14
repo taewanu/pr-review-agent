@@ -14,8 +14,9 @@ _LOG_PR_NUM=""
 # log_err/log_failure are never gated: identity and problems always surface.
 _LOG_QUIET=0
 
-# Set to 1 (as a local) around a log call whose text nothing else keeps, such as
-# an error in a foreground run, so a terminal wraps the line instead of cutting it.
+# Set to 1 (as a local, or as `_LOG_WHOLE=1 log_info …`) around a log call whose
+# text nothing else keeps or the operator acts on, such as an error or a path, so
+# a terminal wraps the line instead of cutting it.
 _LOG_WHOLE=""
 
 # log_set_pr_context <repo-name> <pr-number>
@@ -635,13 +636,13 @@ offer_model_setup() {
   [[ -z "${REVIEW_HARNESS:-}" && -z "${REVIEW_MODEL:-}" ]] || return 0
   [[ "$({ grep -E '^REVIEW_HARNESS=' "$1" 2>/dev/null || true; } | head -1)" == REVIEW_HARNESS= ]] || return 0
   if [[ ! -t 0 ]]; then
-    log_info "no agent CLI or model chosen, so reviews run on the defaults; run bash bin/setup-model.sh in a terminal to choose them"
+    _LOG_WHOLE=1 log_info "no agent CLI or model chosen, so reviews run on the defaults; run bash bin/setup-model.sh in a terminal to choose them"
     return 0
   fi
   printf 'No agent CLI or model chosen for reviews. Set them up now? [Y/n] ' >&2
   if ! IFS= read -t "$OFFER_TIMEOUT_SECONDS" -r answer; then
     printf '\n' >&2
-    log_info "no answer, so the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
+    _LOG_WHOLE=1 log_info "no answer, so the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
     return 0
   fi
   case "$answer" in
@@ -649,14 +650,14 @@ offer_model_setup() {
       bash "$(dirname "${BASH_SOURCE[0]}")/../bin/setup-model.sh" "$1" || rc=$?
       # setup-model.sh exits TIMEOUT_EXIT when a prompt goes unanswered.
       if ((rc == TIMEOUT_EXIT)); then
-        log_info "the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
+        _LOG_WHOLE=1 log_info "the daemon continues on the defaults; run bash bin/setup-model.sh to choose an agent CLI and model later"
         return 0
       fi
       return "$rc"
       ;;
     *)
       set_dotenv_keys "$1" REVIEW_HARNESS=claude || return 0
-      log_info "continuing on the defaults; wrote REVIEW_HARNESS=claude to .env so this is not asked again; run bash bin/setup-model.sh to choose later"
+      _LOG_WHOLE=1 log_info "continuing on the defaults; wrote REVIEW_HARNESS=claude to .env so this is not asked again; run bash bin/setup-model.sh to choose later"
       ;;
   esac
 }
@@ -1191,7 +1192,7 @@ warn_env_drift() {
     grep -qE "^${key}=" "$env_file" || missing+=("$key")
   done < <(sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$template_file")
   ((${#missing[@]} > 0)) || return 0
-  log_info "config drift: ${missing[*]} in templates/.env.example but not in .env — running on code defaults; add the key(s) to .env if that is not intended"
+  _LOG_WHOLE=1 log_info "config drift: ${missing[*]} in templates/.env.example but not in .env; running on code defaults; add the key(s) to .env if that is not intended"
 }
 
 # Outer per-PR watchdog cap (#121). run_with_timeout bounds only one inner

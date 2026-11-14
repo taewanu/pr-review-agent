@@ -228,7 +228,7 @@ cleanup() {
 }
 trap cleanup EXIT
 if [[ $KEEP_SCRATCH -eq 1 ]]; then
-  log_info "per-PR clone (kept): $SCRATCH"
+  _LOG_WHOLE=1 log_info "per-PR clone (kept): $SCRATCH"
 fi
 
 # Bound the https clone/fetch so a stalled connection aborts cleanly instead of

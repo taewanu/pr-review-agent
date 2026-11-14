@@ -359,48 +359,84 @@ def test_a_terminal_narrower_than_the_floor_still_shows_twenty_columns_of_text()
     assert f"• {'x' * 19}…  +" in "".join(lines)
 
 
-def test_on_a_terminal_codex_activity_lines_fit_its_width(tmp_path):
-    events = tmp_path / "events.ndjson"
-    events.write_text(
-        "\n".join(
-            json.dumps(event)
-            for event in (
-                {
-                    "type": "item.completed",
-                    "item": {"type": "command_execution", "command": "grep -rn " + "x" * 120},
-                },
-                {"type": "item.completed", "item": {"type": "agent_message", "text": "y" * 120}},
-                {"type": "item.completed", "item": {"type": "agent_message", "text": "검토" * 40}},
-                {"type": "error", "message": "z" * 120},
-                {"type": "turn.completed", "usage": {"input_tokens": 1000, "output_tokens": 5}},
-            )
-        )
-        + "\n"
-    )
+CODEX_PREFIX = "  \x1b[36mexample#7\x1b[0m    review     "
+
+
+def _codex_format(tmp_path: Path, events: list[dict], columns: int | None) -> list[str]:
+    """codex_exec.py format's stderr lines for `events`, on a terminal `columns`
+    wide when given and on a pipe otherwise."""
+    events_file = tmp_path / "events.ndjson"
+    events_file.write_text("".join(json.dumps(event) + "\n" for event in events))
     gone = subprocess.Popen(["true"])
     gone.wait()
-    prefix = "  \x1b[36mexample#7\x1b[0m    review     "
-    lines = _on_terminal(
+    argv = [
+        sys.executable,
+        str(REPO_ROOT / "daemon" / "codex_exec.py"),
+        "format",
+        "--events",
+        str(events_file),
+        "--while-pid",
+        str(gone.pid),
+        "--prefix",
+        CODEX_PREFIX,
+        "--tokens-out",
+        str(tmp_path / "tokens"),
+    ]
+    if columns is not None:
+        return _on_terminal(argv, columns, dict(os.environ))
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    return SGR.sub("", result.stderr).splitlines()
+
+
+def test_on_a_terminal_codex_activity_lines_fit_its_width(tmp_path):
+    lines = _codex_format(
+        tmp_path,
         [
-            sys.executable,
-            str(REPO_ROOT / "daemon" / "codex_exec.py"),
-            "format",
-            "--events",
-            str(events),
-            "--while-pid",
-            str(gone.pid),
-            "--prefix",
-            prefix,
-            "--tokens-out",
-            str(tmp_path / "tokens"),
+            {
+                "type": "item.completed",
+                "item": {"type": "command_execution", "command": "grep -rn " + "x" * 120},
+            },
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "y" * 120}},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "검토" * 40}},
+            {"type": "turn.completed", "usage": {"input_tokens": 1000, "output_tokens": 5}},
         ],
         60,
-        dict(os.environ),
     )
-    assert len(lines) == 5, lines
-    assert [_width(line) for line in lines[:4]] == [60, 60, 59, 60], lines
+    assert len(lines) == 4, lines
+    assert [_width(line) for line in lines[:3]] == [60, 60, 59], lines
     assert lines[2].endswith("검토…"), lines
     assert all(line.startswith("  example#7    review     ") for line in lines), lines
+
+
+def test_a_codex_error_keeps_its_whole_message_on_a_terminal_and_off_it(tmp_path):
+    message = "stream disconnected before completion: " + "z" * 120
+    events = [{"type": "error", "message": message}]
+    for columns in (60, None):
+        lines = _codex_format(tmp_path, events, columns)
+        assert lines[0] == f"  example#7    review     error: {message}", (columns, lines)
+
+
+def test_on_a_terminal_a_per_pr_clone_line_keeps_its_unique_directory(tmp_path):
+    scratch = "/var/folders/y_/fx1y4m792jx2x3gssfwgqt2r0000gn/T/pr-review-agent.Ab12Cd/clone"
+    for script in ("review-pr.sh", "reply-pr.sh"):
+        calls = [
+            line.strip()
+            for line in (REPO_ROOT / "daemon" / script).read_text().splitlines()
+            if "log_info" in line and "$SCRATCH" in line
+        ]
+        assert calls, script
+        lines = _on_terminal(
+            [
+                "bash",
+                "-c",
+                f"source {LIB}\nlog_set_pr_context example 7; SCRATCH={scratch}; "
+                + "; ".join(calls),
+            ],
+            80,
+            dict(os.environ),
+        )
+        assert len(lines) == len(calls), lines
+        assert all(scratch in line for line in lines), (script, lines)
 
 
 def test_on_a_terminal_each_line_reads_the_width_it_prints_at(tmp_path):

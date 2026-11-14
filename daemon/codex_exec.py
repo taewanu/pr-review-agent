@@ -23,14 +23,12 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from stream_format import (
-    TEXT_LIMIT,
     clone_roots,
     closing_line,
     describe_tool,
     emit,
     prose,
     text_columns,
-    truncate,
 )
 
 PROFILE = "pr-review-agent"
@@ -39,6 +37,8 @@ NO_PROMPT = "No prompt provided via stdin."
 # The shared temp roots on Linux and their real paths on macOS, where /tmp and
 # /var/tmp are symlinks into /private.
 TEMP_ROOTS = ("/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp")
+# Events whose message is printed whole, since nothing else keeps it.
+ERROR_EVENTS = ("turn.failed", "error")
 
 
 def _toml_string(text: str) -> str:
@@ -242,9 +242,9 @@ def render_event(event: dict, roots: tuple[str, ...] = (), width: int | None = N
             return f"→ {describe_tool('Shell', command, roots, width=width and width - 2)}"
         if item.get("type") == "agent_message":
             return prose(str(item.get("text", "")), roots, width)
-    elif etype in ("turn.failed", "error"):
+    elif etype in ERROR_EVENTS:
         error = event.get("error") if etype == "turn.failed" else event
-        return f"{etype}: {truncate(str((error or {}).get('message', '')), width or TEXT_LIMIT)}"
+        return f"{etype}: {' '.join(str((error or {}).get('message', '')).split())}"
     return None
 
 
@@ -305,7 +305,7 @@ def format_stream(lines, prefix: str, tokens_out: Path, clock=time.monotonic) ->
         width = text_columns(prefix)
         rendered = render_event(event, roots, width)
         if rendered is not None:
-            emit(rendered, prefix, width)
+            emit(rendered, prefix, None if event.get("type") in ERROR_EVENTS else width)
     # Written only on a completed turn, so a timeout leaves no sidecar and no
     # closing line, as on claude. Codex reports no cost, so the line names none.
     if tokens is not None:
