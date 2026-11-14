@@ -189,9 +189,18 @@ def sandbox_config(install_root: str) -> list[str]:
     # One inline table: codex rejects the profile as dotted keys. Read is limited
     # to the platform minimum, the codex install, and the clone; nothing is
     # writable and the network is off, because the clone is the PR author's.
-    # :minimal grants read and write on the system temp roots, which only a glob
-    # deny overrides: `X*` hides the root's listing and `X/**` its contents.
-    temp_denies = "".join(f'"{root}*"="deny", "{root}/**"="deny", ' for root in TEMP_ROOTS)
+    # On macOS, :minimal grants read and write on the system temp roots, and only
+    # a glob deny overrides that grant (`X*` hides the root's listing, `X/**` its
+    # contents). Linux expands a glob deny into the matching files by walking the
+    # disk at sandbox start and aborts on a directory it cannot list, such as
+    # systemd's root-only ones in /tmp, so there a path deny masks each root.
+    if sys.platform == "darwin":
+        temp_denies = "".join(f'"{root}*"="deny", "{root}/**"="deny", ' for root in TEMP_ROOTS)
+    elif sys.platform == "linux":
+        temp_denies = "".join(f'"{root}"="deny", ' for root in TEMP_ROOTS)
+    else:
+        # The path deny is safe only because Linux :minimal never mounts the temp roots.
+        raise SystemExit(f"the codex sandbox is untested on {sys.platform}; use macOS or Linux")
     profile = (
         f'permissions.{PROFILE}={{filesystem={{":minimal"="read", {temp_denies}'
         f'{_toml_string(install_root)}="read", ":workspace_roots"={{"."="read"}}}}, '

@@ -745,13 +745,34 @@ def _installed_codex() -> str | None:
         return None
 
 
-@pytest.mark.parametrize("root", ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"])
-def test_the_profile_denies_each_shared_temp_root_and_its_contents(root):
-    # Linux names the roots directly and macOS reaches them through /private; the
-    # runtime test below can only run where codex is installed.
+TEMP_ROOTS = ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]
+
+
+def _temp_denies(monkeypatch, platform: str) -> dict:
+    monkeypatch.setattr(sys, "platform", platform)
     profile = _config(codex_exec.sandbox_config("/opt/codex"))["permissions.pr-review-agent"]
-    assert profile["filesystem"][f"{root}*"] == "deny"
-    assert profile["filesystem"][f"{root}/**"] == "deny"
+    return {path: mode for path, mode in profile["filesystem"].items() if "tmp" in path}
+
+
+def test_on_macos_the_profile_glob_denies_each_shared_temp_root_and_its_contents(monkeypatch):
+    # macOS reaches the roots through /private, and only a glob deny overrides
+    # the temp grant in :minimal; the runtime test below needs an installed codex.
+    expected = {}
+    for root in TEMP_ROOTS:
+        expected |= {f"{root}*": "deny", f"{root}/**": "deny"}
+    assert _temp_denies(monkeypatch, "darwin") == expected
+
+
+def test_on_linux_the_profile_path_denies_each_shared_temp_root_with_no_glob(monkeypatch):
+    # Linux codex aborts every command when a glob deny reaches a directory it
+    # cannot list, as root's own directories under /tmp are.
+    assert _temp_denies(monkeypatch, "linux") == {root: "deny" for root in TEMP_ROOTS}
+
+
+def test_the_profile_refuses_a_platform_its_temp_denies_are_untested_on(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "freebsd14")
+    with pytest.raises(SystemExit, match="freebsd14"):
+        codex_exec.sandbox_config("/opt/codex")
 
 
 @pytest.mark.skipif(_installed_codex() is None, reason="codex is not installed (CI has none)")
